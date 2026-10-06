@@ -10,6 +10,7 @@ import dev.herdr.mobile.core.model.SemanticEvent
 import dev.herdr.mobile.core.model.SessionSnapshot
 import dev.herdr.mobile.core.model.SnapshotReducer
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancelAndJoin
@@ -20,6 +21,7 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import okhttp3.OkHttpClient
 import java.io.IOException
 import java.net.SocketTimeoutException
@@ -298,23 +300,29 @@ class HerdrClient(
         return TerminalSocket(http, ep, paneId, cols, rows, takeover, scope).also { it.connect() }
     }
 
-    suspend fun sendInput(paneId: String, text: String) = api().sendInput(paneId, text)
+    suspend fun sendInput(paneId: String, text: String) =
+        withContext(Dispatchers.IO) { api().sendInput(paneId, text) }
 
-    suspend fun interrupt(paneId: String) = api().interrupt(paneId)
+    suspend fun interrupt(paneId: String) =
+        withContext(Dispatchers.IO) { api().interrupt(paneId) }
 
-    suspend fun reportAgent(paneId: String, status: AgentStatus, message: String?, agent: String? = null) {
-        api().reportAgent(AgentReport(paneId = paneId, status = status, message = message, agent = agent))
-    }
+    suspend fun reportAgent(paneId: String, status: AgentStatus, message: String?, agent: String? = null) =
+        withContext(Dispatchers.IO) {
+            api().reportAgent(AgentReport(paneId = paneId, status = status, message = message, agent = agent))
+        }
 
     suspend fun createTab(workspaceId: String, label: String?): String =
-        api().createTab(workspaceId, label)
+        withContext(Dispatchers.IO) { api().createTab(workspaceId, label) }
 
     suspend fun resizePane(paneId: String, cols: Int, rows: Int) =
-        api().resizePane(paneId, cols, rows)
+        withContext(Dispatchers.IO) { api().resizePane(paneId, cols, rows) }
 
     // -- One-shot connection test for Settings ---------------------------------------------
 
-    suspend fun testConnection(provider: DaemonEndpointProvider): ConnectionTestResult {
+    suspend fun testConnection(provider: DaemonEndpointProvider): ConnectionTestResult =
+        withContext(Dispatchers.IO) { testConnectionBlocking(provider) }
+
+    private suspend fun testConnectionBlocking(provider: DaemonEndpointProvider): ConnectionTestResult {
         val started = System.currentTimeMillis()
         val ep: DaemonEndpoint
         try {

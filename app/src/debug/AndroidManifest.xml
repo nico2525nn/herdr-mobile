@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+    <!-- Debug only: allow ws:// / http:// to the dev daemon on 10.0.2.2.
+         Release builds require SSH-tunnel or TLS transports. -->
+    <application android:usesCleartextTraffic="true" />
+</manifest>

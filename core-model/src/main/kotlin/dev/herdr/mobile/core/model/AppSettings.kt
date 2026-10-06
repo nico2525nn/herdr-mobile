@@ -119,6 +119,8 @@ data class AppSettings(
     val transportMode: TransportMode = TransportMode.SSH,
     val activeProfileId: String? = null,
     val hostProfiles: List<HostProfile> = emptyList(),
+    /** Direct-transport daemon origin, e.g. `http://100.x.y.z:8765`. Not a secret. */
+    val directUrl: String = "http://10.0.2.2:8765",
 
     val extraKeysEnabled: Boolean = true,
     val extraKeysLayoutId: String = DEFAULT_EXTRA_KEYS_LAYOUT,
