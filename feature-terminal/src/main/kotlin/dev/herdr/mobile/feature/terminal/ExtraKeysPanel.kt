@@ -6,7 +6,6 @@ import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.heightIn
-import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.FilledTonalButton
 import androidx.compose.material3.MaterialTheme
@@ -64,7 +63,7 @@ fun ExtraKeysPanel(
                         modifier = Modifier
                             .weight(1f)
                             .heightIn(min = 44.dp),
-                        shape = RoundedCornerShape(12.dp),
+                        shape = ButtonDefaults.filledTonalShape,
                         contentPadding = PaddingValues(horizontal = 2.dp, vertical = 8.dp),
                         colors = if (armed) {
                             ButtonDefaults.filledTonalButtonColors(
