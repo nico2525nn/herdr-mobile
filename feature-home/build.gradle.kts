@@ -7,7 +7,7 @@ plugins {
 
 android {
     namespace = "dev.herdr.mobile.feature.home"
-    compileSdk = 36
+    compileSdk = 37
 
     defaultConfig {
         minSdk = 26

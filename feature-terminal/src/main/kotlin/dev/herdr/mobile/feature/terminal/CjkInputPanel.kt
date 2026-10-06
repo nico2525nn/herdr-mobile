@@ -6,8 +6,9 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.Send
 import androidx.compose.material.icons.filled.Clear
-import androidx.compose.material.icons.filled.Send
+import androidx.compose.material.icons.filled.ContentPaste
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.OutlinedTextField
@@ -84,10 +85,10 @@ fun CjkInputPanel(
                 }
             },
         ) {
-            Icon(Icons.Filled.Send, contentDescription = "Send clipboard to terminal")
+            Icon(Icons.Filled.ContentPaste, contentDescription = "Send clipboard to terminal")
         }
         IconButton(onClick = { commit() }, enabled = text.isNotEmpty()) {
-            Icon(Icons.Filled.Send, contentDescription = "Send to terminal")
+            Icon(Icons.AutoMirrored.Filled.Send, contentDescription = "Send to terminal")
         }
     }
 }

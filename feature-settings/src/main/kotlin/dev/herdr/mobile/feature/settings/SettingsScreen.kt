@@ -150,6 +150,30 @@ fun SettingsScreen(
                     onSelect = { viewModel.setTransportMode(it) },
                     showDivider = true,
                 )
+                if (settings.transportMode == TransportMode.DIRECT) {
+                    var editingUrl by remember(settings.directUrl) {
+                        mutableStateOf(settings.directUrl)
+                    }
+                    SettingsRow(
+                        headline = "Daemon URL",
+                        supporting = "Direct origin, e.g. http://100.x.y.z:8765",
+                        showDivider = true,
+                        trailing = {
+                            TextButton(onClick = { viewModel.setDirectUrl(editingUrl) }) {
+                                Text("Apply")
+                            }
+                        },
+                    )
+                    OutlinedTextField(
+                        value = editingUrl,
+                        onValueChange = { editingUrl = it },
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(horizontal = 16.dp),
+                        label = { Text("Daemon URL") },
+                        singleLine = true,
+                    )
+                }
                 settings.hostProfiles.forEach { profile ->
                     val active = profile.id == settings.activeProfileId
                     SettingsRow(

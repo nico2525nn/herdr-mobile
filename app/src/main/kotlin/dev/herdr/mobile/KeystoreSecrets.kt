@@ -2,6 +2,7 @@ package dev.herdr.mobile
 
 import android.content.Context
 import android.content.SharedPreferences
+import androidx.core.content.edit
 import android.security.keystore.KeyGenParameterSpec
 import android.security.keystore.KeyProperties
 import android.util.Base64
@@ -53,10 +54,10 @@ class KeystoreSecrets(context: Context) {
         cipher.init(Cipher.ENCRYPT_MODE, key())
         val iv = cipher.iv
         val ciphertext = cipher.doFinal(plaintext.toByteArray(Charsets.UTF_8))
-        prefs.edit()
-            .putString("$alias.iv", Base64.encodeToString(iv, Base64.NO_WRAP))
-            .putString("$alias.data", Base64.encodeToString(ciphertext, Base64.NO_WRAP))
-            .apply()
+        prefs.edit {
+            putString("$alias.iv", Base64.encodeToString(iv, Base64.NO_WRAP))
+            putString("$alias.data", Base64.encodeToString(ciphertext, Base64.NO_WRAP))
+        }
     }
 
     fun get(alias: String): String? {
@@ -76,6 +77,9 @@ class KeystoreSecrets(context: Context) {
     }
 
     fun delete(alias: String) {
-        prefs.edit().remove("$alias.iv").remove("$alias.data").apply()
+        prefs.edit {
+            remove("$alias.iv")
+            remove("$alias.data")
+        }
     }
 }

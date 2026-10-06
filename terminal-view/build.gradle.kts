@@ -5,7 +5,7 @@ plugins {
 
 android {
     namespace = "dev.herdr.mobile.terminal.view"
-    compileSdk = 36
+    compileSdk = 37
 
     defaultConfig {
         minSdk = 26

@@ -6,7 +6,7 @@ plugins {
 
 android {
     namespace = "dev.herdr.mobile.connection.direct"
-    compileSdk = 36
+    compileSdk = 37
 
     defaultConfig {
         minSdk = 26

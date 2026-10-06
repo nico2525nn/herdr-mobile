@@ -60,6 +60,7 @@ class SettingsViewModel(
     fun setBoldIsBright(enabled: Boolean) = edit { it.copy(boldIsBright = enabled) }
 
     fun setTransportMode(mode: TransportMode) = edit { it.copy(transportMode = mode) }
+    fun setDirectUrl(url: String) = edit { it.copy(directUrl = url.trim()) }
     fun setActiveProfile(id: String?) {
         viewModelScope.launch { runCatching { repository.setActiveProfile(id) } }
     }
