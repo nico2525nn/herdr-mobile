@@ -186,8 +186,14 @@ fun SettingsScreen(
                         headline = "${if (active) "● " else ""}${profile.label}",
                         supporting = buildString {
                             append(profile.userAtHost)
-                            append(" · key: ${profile.privateKeyLabel ?: "none"}")
-                            if (profile.passwordAlias != null) append(" · password: saved")
+                            append(" · auth: ")
+                            append(
+                                when {
+                                    profile.passwordAlias != null -> "password saved"
+                                    profile.privateKeyLabel != null -> "key ${profile.privateKeyLabel}"
+                                    else -> "no credentials"
+                                },
+                            )
                         },
                         showDivider = true,
                         trailing = {
@@ -336,7 +342,6 @@ fun SettingsScreen(
                 viewModel.saveProfile(it)
                 editingProfile = null
             },
-            onImportKey = { pem, label -> viewModel.importPrivateKey(profile.id, pem, label) },
             onSavePassword = { password -> viewModel.saveSshPassword(profile.id, password) },
             onSaveToken = { token -> viewModel.saveBearerToken(profile.id, token) },
         )
@@ -354,7 +359,6 @@ fun SettingsScreen(
                 viewModel.saveProfile(it)
                 showAddProfile = false
             },
-            onImportKey = { _, _ -> },
             onSavePassword = { },
             onSaveToken = { },
         )
@@ -444,7 +448,6 @@ private fun ProfileEditorDialog(
     profile: HostProfile,
     onDismiss: () -> Unit,
     onSave: (HostProfile) -> Unit,
-    onImportKey: (pem: String, label: String) -> Unit,
     onSavePassword: (password: String) -> Unit,
     onSaveToken: (token: String) -> Unit,
 ) {
@@ -453,8 +456,6 @@ private fun ProfileEditorDialog(
     var port by remember { mutableStateOf(profile.port.toString()) }
     var username by remember { mutableStateOf(profile.username) }
     var daemonPort by remember { mutableStateOf(profile.daemonPort.toString()) }
-    var keyPem by remember { mutableStateOf("") }
-    var keyLabel by remember { mutableStateOf(profile.privateKeyLabel ?: "id_ed25519") }
     var password by remember { mutableStateOf("") }
     val hasPassword = profile.passwordAlias != null
     var token by remember { mutableStateOf("") }
@@ -483,28 +484,13 @@ private fun ProfileEditorDialog(
                         label = { Text("Daemon port on host") },
                     )
                 }
-                item(key = "key") {
-                    OutlinedTextField(
-                        value = keyPem,
-                        onValueChange = { keyPem = it },
-                        label = { Text("Private key PEM (paste to import)") },
-                        placeholder = { Text("-----BEGIN OPENSSH PRIVATE KEY-----") },
-                    )
-                }
-                item(key = "keylabel") {
-                    OutlinedTextField(
-                        value = keyLabel,
-                        onValueChange = { keyLabel = it },
-                        label = { Text("Key label") },
-                    )
-                }
                 item(key = "password") {
                     OutlinedTextField(
                         value = password,
                         onValueChange = { password = it },
-                        label = { Text("SSH password (optional)") },
+                        label = { Text("SSH password") },
                         placeholder = {
-                            Text(if (hasPassword) "Saved — blank keeps it" else "Blank uses key auth only")
+                            Text(if (hasPassword) "Saved — blank clears it" else "Required for password auth")
                         },
                         visualTransformation = PasswordVisualTransformation(),
                         keyboardOptions = KeyboardOptions(
@@ -525,7 +511,6 @@ private fun ProfileEditorDialog(
         },
         confirmButton = {
             TextButton(onClick = {
-                if (keyPem.isNotBlank()) onImportKey(keyPem, keyLabel)
                 onSavePassword(password)
                 if (token.isNotBlank()) onSaveToken(token)
                 onSave(

@@ -50,12 +50,21 @@ class SshTunnelProvider(
         if (key == null && secret == null) {
             throw SshException(
                 FailureKind.AUTH,
-                "No private key or password stored for ${profile.label}",
+                "No password stored for ${profile.label}; open the profile and enter one",
             )
         }
         val jsch = JSch()
         if (key != null) {
-            jsch.addIdentity("herdr-mobile-${profile.id}", key.toByteArray(), null, null)
+            runCatching {
+                jsch.addIdentity("herdr-mobile-${profile.id}", key.toByteArray(), null, null)
+            }.onFailure {
+                // A corrupt stored key must never block password auth.
+                throw SshException(
+                    FailureKind.AUTH,
+                    "Stored key is invalid (${it.message}); re-enter the password or fix the key",
+                    it,
+                )
+            }
         }
         val known = knownHosts()
         if (known != null) {
