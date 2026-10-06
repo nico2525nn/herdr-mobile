@@ -165,6 +165,21 @@ class SettingsRepositoryImpl(
         secrets.delete(alias)
     }
 
+    override suspend fun storeSshPassword(alias: String?, password: String): String? =
+        withContext(Dispatchers.IO) {
+            if (password.isBlank()) {
+                if (alias != null) secrets.delete(alias)
+                return@withContext null
+            }
+            val resolved = alias ?: "ssh-password-${UUID.randomUUID()}"
+            secrets.put(resolved, password)
+            resolved
+        }
+
+    override suspend fun deleteSshPassword(alias: String) = withContext(Dispatchers.IO) {
+        secrets.delete(alias)
+    }
+
     override suspend fun storeBearerToken(alias: String?, token: String): String =
         withContext(Dispatchers.IO) {
             val resolved = alias ?: "token-${UUID.randomUUID()}"
@@ -203,6 +218,8 @@ class SettingsRepositoryImpl(
         if (tokenAlias != null) deleteBearerToken(tokenAlias)
         val hostAlias = current?.hostKeyAlias
         if (hostAlias != null) secrets.delete(hostAlias)
+        val passwordSecretAlias = current?.passwordAlias
+        if (passwordSecretAlias != null) deleteSshPassword(passwordSecretAlias)
         update { s ->
             val active = s.activeProfileId
             s.copy(
@@ -226,6 +243,7 @@ class SettingsRepositoryImpl(
                 SshTunnelProvider(
                     profile = profile,
                     privateKeyPem = { profile.privateKeyAlias?.let { secrets.get(it) } },
+                    password = { profile.passwordAlias?.let { secrets.get(it) } },
                     knownHosts = { profile.hostKeyAlias?.let { secrets.get(it) } },
                     onUnknownHostKey = { _, _ -> false },
                     bearerToken = { profile.bearerTokenAlias?.let { secrets.get(it) } },

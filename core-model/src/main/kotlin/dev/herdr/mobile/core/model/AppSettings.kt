@@ -85,8 +85,9 @@ enum class TransportMode(val wire: String, val displayName: String) {
 }
 
 /**
- * One SSH host profile. Secrets (private key material, bearer token) are never part of this
- * value; they live in the keystore-backed store and are referenced by [privateKeyAlias].
+ * One SSH host profile. Secrets (private key material, password, bearer token) are never
+ * part of this value; they live in the keystore-backed store and are referenced by alias.
+ * Password auth is only attempted when [passwordAlias] resolves; otherwise key auth alone.
  */
 data class HostProfile(
     val id: String,
@@ -98,6 +99,7 @@ data class HostProfile(
     val daemonHost: String = "127.0.0.1",
     val privateKeyAlias: String? = null,
     val privateKeyLabel: String? = null,
+    val passwordAlias: String? = null,
     val hostKeyAlias: String? = null,
     val useTls: Boolean = false,
     val bearerTokenAlias: String? = null,

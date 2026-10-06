@@ -24,6 +24,10 @@ import androidx.compose.material3.RadioButton
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
+import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.ui.text.input.ImeAction
+import androidx.compose.ui.text.input.KeyboardType
+import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -180,7 +184,11 @@ fun SettingsScreen(
                     val active = profile.id == settings.activeProfileId
                     SettingsRow(
                         headline = "${if (active) "● " else ""}${profile.label}",
-                        supporting = "${profile.userAtHost} · key: ${profile.privateKeyLabel ?: "none"}",
+                        supporting = buildString {
+                            append(profile.userAtHost)
+                            append(" · key: ${profile.privateKeyLabel ?: "none"}")
+                            if (profile.passwordAlias != null) append(" · password: saved")
+                        },
                         showDivider = true,
                         trailing = {
                             Row {
@@ -329,6 +337,7 @@ fun SettingsScreen(
                 editingProfile = null
             },
             onImportKey = { pem, label -> viewModel.importPrivateKey(profile.id, pem, label) },
+            onSavePassword = { password -> viewModel.saveSshPassword(profile.id, password) },
             onSaveToken = { token -> viewModel.saveBearerToken(profile.id, token) },
         )
     }
@@ -346,6 +355,7 @@ fun SettingsScreen(
                 showAddProfile = false
             },
             onImportKey = { _, _ -> },
+            onSavePassword = { },
             onSaveToken = { },
         )
     }
@@ -435,6 +445,7 @@ private fun ProfileEditorDialog(
     onDismiss: () -> Unit,
     onSave: (HostProfile) -> Unit,
     onImportKey: (pem: String, label: String) -> Unit,
+    onSavePassword: (password: String) -> Unit,
     onSaveToken: (token: String) -> Unit,
 ) {
     var label by remember { mutableStateOf(profile.label) }
@@ -444,6 +455,8 @@ private fun ProfileEditorDialog(
     var daemonPort by remember { mutableStateOf(profile.daemonPort.toString()) }
     var keyPem by remember { mutableStateOf("") }
     var keyLabel by remember { mutableStateOf(profile.privateKeyLabel ?: "id_ed25519") }
+    var password by remember { mutableStateOf("") }
+    val hasPassword = profile.passwordAlias != null
     var token by remember { mutableStateOf("") }
 
     AlertDialog(
@@ -485,6 +498,22 @@ private fun ProfileEditorDialog(
                         label = { Text("Key label") },
                     )
                 }
+                item(key = "password") {
+                    OutlinedTextField(
+                        value = password,
+                        onValueChange = { password = it },
+                        label = { Text("SSH password (optional)") },
+                        placeholder = {
+                            Text(if (hasPassword) "Saved — blank keeps it" else "Blank uses key auth only")
+                        },
+                        visualTransformation = PasswordVisualTransformation(),
+                        keyboardOptions = KeyboardOptions(
+                            keyboardType = KeyboardType.Password,
+                            imeAction = ImeAction.Done,
+                        ),
+                        singleLine = true,
+                    )
+                }
                 item(key = "token") {
                     OutlinedTextField(
                         value = token,
@@ -497,6 +526,7 @@ private fun ProfileEditorDialog(
         confirmButton = {
             TextButton(onClick = {
                 if (keyPem.isNotBlank()) onImportKey(keyPem, keyLabel)
+                onSavePassword(password)
                 if (token.isNotBlank()) onSaveToken(token)
                 onSave(
                     profile.copy(

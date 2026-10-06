@@ -26,6 +26,7 @@ import java.util.concurrent.atomic.AtomicReference
 class SshTunnelProvider(
     private val profile: HostProfile,
     private val privateKeyPem: () -> String?,
+    private val password: () -> String?,
     private val knownHosts: () -> String?,
     private val onUnknownHostKey: suspend (host: String, fingerprint: String) -> Boolean,
     private val bearerToken: () -> String?,
@@ -45,18 +46,33 @@ class SshTunnelProvider(
         }
         close()
         val key = privateKeyPem()
-            ?: throw SshException(FailureKind.AUTH, "No private key stored for ${profile.label}")
+        val secret = password()
+        if (key == null && secret == null) {
+            throw SshException(
+                FailureKind.AUTH,
+                "No private key or password stored for ${profile.label}",
+            )
+        }
         val jsch = JSch()
-        jsch.addIdentity("herdr-mobile-${profile.id}", key.toByteArray(), null, null)
+        if (key != null) {
+            jsch.addIdentity("herdr-mobile-${profile.id}", key.toByteArray(), null, null)
+        }
         val known = knownHosts()
         if (known != null) {
             jsch.setKnownHosts(known.byteInputStream())
         }
         val session = jsch.getSession(profile.username, profile.host, profile.port)
+        if (secret != null) {
+            session.setPassword(secret)
+        }
         session.setConfig(
             Properties().apply {
                 setProperty("StrictHostKeyChecking", if (known != null) "yes" else "ask")
-                setProperty("PreferredAuthentications", "publickey")
+                // Prefer password when one is stored; otherwise key auth alone.
+                setProperty(
+                    "PreferredAuthentications",
+                    if (secret != null) "password,publickey" else "publickey",
+                )
                 setProperty("ConnectTimeout", "10000")
             },
         )

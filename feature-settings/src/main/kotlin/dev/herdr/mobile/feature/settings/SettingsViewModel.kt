@@ -105,6 +105,22 @@ class SettingsViewModel(
         }
     }
 
+    /**
+     * Blank [password] clears the stored password; otherwise it replaces it. Either way the
+     * profile's [passwordAlias] tracks the keystore entry, so key auth alone is used when no
+     * password is stored.
+     */
+    fun saveSshPassword(profileId: String, password: String) {
+        viewModelScope.launch {
+            runCatching {
+                val current = repository.settings.value.hostProfiles.firstOrNull { it.id == profileId }
+                val alias = repository.storeSshPassword(current?.passwordAlias, password)
+                val base = current ?: HostProfile(id = profileId, label = profileId, host = "", username = "")
+                repository.updateProfile(base.copy(passwordAlias = alias))
+            }.onFailure { _ui.value = _ui.value.copy(error = it.message) }
+        }
+    }
+
     fun setExtraKeysEnabled(enabled: Boolean) = edit { it.copy(extraKeysEnabled = enabled) }
     fun setCjkInputEnabled(enabled: Boolean) = edit { it.copy(cjkInputEnabled = enabled) }
     fun setSwipeBehavior(behavior: SwipeBehavior) = edit { it.copy(swipeBehavior = behavior) }

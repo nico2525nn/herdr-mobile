@@ -19,6 +19,11 @@ interface SettingsRepository {
 
     suspend fun deletePrivateKey(alias: String)
 
+    /** Store an SSH password under an alias. Blank input clears the stored password. */
+    suspend fun storeSshPassword(alias: String?, password: String): String?
+
+    suspend fun deleteSshPassword(alias: String)
+
     /** Store the daemon bearer token. Returns the alias. */
     suspend fun storeBearerToken(alias: String?, token: String): String
 
