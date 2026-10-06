@@ -299,6 +299,9 @@ async fn run_bridge(
                 }
                 Message::Text(text) => {
                     if !handle_client_text(&text, &input_tx).await {
+                        // Client asked for `release`: forward it so the session tears
+                        // the child down (viewport restore + Herdr release), then stop.
+                        let _ = input_tx.send(SessionCommand::Release).await;
                         return Ok(None);
                     }
                 }

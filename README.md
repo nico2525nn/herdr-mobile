@@ -53,6 +53,20 @@ adb devices
 ./gradlew testDebugUnitTest :core-model:test   # JVM tests
 ```
 
+## Release APK
+
+```bash
+./gradlew :app:assembleRelease
+# → app/build/outputs/apk/release/app-release-unsigned.apk
+~/Android/Sdk/build-tools/36.0.0/apksigner sign \
+  --ks ~/.android/debug.keystore --ks-pass pass:android --key-pass pass:android \
+  --out app/build/outputs/apk/release/app-release-signed.apk \
+  app/build/outputs/apk/release/app-release-unsigned.apk
+```
+
+The signed APK is installable directly (`adb install -r`). Production releases must
+be signed with the real release key, never the debug key.
+
 ## Protocol (v1)
 
 - `GET /v1/health /v1/snapshot /v1/workspaces /v1/panes`
