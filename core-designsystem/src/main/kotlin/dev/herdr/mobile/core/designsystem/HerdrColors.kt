@@ -9,9 +9,10 @@ import dev.herdr.mobile.core.model.AgentStatus
 /**
  * Semantic Herdr state colours, the only custom token family outside Material.
  *
- * Everything else defers to `MaterialTheme.colorScheme`. These five dots carry agent meaning,
- * so they must stay recognisable in both light and dark schemes without clashing with the
- * dynamic-colour palette.
+ * Values are the Herdr TUI palette verbatim (`src/app/state.rs`, Catppuccin Mocha default
+ * and Catppuccin Latte for light): `status_color` maps working→yellow, blocked→red,
+ * done→teal, idle→green, unknown→overlay0. Everything else defers to
+ * `MaterialTheme.colorScheme`.
  */
 @Immutable
 data class HerdrColors(
@@ -31,20 +32,19 @@ data class HerdrColors(
 }
 
 internal val HerdrColorsDark = HerdrColors(
-    blocked = Color(0xFFFF6B6B),
-    working = Color(0xFFFFD166),
-    done = Color(0xFF8ECAE6),
-    idle = Color(0xFF80ED99),
-    unknown = Color(0xFF9AA0A6),
+    blocked = Color(0xFFF38BA8),
+    working = Color(0xFFF9E2AF),
+    done = Color(0xFF94E2D5),
+    idle = Color(0xFFA6E3A1),
+    unknown = Color(0xFF6C7086),
 )
 
 internal val HerdrColorsLight = HerdrColors(
-    // Darkened one step from the dark tokens so dots keep ~4.5:1 contrast on light surfaces.
-    blocked = Color(0xFFC62828),
-    working = Color(0xFF8A6D00),
-    done = Color(0xFF1565C0),
-    idle = Color(0xFF1B8A4B),
-    unknown = Color(0xFF61656B),
+    blocked = Color(0xFFD20F39),
+    working = Color(0xFFDF8E1D),
+    done = Color(0xFF179299),
+    idle = Color(0xFF40A02B),
+    unknown = Color(0xFF9CA0B0),
 )
 
 /**

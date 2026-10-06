@@ -16,7 +16,6 @@ import androidx.compose.foundation.pager.rememberPagerState
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
-import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Home
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
@@ -87,7 +86,6 @@ fun TerminalScreen(
                 val workspaceId = state.target?.workspaceId ?: return@TabRail
                 viewModel.createTab(workspaceId, label = null)
             },
-            onInterrupt = { viewModel.interrupt() },
             onTabLongPress = { workspaceId, tabId, label ->
                 tabMenu = TabMenuTarget(workspaceId, tabId, label)
             },
@@ -241,7 +239,6 @@ private fun TabRail(
     state: TerminalUiState,
     onSelectTab: (workspaceId: String, tabId: String) -> Unit,
     onAddTab: () -> Unit,
-    onInterrupt: () -> Unit,
     onTabLongPress: (workspaceId: String, tabId: String, label: String) -> Unit,
     modifier: Modifier = Modifier,
 ) {
@@ -265,10 +262,6 @@ private fun TabRail(
         }
         IconButton(onClick = onAddTab, modifier = Modifier.size(40.dp)) {
             Icon(Icons.Filled.Add, contentDescription = "New tab in ${workspace.label}")
-        }
-        // Dedicated interrupt: raw ETX on the stream, REST fallback in the ViewModel.
-        IconButton(onClick = onInterrupt, modifier = Modifier.size(40.dp)) {
-            Icon(Icons.Filled.Close, contentDescription = "Interrupt (Ctrl-C) in ${state.tab?.displayLabel ?: "terminal"}")
         }
     }
 }

@@ -2,9 +2,7 @@ package dev.herdr.mobile.core.designsystem
 
 import android.os.Build
 import androidx.compose.foundation.isSystemInDarkTheme
-import androidx.compose.material3.ExperimentalMaterial3ExpressiveApi
-import androidx.compose.material3.MaterialExpressiveTheme
-import androidx.compose.material3.MotionScheme
+import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.darkColorScheme
 import androidx.compose.material3.dynamicDarkColorScheme
 import androidx.compose.material3.dynamicLightColorScheme
@@ -23,11 +21,10 @@ val HerdrTheme: HerdrColors
     get() = LocalHerdrColors.current
 
 /**
- * App theme. Dynamic colour when available and enabled, M3 typography, the expressive motion
- * scheme, and the Herdr token family on the side. Terminal content styling is deliberately
- * not here — see `:terminal-view`, which takes `TerminalColorScheme` directly.
+ * App theme. Dynamic colour when available and enabled, M3 typography, and the Herdr token
+ * family on the side. Terminal content styling is deliberately not here — see
+ * `:terminal-view`, which takes `TerminalColorScheme` directly.
  */
-@OptIn(ExperimentalMaterial3ExpressiveApi::class)
 @Composable
 fun HerdrMobileTheme(
     themeMode: ThemeMode = ThemeMode.SYSTEM,
@@ -47,9 +44,8 @@ fun HerdrMobileTheme(
         else -> lightColorScheme()
     }
     CompositionLocalProvider(LocalHerdrColors provides if (dark) HerdrColorsDark else HerdrColorsLight) {
-        MaterialExpressiveTheme(
+        MaterialTheme(
             colorScheme = colorScheme,
-            motionScheme = MotionScheme.expressive(),
             content = content,
         )
     }
