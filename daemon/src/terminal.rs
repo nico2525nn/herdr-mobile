@@ -33,6 +33,8 @@ enum SessionFrame {
 enum SessionCommand {
     /// Raw client bytes → child stdin.
     Input(Vec<u8>),
+    /// UTF-8 text → child stdin as `terminal.input` text.
+    Text(String),
     Resize(u32, u32),
     Scroll(String, u32),
     Mouse(String, String, u32, u32),
@@ -148,6 +150,9 @@ async fn run_session(
                 match cmd {
                     SessionCommand::Input(bytes) => {
                         if child.send_input_bytes(&bytes).await.is_err() { break; }
+                    }
+                    SessionCommand::Text(text) => {
+                        if child.send_input_text(&text).await.is_err() { break; }
                     }
                     SessionCommand::Resize(c, r) => {
                         // Coalesce resizes to at most one per 120 ms.
@@ -327,6 +332,14 @@ async fn run_bridge(
     Ok(())
 }
 
+
+fn base64_decode(text: &str) -> anyhow::Result<Vec<u8>> {
+    use base64::Engine;
+    base64::engine::general_purpose::STANDARD
+        .decode(text)
+        .map_err(|e| anyhow::anyhow!("bad base64: {e}"))
+}
+
 /// Returns false when the bridge should stop (client sent `release`).
 async fn handle_client_text(text: &str, input_tx: &mpsc::Sender<SessionCommand>) -> bool {
     let value: serde_json::Value = match serde_json::from_str(text) {
@@ -336,6 +349,23 @@ async fn handle_client_text(text: &str, input_tx: &mpsc::Sender<SessionCommand>)
     let kind = value.get("type").and_then(|t| t.as_str()).unwrap_or("");
     let send = async |cmd: SessionCommand| input_tx.send(cmd).await.is_ok();
     match kind {
+        "input.text" => {
+            let text = value.get("text").and_then(|t| t.as_str()).unwrap_or("");
+            if text.is_empty() {
+                return true;
+            }
+            send(SessionCommand::Text(text.to_string())).await;
+            true
+        }
+        "input.bytes" => {
+            let encoded = value.get("bytes").and_then(|b| b.as_str()).unwrap_or("");
+            let bytes = match base64_decode(encoded) {
+                Ok(bytes) => bytes,
+                Err(_) => return true, // malformed payload is ignored, not fatal
+            };
+            send(SessionCommand::Input(bytes)).await;
+            true
+        }
         "resize" => {
             let cols = value.get("cols").and_then(|c| c.as_u64()).unwrap_or(0) as u32;
             let rows = value.get("rows").and_then(|r| r.as_u64()).unwrap_or(0) as u32;
@@ -375,6 +405,10 @@ mod tests {
     #[tokio::test]
     async fn client_control_contract() {
         let (tx, mut rx) = mpsc::channel(8);
+        assert!(handle_client_text(r#"{"type":"input.text","text":"echo hi\r"}"#, &tx).await);
+        assert!(handle_client_text(r#"{"type":"input.text","text":""}"#, &tx).await);
+        assert!(handle_client_text(r#"{"type":"input.bytes","bytes":"AQI="}"#, &tx).await);
+        assert!(handle_client_text(r#"{"type":"input.bytes","bytes":"!!!"}"#, &tx).await);
         assert!(handle_client_text(r#"{"type":"resize","cols":100,"rows":30}"#, &tx).await);
         assert!(handle_client_text(r#"{"type":"scroll","direction":"up","lines":5}"#, &tx).await);
         assert!(handle_client_text(
@@ -391,9 +425,11 @@ mod tests {
         while let Ok(cmd) = rx.try_recv() {
             got.push(cmd);
         }
-        assert_eq!(got.len(), 3);
-        assert!(matches!(got[0], SessionCommand::Resize(100, 30)));
-        assert!(matches!(&got[1], SessionCommand::Scroll(d, 5) if d == "up"));
-        assert!(matches!(&got[2], SessionCommand::Mouse(a, b, 3, 4) if a == "down" && b == "left"));
+        assert_eq!(got.len(), 5);
+        assert!(matches!(&got[0], SessionCommand::Text(t) if t == "echo hi\r"));
+        assert!(matches!(&got[1], SessionCommand::Input(b) if b == &[1, 2]));
+        assert!(matches!(got[2], SessionCommand::Resize(100, 30)));
+        assert!(matches!(&got[3], SessionCommand::Scroll(d, 5) if d == "up"));
+        assert!(matches!(&got[4], SessionCommand::Mouse(a, b, 3, 4) if a == "down" && b == "left"));
     }
 }

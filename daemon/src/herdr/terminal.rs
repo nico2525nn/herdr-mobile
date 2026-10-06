@@ -79,6 +79,10 @@ impl TerminalChild {
         Ok(())
     }
 
+    pub async fn send_input_text(&mut self, text: &str) -> Result<()> {
+        self.send_line(&json!({"type": "terminal.input", "text": text})).await
+    }
+
     pub async fn send_input_bytes(&mut self, bytes: &[u8]) -> Result<()> {
         let encoded = base64::engine::general_purpose::STANDARD.encode(bytes);
         self.send_line(&json!({"type": "terminal.input", "bytes": encoded})).await

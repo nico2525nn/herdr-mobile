@@ -16,6 +16,7 @@ import androidx.compose.foundation.pager.rememberPagerState
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
+import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Home
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -80,6 +81,7 @@ fun TerminalScreen(
                 val workspaceId = state.target?.workspaceId ?: return@TabRail
                 viewModel.createTab(workspaceId, label = null)
             },
+            onInterrupt = { viewModel.interrupt() },
         )
         state.statusMessage?.let { message ->
             Text(
@@ -147,6 +149,7 @@ private fun TabRail(
     state: TerminalUiState,
     onSelectTab: (workspaceId: String, tabId: String) -> Unit,
     onAddTab: () -> Unit,
+    onInterrupt: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
     val workspace = state.workspace ?: return
@@ -168,6 +171,10 @@ private fun TabRail(
         }
         IconButton(onClick = onAddTab, modifier = Modifier.size(40.dp)) {
             Icon(Icons.Filled.Add, contentDescription = "New tab in ${workspace.label}")
+        }
+        // Dedicated interrupt: raw ETX on the stream, REST fallback in the ViewModel.
+        IconButton(onClick = onInterrupt, modifier = Modifier.size(40.dp)) {
+            Icon(Icons.Filled.Close, contentDescription = "Interrupt (Ctrl-C) in ${state.tab?.displayLabel ?: "terminal"}")
         }
     }
 }
