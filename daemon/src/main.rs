@@ -59,12 +59,10 @@ async fn main() -> Result<()> {
     }
 
     let herdr = herdr::HerdrClient::new(config.herdr_socket.clone(), config.herdr_bin.clone());
+    let config = Arc::new(config);
     let cache = Arc::new(SessionCache::new(herdr.clone()));
     let bus = Arc::new(EventBus::new());
-    let terminals = Arc::new(terminal::TerminalRegistry::new(
-        config.clone(),
-        herdr.clone(),
-    ));
+    let terminals = Arc::new(terminal::TerminalRegistry::new(herdr.clone()));
 
     // Prime from Herdr before accepting traffic, but stay up if Herdr is down: /v1/health
     // reports ok:false and the resync loop keeps retrying in the background.
@@ -85,7 +83,7 @@ async fn main() -> Result<()> {
     }
 
     let state = AppState {
-        config: Arc::new(config),
+        config,
         cache,
         bus,
         terminals,

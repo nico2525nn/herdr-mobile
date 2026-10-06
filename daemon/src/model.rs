@@ -9,13 +9,14 @@ pub const PROTOCOL: i64 = 1;
 // core-model/.../SessionSnapshot.kt field for field.
 // ---------------------------------------------------------------------------
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum AgentStatus {
     Blocked,
     Working,
     Done,
     Idle,
+    #[default]
     Unknown,
 }
 

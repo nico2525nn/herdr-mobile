@@ -1,0 +1,399 @@
+use std::collections::HashMap;
+use std::sync::Arc;
+
+use anyhow::{Context, Result};
+use axum::extract::ws::{Message, WebSocket};
+use futures_util::{SinkExt, StreamExt};
+use tokio::sync::{broadcast, mpsc, Mutex};
+use tracing::{debug, info, warn};
+
+use crate::herdr::terminal::{ChildRecord, TerminalChild};
+use crate::herdr::HerdrClient;
+
+/// Live terminal attachments, keyed by pane id. Attaching twice reuses the session; every
+/// attached bridge receives every frame.
+pub struct TerminalRegistry {
+    herdr: HerdrClient,
+    sessions: Mutex<HashMap<String, Arc<TerminalSession>>>,
+}
+
+pub struct TerminalSession {
+    pub pane_id: String,
+    input_tx: mpsc::Sender<SessionCommand>,
+    frames_tx: broadcast::Sender<SessionFrame>,
+    closed_tx: broadcast::Sender<String>,
+}
+
+#[derive(Clone, Debug)]
+enum SessionFrame {
+    Bytes(Vec<u8>),
+    Ready { cols: u32, rows: u32, resumed: bool },
+}
+
+enum SessionCommand {
+    /// Raw client bytes → child stdin.
+    Input(Vec<u8>),
+    Resize(u32, u32),
+    Scroll(String, u32),
+    Mouse(String, String, u32, u32),
+    Release,
+}
+
+impl TerminalRegistry {
+    pub fn new(herdr: HerdrClient) -> TerminalRegistry {
+        TerminalRegistry {
+            herdr,
+            sessions: Mutex::new(HashMap::new()),
+        }
+    }
+
+    pub fn herdr(&self) -> &HerdrClient {
+        &self.herdr
+    }
+
+    pub async fn shutdown(&self) {
+        let sessions: Vec<Arc<TerminalSession>> = {
+            let mut guard = self.sessions.lock().await;
+            guard.drain().map(|(_, s)| s).collect()
+        };
+        for session in sessions {
+            let _ = session.input_tx.send(SessionCommand::Release).await;
+        }
+        tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+    }
+
+    /// Attach (or reuse) and bridge the child to `socket`. Returns when either side closes.
+    pub async fn bridge(
+        self: &Arc<Self>,
+        socket: WebSocket,
+        pane_id: String,
+        takeover: bool,
+        cols: u32,
+        rows: u32,
+    ) -> Result<()> {
+        let session = self.attach(pane_id.clone(), takeover, cols, rows).await?;
+        run_bridge(session, socket, self.clone(), pane_id).await
+    }
+
+    async fn attach(
+        self: &Arc<Self>,
+        pane_id: String,
+        takeover: bool,
+        cols: u32,
+        rows: u32,
+    ) -> Result<Arc<TerminalSession>> {
+        let mut guard = self.sessions.lock().await;
+        if let Some(session) = guard.get(&pane_id) {
+            // Newest geometry wins; the session task coalesces it to the child.
+            let _ = session.input_tx.send(SessionCommand::Resize(cols, rows)).await;
+            return Ok(session.clone());
+        }
+        let (input_tx, input_rx) = mpsc::channel::<SessionCommand>(64);
+        let (frames_tx, _) = broadcast::channel::<SessionFrame>(256);
+        let (closed_tx, _) = broadcast::channel::<String>(4);
+        let session = Arc::new(TerminalSession {
+            pane_id: pane_id.clone(),
+            input_tx,
+            frames_tx,
+            closed_tx,
+        });
+        let runner_session = session.clone();
+        let herdr = self.herdr.clone();
+        let registry = Arc::clone(self);
+        tokio::spawn(async move {
+            run_session(&registry, runner_session, herdr, takeover, cols, rows, input_rx).await;
+        });
+        guard.insert(pane_id, session.clone());
+        Ok(session)
+    }
+
+    async fn remove(&self, pane_id: &str, session: &Arc<TerminalSession>) {
+        let mut guard = self.sessions.lock().await;
+        if let Some(current) = guard.get(pane_id) {
+            if Arc::ptr_eq(current, session) {
+                guard.remove(pane_id);
+            }
+        }
+    }
+}
+
+async fn run_session(
+    registry: &TerminalRegistry,
+    session: Arc<TerminalSession>,
+    herdr: HerdrClient,
+    takeover: bool,
+    cols: u32,
+    rows: u32,
+    mut input_rx: mpsc::Receiver<SessionCommand>,
+) {
+    let pane_id = session.pane_id.clone();
+    let mut child = match TerminalChild::spawn(&herdr, &pane_id, takeover, cols, rows).await {
+        Ok(child) => child,
+        Err(e) => {
+            warn!("cannot attach to pane {pane_id}: {e:#}");
+            let _ = session.closed_tx.send("attach_failed".to_string());
+            registry.remove(&pane_id, &session).await;
+            return;
+        }
+    };
+    info!("attached terminal session for pane {pane_id} ({cols}x{rows})");
+    let _ = session.frames_tx.send(SessionFrame::Ready { cols, rows, resumed: false });
+    let mut last_resize = tokio::time::Instant::now();
+    let mut pending_resize: Option<(u32, u32)> = None;
+    let mut end_reason = String::from("detached");
+    loop {
+        tokio::select! {
+            cmd = input_rx.recv() => {
+                let Some(cmd) = cmd else { end_reason = "released".to_string(); break };
+                match cmd {
+                    SessionCommand::Input(bytes) => {
+                        if child.send_input_bytes(&bytes).await.is_err() { break; }
+                    }
+                    SessionCommand::Resize(c, r) => {
+                        // Coalesce resizes to at most one per 120 ms.
+                        if last_resize.elapsed() >= std::time::Duration::from_millis(120) {
+                            if child.send_resize(c, r).await.is_err() { break; }
+                            last_resize = tokio::time::Instant::now();
+                            let _ = session.frames_tx.send(SessionFrame::Ready { cols: c, rows: r, resumed: false });
+                        } else {
+                            pending_resize = Some((c, r));
+                        }
+                    }
+                    SessionCommand::Scroll(direction, lines) => {
+                        if child.send_scroll(&direction, lines).await.is_err() { break; }
+                    }
+                    SessionCommand::Mouse(action, button, column, row) => {
+                        if child.send_mouse(&action, &button, column, row).await.is_err() { break; }
+                    }
+                    SessionCommand::Release => { end_reason = "released".to_string(); break; }
+                }
+            }
+            record = child.next_record() => {
+                match record {
+                    Ok(Some(ChildRecord::Frame(bytes))) => {
+                        if session.frames_tx.receiver_count() == 0 {
+                            // Nobody is watching; keep the child alive but skip the copy.
+                            continue;
+                        }
+                        if session.frames_tx.send(SessionFrame::Bytes(bytes)).is_err() {
+                            break;
+                        }
+                    }
+                    Ok(Some(ChildRecord::Closed(reason))) => { end_reason = reason; break; }
+                    Ok(None) => { end_reason = "child exited".to_string(); break; }
+                    Err(e) => {
+                        warn!("terminal child for {pane_id} errored: {e:#}");
+                        end_reason = "child error".to_string();
+                        break;
+                    }
+                }
+            }
+            _ = tokio::time::sleep(std::time::Duration::from_millis(120)), if pending_resize.is_some() => {
+                if let Some((c, r)) = pending_resize.take() {
+                    if child.send_resize(c, r).await.is_err() { break; }
+                    last_resize = tokio::time::Instant::now();
+                    let _ = session.frames_tx.send(SessionFrame::Ready { cols: c, rows: r, resumed: false });
+                }
+            }
+        }
+    }
+    if let Some((c, r)) = pending_resize {
+        let _ = child.send_resize(c, r).await;
+    }
+    child.kill().await;
+    let _ = session.closed_tx.send(end_reason.clone());
+    registry.remove(&pane_id, &session).await;
+    info!("terminal session for pane {pane_id} ended ({end_reason})");
+}
+
+async fn run_bridge(
+    session: Arc<TerminalSession>,
+    socket: WebSocket,
+    registry: Arc<TerminalRegistry>,
+    pane_id: String,
+) -> Result<()> {
+    // Pre-populate the view before the first frame: visible screen wrapped in home+clear.
+    let prelude = match registry.herdr.pane_read_visible(&pane_id).await {
+        Ok(text) => format!("\x1b[2J\x1b[H{text}").into_bytes(),
+        Err(e) => {
+            debug!("pane.read prelude failed for {pane_id} ({e:#}); starting from frames only");
+            vec![]
+        }
+    };
+
+    let (mut sink, mut stream) = socket.split();
+    let mut frames_rx = session.frames_tx.subscribe();
+    let mut closed_rx = session.closed_tx.subscribe();
+
+    // Replay the latest known geometry first so the client never sizes blind.
+    let ready = serde_json::json!({
+        "type": "ready",
+        "paneId": pane_id,
+        "cols": 0,
+        "rows": 0,
+        "encoding": "ansi",
+        "resumed": false,
+    });
+    sink.send(Message::Text(ready.to_string().into()))
+        .await
+        .context("terminal socket broke before ready")?;
+    if !prelude.is_empty() {
+        if sink.send(Message::Binary(prelude.into())).await.is_err() {
+            return Ok(());
+        }
+    }
+
+    let input_tx = session.input_tx.clone();
+    // Client → child traffic. Returns a close reason when the bridge should stop pulling
+    // frames, or None when the socket itself ended.
+    let pump_client = async {
+        while let Some(msg) = stream.next().await {
+            let msg = msg.context("terminal socket read failed")?;
+            match msg {
+                Message::Binary(bytes) => {
+                    if input_tx.send(SessionCommand::Input(bytes.to_vec())).await.is_err() {
+                        return Ok::<Option<String>, anyhow::Error>(Some("session ended".to_string()));
+                    }
+                }
+                Message::Text(text) => {
+                    if !handle_client_text(&text, &input_tx).await {
+                        return Ok(None);
+                    }
+                }
+                Message::Close(_) => return Ok(None),
+                _ => {}
+            }
+        }
+        Ok(None)
+    };
+
+    // Child → client traffic.
+    let pump_frames = async {
+        loop {
+            tokio::select! {
+                frame = frames_rx.recv() => {
+                    match frame {
+                        Ok(SessionFrame::Bytes(bytes)) => {
+                            if sink.send(Message::Binary(bytes.into())).await.is_err() {
+                                break;
+                            }
+                        }
+                        Ok(SessionFrame::Ready { cols, rows, resumed }) => {
+                            let ready = serde_json::json!({
+                                "type": "ready", "paneId": pane_id,
+                                "cols": cols, "rows": rows,
+                                "encoding": "ansi", "resumed": resumed,
+                            });
+                            if sink.send(Message::Text(ready.to_string().into())).await.is_err() {
+                                break;
+                            }
+                        }
+                        Err(broadcast::error::RecvError::Lagged(n)) => {
+                            debug!("terminal bridge for {pane_id} lagged {n} frames; continuing with live bytes");
+                            continue;
+                        }
+                        Err(broadcast::error::RecvError::Closed) => break,
+                    }
+                }
+                closed = closed_rx.recv() => {
+                    // Owned String arrives: no guard crosses the awaits below.
+                    let reason = closed.unwrap_or_else(|_| "detached".to_string());
+                    let _ = sink.send(Message::Text(
+                        serde_json::json!({"type": "closed", "reason": reason}).to_string().into(),
+                    )).await;
+                    let _ = sink.close().await;
+                    break;
+                }
+            }
+        }
+    };
+
+    tokio::select! {
+        result = pump_client => {
+            match result {
+                Ok(Some(reason)) => {
+                    let _ = sink.send(Message::Text(
+                        serde_json::json!({"type": "closed", "reason": reason}).to_string().into(),
+                    )).await;
+                }
+                Ok(None) => {}
+                Err(e) => debug!("terminal bridge client pump ended: {e:#}"),
+            }
+        }
+        _ = pump_frames => {}
+    }
+    // One bridge leaving must not kill a session others still watch.
+    let _ = sink.close().await;
+    Ok(())
+}
+
+/// Returns false when the bridge should stop (client sent `release`).
+async fn handle_client_text(text: &str, input_tx: &mpsc::Sender<SessionCommand>) -> bool {
+    let value: serde_json::Value = match serde_json::from_str(text) {
+        Ok(value) => value,
+        Err(_) => return true, // malformed JSON is ignored, not fatal
+    };
+    let kind = value.get("type").and_then(|t| t.as_str()).unwrap_or("");
+    let send = async |cmd: SessionCommand| input_tx.send(cmd).await.is_ok();
+    match kind {
+        "resize" => {
+            let cols = value.get("cols").and_then(|c| c.as_u64()).unwrap_or(0) as u32;
+            let rows = value.get("rows").and_then(|r| r.as_u64()).unwrap_or(0) as u32;
+            if cols == 0 || rows == 0 {
+                return true;
+            }
+            send(SessionCommand::Resize(cols, rows)).await;
+            true
+        }
+        "scroll" => {
+            let direction = value
+                .get("direction")
+                .and_then(|d| d.as_str())
+                .unwrap_or("down")
+                .to_string();
+            let lines = value.get("lines").and_then(|l| l.as_u64()).unwrap_or(5) as u32;
+            send(SessionCommand::Scroll(direction, lines.max(1))).await;
+            true
+        }
+        "mouse" => {
+            let action = value.get("action").and_then(|a| a.as_str()).unwrap_or("down").to_string();
+            let button = value.get("button").and_then(|b| b.as_str()).unwrap_or("left").to_string();
+            let column = value.get("column").and_then(|c| c.as_u64()).unwrap_or(0) as u32;
+            let row = value.get("row").and_then(|r| r.as_u64()).unwrap_or(0) as u32;
+            send(SessionCommand::Mouse(action, button, column, row)).await;
+            true
+        }
+        "release" => false,
+        _ => true, // unknown frames from a newer client: ignore
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn client_control_contract() {
+        let (tx, mut rx) = mpsc::channel(8);
+        assert!(handle_client_text(r#"{"type":"resize","cols":100,"rows":30}"#, &tx).await);
+        assert!(handle_client_text(r#"{"type":"scroll","direction":"up","lines":5}"#, &tx).await);
+        assert!(handle_client_text(
+            r#"{"type":"mouse","action":"down","button":"left","column":3,"row":4}"#,
+            &tx
+        )
+        .await);
+        assert!(handle_client_text("not json at all", &tx).await);
+        assert!(handle_client_text(r#"{"type":"something-new","x":1}"#, &tx).await);
+        assert!(!handle_client_text(r#"{"type":"release"}"#, &tx).await);
+        assert!(handle_client_text(r#"{"type":"resize","cols":0,"rows":0}"#, &tx).await);
+
+        let mut got = vec![];
+        while let Ok(cmd) = rx.try_recv() {
+            got.push(cmd);
+        }
+        assert_eq!(got.len(), 3);
+        assert!(matches!(got[0], SessionCommand::Resize(100, 30)));
+        assert!(matches!(&got[1], SessionCommand::Scroll(d, 5) if d == "up"));
+        assert!(matches!(&got[2], SessionCommand::Mouse(a, b, 3, 4) if a == "down" && b == "left"));
+    }
+}
