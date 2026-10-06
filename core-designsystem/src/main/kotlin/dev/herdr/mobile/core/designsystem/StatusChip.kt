@@ -87,7 +87,7 @@ fun StatusChip(
             verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.spacedBy(8.dp),
         ) {
-            StatusDot(status = status, diameter = 7.dp, describe = false)
+            StatusDot(status = status, diameter = 14.dp, describe = false)
             Text(
                 text = label,
                 style = MaterialTheme.typography.labelLarge.copy(fontSize = 11.5.sp),

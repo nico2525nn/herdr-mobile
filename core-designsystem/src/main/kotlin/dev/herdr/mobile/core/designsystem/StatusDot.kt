@@ -22,7 +22,7 @@ import dev.herdr.mobile.core.model.AgentStatus
 fun StatusDot(
     status: AgentStatus,
     modifier: Modifier = Modifier,
-    diameter: Dp = 8.dp,
+    diameter: Dp = 14.dp,
     describe: Boolean = true,
 ) {
     val colors = HerdrTheme
