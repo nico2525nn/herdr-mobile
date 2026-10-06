@@ -1,0 +1,114 @@
+package dev.herdr.mobile.terminal.view
+
+import dev.herdr.mobile.terminal.emulator.TerminalColorScheme
+import dev.herdr.mobile.terminal.emulator.TerminalEmulator
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.cancel
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.update
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
+
+/**
+ * Owns one [TerminalEmulator] fed by one [TerminalBackend].
+ *
+ * All emulator mutation happens on a single-threaded context; the View only reads immutable
+ * snapshots ([frame]) published after each mutation. Input goes straight to the backend and
+ * never touches the emulator.
+ */
+class TerminalBridge(
+    private val backend: TerminalBackend,
+    colorScheme: TerminalColorScheme,
+    boldIsBright: Boolean,
+    scrollbackLimit: Int,
+) {
+    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+
+    // Single-threaded mutation keeps ordering trivially correct.
+    private val emulatorContext = Dispatchers.Default.limitedParallelism(1)
+
+    private val emulator = TerminalEmulator(colorScheme, boldIsBright).also {
+        it.setScrollbackLimit(scrollbackLimit)
+        it.onResponse = { bytes ->
+            scope.launch { runCatching { backend.send(bytes) } }
+        }
+    }
+
+    private val _frame = MutableStateFlow(FrameSnapshot.empty())
+    /** Latest fully-rendered viewport. Updated only when the emulator revision changes. */
+    val frame: StateFlow<FrameSnapshot> = _frame.asStateFlow()
+
+    private val _bell = MutableStateFlow(0L)
+    /** Increments on every BEL. The View consumes it for haptic/audio feedback. */
+    val bell: StateFlow<Long> = _bell.asStateFlow()
+
+    private var pump: Job? = null
+
+    fun start(cols: Int, rows: Int) {
+        scope.launch(emulatorContext) {
+            emulator.resize(cols, rows)
+            publish()
+        }
+        pump = scope.launch {
+            backend.bytes.collect { data ->
+                withContext(emulatorContext) {
+                    emulator.write(data)
+                    if (emulator.bell) {
+                        emulator.bell = false
+                        _bell.update { it + 1 }
+                    }
+                    publish()
+                }
+            }
+        }
+    }
+
+    private fun publish() {
+        _frame.value = FrameSnapshot(
+            rows = emulator.lines.map { it.toList() },
+            cursorRow = emulator.cursorRow,
+            cursorCol = emulator.cursorCol,
+            cursorVisible = emulator.cursorVisible,
+            usingAlternateScreen = emulator.usingAlternateScreen,
+            scrollbackOffset = emulator.scrollbackOffset,
+            revision = emulator.revision,
+            cols = emulator.cols,
+            rowCount = emulator.rows,
+        )
+    }
+
+    fun resize(cols: Int, rows: Int) {
+        scope.launch(emulatorContext) {
+            emulator.resize(cols, rows)
+            publish()
+        }
+        scope.launch { runCatching { backend.resize(cols, rows) } }
+    }
+
+    fun scrollBy(lines: Int) {
+        scope.launch(emulatorContext) {
+            emulator.scrollBy(lines)
+            publish()
+        }
+        scope.launch {
+            runCatching {
+                if (lines > 0) backend.scrollDown(lines) else backend.scrollUp(-lines)
+            }
+        }
+    }
+
+    suspend fun send(data: ByteArray) = backend.send(data)
+
+    suspend fun sendText(text: String) = backend.sendText(text)
+
+    fun release() {
+        pump?.cancel()
+        scope.launch { runCatching { backend.release() } }
+        scope.cancel()
+    }
+}
