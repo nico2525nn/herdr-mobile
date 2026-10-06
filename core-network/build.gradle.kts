@@ -35,7 +35,7 @@ kotlin {
 dependencies {
     api(project(":core-model"))
     implementation(libs.kotlinx.coroutines.android)
-    implementation(libs.okhttp)
+    api(libs.okhttp)
     implementation(libs.androidx.core.ktx)
     implementation(libs.androidx.lifecycle.runtime.ktx)
 
