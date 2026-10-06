@@ -1,0 +1,18 @@
+.gradle/
+build/
+local.properties
+*.iml
+.idea/
+captures/
+.externalNativeBuild/
+.cxx/
+# Rust daemon
+daemon/target/
+daemon/**/*.rs.bk
+.env
+*.token
+# Python scratch
+__pycache__/
+*.pyc
+# OS
+.DS_Store
