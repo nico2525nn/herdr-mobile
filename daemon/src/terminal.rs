@@ -226,14 +226,16 @@ async fn run_session(
         let _ = child.send_resize(c, r).await;
     }
     // Hand the viewport back before we go: the last restore request wins, so the pane does
-    // not keep the phone's narrow grid after we detach.
+    // not keep the phone's narrow grid after we detach. This runs on every exit path —
+    // including when Herdr itself ended the controller (child death) — because the pane
+    // keeps the last grid either way.
     restore_rx.close();
     let mut restore: Option<RestoreViewport> = None;
     while let Some(req) = restore_rx.recv().await {
         restore = Some(req);
     }
     if let Some(req) = restore {
-        if child.send_resize(req.cols, req.rows).await.is_err() {
+        if child.is_alive() && child.send_resize(req.cols, req.rows).await.is_err() {
             warn!("cannot restore viewport for {pane_id} to {}x{}", req.cols, req.rows);
         } else {
             // Give Herdr a beat to apply the geometry before release closes the controller.

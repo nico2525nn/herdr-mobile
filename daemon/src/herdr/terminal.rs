@@ -146,6 +146,12 @@ impl TerminalChild {
             }
         }
     }
+
+    /// True while the child process is still alive. Used to decide whether a final
+    /// viewport-restore resize is worth attempting.
+    pub fn is_alive(&mut self) -> bool {
+        matches!(self.child.try_wait(), Ok(None))
+    }
 }
 
 /// Parse one stdout line. Returns `Ok(None)` for lines that carry no payload.

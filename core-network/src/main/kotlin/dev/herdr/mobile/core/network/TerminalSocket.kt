@@ -64,6 +64,11 @@ class TerminalSocket(
     private val rows: Int,
     private val takeover: Boolean,
     private val scope: CoroutineScope,
+    /**
+     * Viewport to hand back to Herdr when this socket goes away. Null disables the
+     * restore; the pane then keeps whatever grid the phone last set.
+     */
+    private val restore: Pair<Int, Int>? = null,
 ) : TerminalConnection {
     private val _state =
         MutableStateFlow<TerminalAttachmentState>(TerminalAttachmentState.Attaching(paneId))
@@ -88,6 +93,9 @@ class TerminalSocket(
             put("cols", cols.toString())
             put("rows", rows.toString())
             if (takeover) put("takeover", "true")
+            val (restoreCols, restoreRows) = restore ?: (120 to 30)
+            put("restore_cols", restoreCols.toString())
+            put("restore_rows", restoreRows.toString())
             endpoint.token?.let { put("token", it) }
         }
         val request = Request.Builder()

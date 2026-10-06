@@ -6,6 +6,8 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.BlendMode
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.unit.Dp
@@ -15,8 +17,9 @@ import dev.herdr.mobile.core.model.AgentStatus
 /**
  * The single visual idiom for Herdr state, shared by every screen.
  *
- * A dot plus a TalkBack description; colour never stands alone. Status changes animate
- * subtly instead of snapping, so a flapping agent does not strobe the UI.
+ * Glyph and colour follow the Herdr TUI verbatim (`status_icon` with Dots style in
+ * `src/client/shell.rs`): working/blocked/done are solid `●`, idle is hollow `○`, unknown
+ * is `·`. Colour never stands alone — every dot also carries a TalkBack description.
  */
 @Composable
 fun StatusDot(
@@ -41,6 +44,28 @@ fun StatusDot(
                 },
             ),
     ) {
-        drawCircle(color = color)
+        when (status) {
+            AgentStatus.IDLE -> {
+                // Hollow ring: outer circle plus background-coloured centre.
+                drawCircle(color = color)
+                drawCircle(
+                    color = Color.Transparent,
+                    radius = size.minDimension / 2 * 0.55f,
+                    blendMode = BlendMode.Clear,
+                )
+            }
+
+            AgentStatus.UNKNOWN -> {
+                // Middle dot, matching the TUI's `·`.
+                drawCircle(
+                    color = color,
+                    radius = size.minDimension / 2 * 0.35f,
+                )
+            }
+
+            else -> {
+                drawCircle(color = color)
+            }
+        }
     }
 }
