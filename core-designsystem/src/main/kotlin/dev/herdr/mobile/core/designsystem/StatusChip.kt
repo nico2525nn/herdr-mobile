@@ -1,5 +1,7 @@
 package dev.herdr.mobile.core.designsystem
 
+import androidx.compose.foundation.ExperimentalFoundationApi
+import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.heightIn
@@ -30,6 +32,7 @@ import dev.herdr.mobile.core.model.AgentStatus
  * Visual height is fixed at 32dp; callers widen the hit area with [Modifier] padding rather
  * than growing the chip, so rail geometry never shifts under selection.
  */
+@OptIn(ExperimentalFoundationApi::class)
 @Composable
 fun StatusChip(
     label: String,
@@ -38,6 +41,7 @@ fun StatusChip(
     onClick: () -> Unit,
     modifier: Modifier = Modifier,
     enabled: Boolean = true,
+    onLongClick: (() -> Unit)? = null,
     trailing: (@Composable () -> Unit)? = null,
 ) {
     val container = if (selected) {
@@ -54,11 +58,24 @@ fun StatusChip(
         modifier = modifier
             .heightIn(min = 32.dp)
             .clip(CircleShape)
-            .selectable(
-                selected = selected,
-                enabled = enabled,
-                role = Role.Tab,
-                onClick = onClick,
+            .then(
+                if (onLongClick != null) {
+                    Modifier.combinedClickable(
+                        enabled = enabled,
+                        role = Role.Tab,
+                        onClickLabel = label,
+                        onLongClickLabel = "$label actions",
+                        onLongClick = onLongClick,
+                        onClick = onClick,
+                    )
+                } else {
+                    Modifier.selectable(
+                        selected = selected,
+                        enabled = enabled,
+                        role = Role.Tab,
+                        onClick = onClick,
+                    )
+                },
             )
             .semantics { contentDescription = "$label, ${status.contentDescription()}" },
         shape = CircleShape,
@@ -86,12 +103,14 @@ fun StatusChip(
  * The Home variant: every tab is a peer, so there is no selected state at all. The only
  * differentiator is the dot.
  */
+@OptIn(ExperimentalFoundationApi::class)
 @Composable
 fun PeerTabChip(
     label: String,
     status: AgentStatus,
     onClick: () -> Unit,
     modifier: Modifier = Modifier,
+    onLongClick: (() -> Unit)? = null,
 ) {
     StatusChip(
         label = label,
@@ -99,5 +118,6 @@ fun PeerTabChip(
         selected = false,
         onClick = onClick,
         modifier = modifier,
+        onLongClick = onLongClick,
     )
 }

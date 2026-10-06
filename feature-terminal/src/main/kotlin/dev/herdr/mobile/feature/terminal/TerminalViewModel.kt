@@ -188,6 +188,30 @@ class TerminalViewModel(
         }
     }
 
+    fun closeTab(workspaceId: String, tabId: String) {
+        viewModelScope.launch {
+            runCatching { client.closeTab(tabId) }
+                .onSuccess {
+                    // Move to a surviving tab; the closed one disappears on the next event.
+                    val snapshot = client.state.value.snapshot
+                    val workspace = snapshot?.workspace(workspaceId)
+                    val next = workspace?.tabs?.firstOrNull { it.id != tabId }
+                    val nextPane = next?.activePane
+                    if (next != null && nextPane != null) {
+                        openTarget(TerminalTarget(workspaceId, next.id, nextPane.id))
+                    }
+                }
+                .onFailure { messageFlow.value = "Cannot close tab: ${it.message}" }
+        }
+    }
+
+    fun renameTab(tabId: String, label: String) {
+        viewModelScope.launch {
+            runCatching { client.renameTab(tabId, label.trim()) }
+                .onFailure { messageFlow.value = "Cannot rename tab: ${it.message}" }
+        }
+    }
+
     override fun onCleared() {
         attachJob?.cancel()
         val backend = backendFlow.value

@@ -31,6 +31,8 @@ pub fn router(state: AppState) -> Router {
         .route("/v1/pane/{pane_id}/resize", post(pane_resize))
         .route("/v1/agent/report", post(agent_report))
         .route("/v1/tab", post(tab_create))
+        .route("/v1/tab/{tab_id}/close", post(tab_close))
+        .route("/v1/tab/{tab_id}/rename", post(tab_rename))
         .with_state(state)
 }
 
@@ -335,6 +337,41 @@ async fn tab_create(
     }
 }
 
+async fn tab_close(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(tab_id): Path<String>,
+) -> Response {
+    if let Err(e) = check_auth(&state, &headers, &HashMap::new()) {
+        return e;
+    }
+    match state.cache.herdr_client().tab_close(&tab_id).await {
+        Ok(()) => (StatusCode::OK, Json(json!({"ok": true}))).into_response(),
+        Err(e) => herdr_error(e),
+    }
+}
+
+async fn tab_rename(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(tab_id): Path<String>,
+    Json(body): Json<Value>,
+) -> Response {
+    if let Err(e) = check_auth(&state, &headers, &HashMap::new()) {
+        return e;
+    }
+    let Some(label) = body.get("label").and_then(|v| v.as_str()).map(str::trim) else {
+        return api_error(StatusCode::BAD_REQUEST, "bad_request", "missing label");
+    };
+    if label.is_empty() {
+        return api_error(StatusCode::BAD_REQUEST, "bad_request", "label must not be blank");
+    }
+    match state.cache.herdr_client().tab_rename(&tab_id, label).await {
+        Ok(()) => (StatusCode::OK, Json(json!({"ok": true}))).into_response(),
+        Err(e) => herdr_error(e),
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Events WebSocket
 // ---------------------------------------------------------------------------
@@ -439,9 +476,20 @@ async fn terminal_ws(
     let cols = query.get("cols").and_then(|c| c.parse::<u32>().ok()).unwrap_or(90).clamp(20, 400);
     let rows = query.get("rows").and_then(|r| r.parse::<u32>().ok()).unwrap_or(30).clamp(5, 200);
     let takeover = query.get("takeover").map(|t| t == "true").unwrap_or(false);
+    // Viewport to hand back to Herdr on detach, so the pane does not keep the phone's
+    // narrow grid after we go away. Defaults to 120x30 (Herdr's own fallback); pass
+    // `restore_cols=0` to disable the restore.
+    let restore = match (
+        query.get("restore_cols").and_then(|c| c.parse::<u32>().ok()),
+        query.get("restore_rows").and_then(|r| r.parse::<u32>().ok()),
+    ) {
+        (Some(0), _) => None,
+        (Some(c), Some(r)) if c > 0 && r > 0 => Some((c.min(400), r.min(200))),
+        _ => Some((120, 30)),
+    };
     let terminals = state.terminals.clone();
     ws.on_upgrade(move |socket| async move {
-        if let Err(e) = terminals.bridge(socket, pane_id.clone(), takeover, cols, rows).await {
+        if let Err(e) = terminals.bridge(socket, pane_id.clone(), takeover, cols, rows, restore).await {
             warn!("terminal bridge for {pane_id} ended: {e:#}");
         }
     })

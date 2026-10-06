@@ -18,11 +18,15 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Home
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
@@ -59,6 +63,8 @@ fun TerminalScreen(
     modifier: Modifier = Modifier,
 ) {
     val state by viewModel.uiState.collectAsStateWithLifecycle()
+    var tabMenu by remember { mutableStateOf<TabMenuTarget?>(null) }
+    var renameTarget by remember { mutableStateOf<TabMenuTarget?>(null) }
 
     Column(modifier = modifier.fillMaxSize()) {
         WorkspaceRail(
@@ -82,6 +88,9 @@ fun TerminalScreen(
                 viewModel.createTab(workspaceId, label = null)
             },
             onInterrupt = { viewModel.interrupt() },
+            onTabLongPress = { workspaceId, tabId, label ->
+                tabMenu = TabMenuTarget(workspaceId, tabId, label)
+            },
         )
         state.statusMessage?.let { message ->
             Text(
@@ -112,6 +121,89 @@ fun TerminalScreen(
             onPageChange = { viewModel.setInputPage(it) },
         )
     }
+
+    tabMenu?.let { target ->
+        TabActionsMenu(
+            target = target,
+            onDismiss = { tabMenu = null },
+            onRename = {
+                renameTarget = target
+                tabMenu = null
+            },
+            onClose = {
+                viewModel.closeTab(target.workspaceId, target.tabId)
+                tabMenu = null
+            },
+        )
+    }
+    renameTarget?.let { target ->
+        TabRenameDialog(
+            target = target,
+            onDismiss = { renameTarget = null },
+            onConfirm = { label ->
+                viewModel.renameTab(target.tabId, label)
+                renameTarget = null
+            },
+        )
+    }
+}
+
+/** Which tab a long-press menu refers to. */
+private data class TabMenuTarget(
+    val workspaceId: String,
+    val tabId: String,
+    val label: String,
+)
+
+@Composable
+private fun TabActionsMenu(
+    target: TabMenuTarget,
+    onDismiss: () -> Unit,
+    onRename: () -> Unit,
+    onClose: () -> Unit,
+) {
+    DropdownMenu(expanded = true, onDismissRequest = onDismiss) {
+        DropdownMenuItem(
+            text = { Text("Rename \"${target.label}\"") },
+            onClick = onRename,
+        )
+        DropdownMenuItem(
+            text = { Text("Close \"${target.label}\"") },
+            onClick = onClose,
+        )
+    }
+}
+
+@Composable
+private fun TabRenameDialog(
+    target: TabMenuTarget,
+    onDismiss: () -> Unit,
+    onConfirm: (String) -> Unit,
+) {
+    var label by remember(target.tabId) { mutableStateOf(target.label) }
+    androidx.compose.material3.AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("Rename tab") },
+        text = {
+            OutlinedTextField(
+                value = label,
+                onValueChange = { label = it },
+                label = { Text("Tab name") },
+                singleLine = true,
+            )
+        },
+        confirmButton = {
+            TextButton(
+                onClick = { onConfirm(label) },
+                enabled = label.trim().isNotEmpty(),
+            ) {
+                Text("Rename")
+            }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss) { Text("Cancel") }
+        },
+    )
 }
 
 @Composable
@@ -126,7 +218,7 @@ private fun WorkspaceRail(
         modifier = modifier
             .fillMaxWidth()
             .horizontalScroll(rememberScrollState())
-            .padding(horizontal = 8.dp, vertical = 4.dp),
+            .padding(horizontal = 16.dp, vertical = 4.dp),
         horizontalArrangement = Arrangement.spacedBy(8.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
@@ -150,6 +242,7 @@ private fun TabRail(
     onSelectTab: (workspaceId: String, tabId: String) -> Unit,
     onAddTab: () -> Unit,
     onInterrupt: () -> Unit,
+    onTabLongPress: (workspaceId: String, tabId: String, label: String) -> Unit,
     modifier: Modifier = Modifier,
 ) {
     val workspace = state.workspace ?: return
@@ -157,7 +250,7 @@ private fun TabRail(
         modifier = modifier
             .fillMaxWidth()
             .horizontalScroll(rememberScrollState())
-            .padding(horizontal = 8.dp, vertical = 4.dp),
+            .padding(horizontal = 16.dp, vertical = 4.dp),
         horizontalArrangement = Arrangement.spacedBy(8.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
@@ -167,6 +260,7 @@ private fun TabRail(
                 status = tab.status,
                 selected = tab.id == state.target?.tabId,
                 onClick = { onSelectTab(workspace.id, tab.id) },
+                onLongClick = { onTabLongPress(workspace.id, tab.id, tab.displayLabel) },
             )
         }
         IconButton(onClick = onAddTab, modifier = Modifier.size(40.dp)) {

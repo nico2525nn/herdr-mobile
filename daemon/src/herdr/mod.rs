@@ -216,6 +216,16 @@ impl HerdrClient {
             .context("tab.create response has no tab.tab_id")
     }
 
+    pub async fn tab_close(&self, tab_id: &str) -> Result<()> {
+        self.request("tab.close", json!({"tab_id": tab_id})).await?;
+        Ok(())
+    }
+
+    pub async fn tab_rename(&self, tab_id: &str, label: &str) -> Result<()> {
+        self.request("tab.rename", json!({"tab_id": tab_id, "label": label})).await?;
+        Ok(())
+    }
+
     /// Best effort: notification delivery must never fail a request.
     pub async fn notification_show(&self, pane_id: &str) {
         if let Err(e) = self.request("notification.show", json!({"pane_id": pane_id})).await {

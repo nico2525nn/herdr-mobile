@@ -22,6 +22,16 @@ pub struct TerminalSession {
     input_tx: mpsc::Sender<SessionCommand>,
     frames_tx: broadcast::Sender<SessionFrame>,
     closed_tx: broadcast::Sender<String>,
+    /// Viewport to restore on the Herdr side when the last bridge goes away, so the pane
+    /// does not keep the phone's narrow grid after we detach.
+    restore_tx: mpsc::Sender<RestoreViewport>,
+}
+
+/// Geometry to hand back to Herdr on detach.
+#[derive(Clone, Copy, Debug)]
+struct RestoreViewport {
+    cols: u32,
+    rows: u32,
 }
 
 #[derive(Clone, Debug)]
@@ -65,6 +75,9 @@ impl TerminalRegistry {
     }
 
     /// Attach (or reuse) and bridge the child to `socket`. Returns when either side closes.
+    ///
+    /// `restore` is the viewport to hand back to Herdr when this bridge goes away, so the
+    /// pane does not keep the phone's grid after we detach.
     pub async fn bridge(
         self: &Arc<Self>,
         socket: WebSocket,
@@ -72,8 +85,12 @@ impl TerminalRegistry {
         takeover: bool,
         cols: u32,
         rows: u32,
+        restore: Option<(u32, u32)>,
     ) -> Result<()> {
         let session = self.attach(pane_id.clone(), takeover, cols, rows).await?;
+        if let Some((cols, rows)) = restore {
+            let _ = session.restore_tx.send(RestoreViewport { cols, rows }).await;
+        }
         run_bridge(session, socket, self.clone(), pane_id).await
     }
 
@@ -93,17 +110,19 @@ impl TerminalRegistry {
         let (input_tx, input_rx) = mpsc::channel::<SessionCommand>(64);
         let (frames_tx, _) = broadcast::channel::<SessionFrame>(256);
         let (closed_tx, _) = broadcast::channel::<String>(4);
+        let (restore_tx, restore_rx) = mpsc::channel::<RestoreViewport>(4);
         let session = Arc::new(TerminalSession {
             pane_id: pane_id.clone(),
             input_tx,
             frames_tx,
             closed_tx,
+            restore_tx,
         });
         let runner_session = session.clone();
         let herdr = self.herdr.clone();
         let registry = Arc::clone(self);
         tokio::spawn(async move {
-            run_session(&registry, runner_session, herdr, takeover, cols, rows, input_rx).await;
+            run_session(&registry, runner_session, herdr, takeover, cols, rows, input_rx, restore_rx).await;
         });
         guard.insert(pane_id, session.clone());
         Ok(session)
@@ -127,6 +146,7 @@ async fn run_session(
     cols: u32,
     rows: u32,
     mut input_rx: mpsc::Receiver<SessionCommand>,
+    mut restore_rx: mpsc::Receiver<RestoreViewport>,
 ) {
     let pane_id = session.pane_id.clone();
     let mut child = match TerminalChild::spawn(&herdr, &pane_id, takeover, cols, rows).await {
@@ -204,6 +224,21 @@ async fn run_session(
     }
     if let Some((c, r)) = pending_resize {
         let _ = child.send_resize(c, r).await;
+    }
+    // Hand the viewport back before we go: the last restore request wins, so the pane does
+    // not keep the phone's narrow grid after we detach.
+    restore_rx.close();
+    let mut restore: Option<RestoreViewport> = None;
+    while let Some(req) = restore_rx.recv().await {
+        restore = Some(req);
+    }
+    if let Some(req) = restore {
+        if child.send_resize(req.cols, req.rows).await.is_err() {
+            warn!("cannot restore viewport for {pane_id} to {}x{}", req.cols, req.rows);
+        } else {
+            // Give Herdr a beat to apply the geometry before release closes the controller.
+            tokio::time::sleep(std::time::Duration::from_millis(250)).await;
+        }
     }
     child.kill().await;
     let _ = session.closed_tx.send(end_reason.clone());
@@ -321,7 +356,13 @@ async fn run_bridge(
                         serde_json::json!({"type": "closed", "reason": reason}).to_string().into(),
                     )).await;
                 }
-                Ok(None) => {}
+                Ok(None) => {
+                    // Client went away (socket closed or `release`): tell it the stream is
+                    // over so it never hangs waiting for bytes that will never come.
+                    let _ = sink.send(Message::Text(
+                        serde_json::json!({"type": "closed", "reason": "detached"}).to_string().into(),
+                    )).await;
+                }
                 Err(e) => debug!("terminal bridge client pump ended: {e:#}"),
             }
         }

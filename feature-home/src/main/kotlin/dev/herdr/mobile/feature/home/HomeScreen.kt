@@ -10,6 +10,7 @@ import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
@@ -17,14 +18,22 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.ChevronRight
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -56,6 +65,9 @@ fun HomeScreen(
     modifier: Modifier = Modifier,
 ) {
     val state by viewModel.uiState.collectAsStateWithLifecycle()
+    val message by viewModel.message.collectAsStateWithLifecycle()
+    var tabMenu by remember { mutableStateOf<HomeTabMenuTarget?>(null) }
+    var renameTarget by remember { mutableStateOf<HomeTabMenuTarget?>(null) }
 
     Column(modifier = modifier.fillMaxSize()) {
         HomeHeader(
@@ -77,6 +89,7 @@ fun HomeScreen(
             else -> {
                 LazyColumn(
                     modifier = Modifier.fillMaxSize(),
+                    contentPadding = PaddingValues(horizontal = 16.dp),
                     verticalArrangement = Arrangement.spacedBy(12.dp),
                 ) {
                     if (state.showOfflineBanner || state.stale) {
@@ -96,13 +109,107 @@ fun HomeScreen(
                             workspace = workspace,
                             onOpenWorkspace = { onOpenWorkspace(workspace.id, workspace.activeTabId) },
                             onOpenTab = { tab -> onOpenTab(workspace.id, tab.id) },
+                            onTabLongPress = { tab ->
+                                tabMenu = HomeTabMenuTarget(workspace.id, tab.id, tab.displayLabel)
+                            },
                         )
                     }
                     item(key = "bottom-space") { Spacer(Modifier.height(8.dp)) }
                 }
             }
         }
+        message?.let {
+            Text(
+                text = it,
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.error,
+                modifier = Modifier.padding(horizontal = 20.dp, vertical = 4.dp),
+            )
+        }
     }
+
+    tabMenu?.let { target ->
+        HomeTabActionsMenu(
+            target = target,
+            onDismiss = { tabMenu = null },
+            onRename = {
+                renameTarget = target
+                tabMenu = null
+            },
+            onClose = {
+                viewModel.closeTab(target.tabId)
+                tabMenu = null
+            },
+        )
+    }
+    renameTarget?.let { target ->
+        HomeTabRenameDialog(
+            target = target,
+            onDismiss = { renameTarget = null },
+            onConfirm = { label ->
+                viewModel.renameTab(target.tabId, label)
+                renameTarget = null
+            },
+        )
+    }
+}
+
+/** Which Home tab a long-press menu refers to. */
+private data class HomeTabMenuTarget(
+    val workspaceId: String,
+    val tabId: String,
+    val label: String,
+)
+
+@Composable
+private fun HomeTabActionsMenu(
+    target: HomeTabMenuTarget,
+    onDismiss: () -> Unit,
+    onRename: () -> Unit,
+    onClose: () -> Unit,
+) {
+    DropdownMenu(expanded = true, onDismissRequest = onDismiss) {
+        DropdownMenuItem(
+            text = { Text("Rename \"${target.label}\"") },
+            onClick = onRename,
+        )
+        DropdownMenuItem(
+            text = { Text("Close \"${target.label}\"") },
+            onClick = onClose,
+        )
+    }
+}
+
+@Composable
+private fun HomeTabRenameDialog(
+    target: HomeTabMenuTarget,
+    onDismiss: () -> Unit,
+    onConfirm: (String) -> Unit,
+) {
+    var label by remember(target.tabId) { mutableStateOf(target.label) }
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("Rename tab") },
+        text = {
+            OutlinedTextField(
+                value = label,
+                onValueChange = { label = it },
+                label = { Text("Tab name") },
+                singleLine = true,
+            )
+        },
+        confirmButton = {
+            TextButton(
+                onClick = { onConfirm(label) },
+                enabled = label.trim().isNotEmpty(),
+            ) {
+                Text("Rename")
+            }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss) { Text("Cancel") }
+        },
+    )
 }
 
 @Composable
@@ -200,6 +307,7 @@ private fun WorkspaceCard(
     workspace: Workspace,
     onOpenWorkspace: () -> Unit,
     onOpenTab: (Tab) -> Unit,
+    onTabLongPress: (Tab) -> Unit,
     modifier: Modifier = Modifier,
 ) {
     Card(
@@ -265,6 +373,7 @@ private fun WorkspaceCard(
                             label = tab.displayLabel,
                             status = tab.status,
                             onClick = { onOpenTab(tab) },
+                            onLongClick = { onTabLongPress(tab) },
                         )
                     }
                 }

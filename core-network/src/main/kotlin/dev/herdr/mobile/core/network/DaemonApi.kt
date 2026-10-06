@@ -141,6 +141,15 @@ class DaemonApi(
             ?: throw DaemonException("bad_response", "tab.create returned no tabId")
     }
 
+    fun closeTab(tabId: String) {
+        post("v1/tab/${tabId.url()}/close", "{}")
+    }
+
+    fun renameTab(tabId: String, label: String) {
+        val body = buildJsonObject { put("label", label) }.toString()
+        post("v1/tab/${tabId.url()}/rename", body)
+    }
+
     private fun String.url(): String = URLEncoder.encode(this, "UTF-8")
 }
 

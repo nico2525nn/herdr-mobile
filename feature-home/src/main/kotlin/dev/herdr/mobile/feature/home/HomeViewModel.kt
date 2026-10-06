@@ -11,6 +11,7 @@ import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.stateIn
+import kotlinx.coroutines.launch
 
 /** What Home renders. One screen, one state, no fake selection anywhere. */
 data class HomeUiState(
@@ -29,8 +30,29 @@ data class HomeUiState(
 }
 
 class HomeViewModel(
-    client: HerdrClient,
+    private val client: HerdrClient,
 ) : ViewModel() {
+    private val _message = kotlinx.coroutines.flow.MutableStateFlow<String?>(null)
+    val message: StateFlow<String?> = _message
+
+    fun closeTab(tabId: String) {
+        viewModelScope.launch {
+            runCatching { client.closeTab(tabId) }
+                .onFailure { _message.value = "Cannot close tab: ${it.message}" }
+        }
+    }
+
+    fun renameTab(tabId: String, label: String) {
+        viewModelScope.launch {
+            runCatching { client.renameTab(tabId, label.trim()) }
+                .onFailure { _message.value = "Cannot rename tab: ${it.message}" }
+        }
+    }
+
+    fun clearMessage() {
+        _message.value = null
+    }
+
     val uiState: StateFlow<HomeUiState> = client.state
         .map { s: HerdrClientState ->
             HomeUiState(
