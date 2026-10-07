@@ -42,28 +42,22 @@ class AppContainer(context: Context) {
             externalScope = scope,
         )
         // Rebuild the provider whenever transport-relevant settings change; the client
-        // picks the new one up on its next (re)connect. The key covers the full
-        // profile content (host/port/user/aliases), not just the id: editing any
-        // field of the active profile must tear down the stale tunnel, or edits
-        // apply only after a process restart.
+        // picks the new one up on its next (re)connect. The key covers transport
+        // mode + direct URL + full active-profile content: the provider id alone
+        // never changes on field edits ("direct" is constant, profile ids are
+        // stable), so gating on id drops every edit until process restart.
         scope.launch {
             settingsRepository.settings
                 .map { s ->
                     val active = s.hostProfiles.firstOrNull { it.id == s.activeProfileId }
                         ?: s.hostProfiles.firstOrNull()
-                    Triple(
-                        settingsRepository.providerFor(s)?.id,
-                        s.transportMode,
-                        active,
-                    )
+                    Triple(s.transportMode, s.directUrl, active)
                 }
                 .distinctUntilChanged()
-                .collect { (id, _, _) ->
+                .collect {
                     val current = settingsRepository.settings.value
                     val rebuilt = settingsRepository.providerFor(current)
-                    if (rebuilt?.id != providerFlow.value?.id && rebuilt != null ||
-                        providerFlow.value == null && rebuilt != null
-                    ) {
+                    if (rebuilt != null) {
                         providerFlow.value?.let { old ->
                             runCatching { old.close() }
                         }

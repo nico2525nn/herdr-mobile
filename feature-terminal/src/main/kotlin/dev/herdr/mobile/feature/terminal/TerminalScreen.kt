@@ -36,7 +36,6 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
-import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.layout.onSizeChanged
@@ -358,6 +357,41 @@ private fun TerminalSurface(
     // View size → grid size → backend resize, debounced by the bridge/daemon coalescing.
     var viewSizePx by remember { mutableStateOf(0 to 0) }
 
+    // The bridge belongs to the backend, not to the view size: create it
+    // eagerly (with the last known size, or a sane default) so a tab switch
+    // with an identical layout — where onSizeChanged never fires — still
+    // attaches. Size updates only resize the existing bridge.
+    LaunchedEffect(backend) {
+        if (bridge == null) {
+            val (w, h) = viewSizePx
+            val view = viewRef
+            val (cols, rows) = view?.gridFor(w, h) ?: (80 to 24)
+            val created = TerminalBridge(
+                backend = backend,
+                colorScheme = scheme,
+                boldIsBright = settings.boldIsBright,
+                scrollbackLimit = settings.scrollbackLimit,
+            )
+            bridge = created
+            created.start(cols, rows)
+            // Backend-scoped, not composition-scoped: when the backend
+            // changes, DisposableEffect releases the old bridge AND this
+            // collector dies with it. A composition-scoped launch would
+            // leak one collector per pane switch, each able to render
+            // stale snapshots over the new bridge's output.
+            launch {
+                try {
+                    created.frame.collect { snapshot -> viewRef?.render(snapshot) }
+                } catch (_: Exception) {
+                }
+            }.also { collector ->
+                // Tie the collector to the bridge lifetime explicitly.
+                created.onRelease = { collector.cancel() }
+            }
+            launch { runCatching { backend.resize(cols, rows) } }
+        }
+    }
+
     AndroidView(
         factory = { context ->
             HerdrTerminalView(context).also { view ->
@@ -411,34 +445,7 @@ private fun TerminalSurface(
                 viewSizePx = size.width to size.height
                 val view = viewRef ?: return@onSizeChanged
                 val (cols, rows) = view.gridFor(size.width, size.height)
-                val b = bridge
-                if (b == null) {
-                    val created = TerminalBridge(
-                        backend = backend,
-                        colorScheme = scheme,
-                        boldIsBright = settings.boldIsBright,
-                        scrollbackLimit = settings.scrollbackLimit,
-                    )
-                    bridge = created
-                    created.start(cols, rows)
-                    // Backend-scoped, not composition-scoped: when the backend
-                    // changes, DisposableEffect releases the old bridge AND this
-                    // collector dies with it. A composition-scoped launch would
-                    // leak one collector per pane switch, each able to render
-                    // stale snapshots over the new bridge's output.
-                    scope.launch {
-                        try {
-                            created.frame.collect { snapshot -> view.render(snapshot) }
-                        } catch (_: Exception) {
-                        }
-                    }.also { collector ->
-                        // Tie the collector to the bridge lifetime explicitly.
-                        created.onRelease = { collector.cancel() }
-                    }
-                    scope.launch { backend.resize(cols, rows) }
-                } else {
-                    b.resize(cols, rows)
-                }
+                bridge?.resize(cols, rows)
             },
     )
 
@@ -463,10 +470,24 @@ private fun TerminalSurface(
         }
     }
 
-    // Silence unused warnings for the planned remote-scroll sync hook.
-    LaunchedEffect(viewSizePx) {
-        snapshotFlow { viewSizePx }.collect { }
+    // BEL -> haptic/audio feedback. Gated on the bellVibration setting; without
+    // a collector the bridge counter increments into the void.
+    if (settings.bellVibration || settings.hapticFeedback) {
+        val haptics = androidx.compose.ui.platform.LocalHapticFeedback.current
+        LaunchedEffect(bridge) {
+            val b = bridge ?: return@LaunchedEffect
+            var last = 0L
+            b.bell.collect { count ->
+                if (last != 0L && count != last) {
+                    haptics.performHapticFeedback(androidx.compose.ui.hapticfeedback.HapticFeedbackType.LongPress)
+                }
+                last = count
+            }
+        }
     }
+
+    // Terminal bottom edge: the Box weight above shrinks with imePadding, so
+    // the grid's last row always sits on the input panel, never behind it.
 }
 
 @Composable

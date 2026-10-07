@@ -145,7 +145,12 @@ class HerdrTerminalView @JvmOverloads constructor(
     }
 
     fun setTerminalFont(familyName: String, sizeSp: Float, lineHeightMultiplier: Float) {
-        textPaint.typeface = Typeface.create(familyName, Typeface.NORMAL)
+        baseTypeface = Typeface.create(familyName, Typeface.NORMAL)
+        typeNormal = Typeface.create(baseTypeface, Typeface.NORMAL)
+        typeBold = Typeface.create(baseTypeface, Typeface.BOLD)
+        typeItalic = Typeface.create(baseTypeface, Typeface.ITALIC)
+        typeBoldItalic = Typeface.create(baseTypeface, Typeface.BOLD_ITALIC)
+        textPaint.typeface = typeNormal
         textPaint.textSize = sizeSp * resources.displayMetrics.scaledDensity
         val metrics = textPaint.fontMetrics
         cellHeight = (metrics.descent - metrics.ascent) * lineHeightMultiplier
@@ -433,13 +438,20 @@ class HerdrTerminalView @JvmOverloads constructor(
         }
     }
 
+    private var baseTypeface: Typeface = Typeface.MONOSPACE
+    private var typeNormal: Typeface = Typeface.MONOSPACE
+    private var typeBold: Typeface = Typeface.MONOSPACE
+    private var typeItalic: Typeface = Typeface.MONOSPACE
+    private var typeBoldItalic: Typeface = Typeface.MONOSPACE
+
     private fun typefaceFor(cell: TerminalCell): Typeface {
-        val base = textPaint.typeface ?: Typeface.MONOSPACE
+        // Cached per setTerminalFont: Typeface.create per cell per frame costs
+        // thousands of lookups per draw (scroll jank).
         return when {
-            cell.attrs.bold && cell.attrs.italic -> Typeface.create(base, Typeface.BOLD_ITALIC)
-            cell.attrs.bold -> Typeface.create(base, Typeface.BOLD)
-            cell.attrs.italic -> Typeface.create(base, Typeface.ITALIC)
-            else -> Typeface.create(base, Typeface.NORMAL)
+            cell.attrs.bold && cell.attrs.italic -> typeBoldItalic
+            cell.attrs.bold -> typeBold
+            cell.attrs.italic -> typeItalic
+            else -> typeNormal
         }
     }
 

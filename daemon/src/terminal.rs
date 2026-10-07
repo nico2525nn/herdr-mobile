@@ -121,17 +121,12 @@ impl TerminalRegistry {
             }),
         };
         if let Some(req) = restore {
-            // try_send, not await: restore_tx is drained only at teardown, so an
-            // awaiting send would deadlock the 5th joiner once the cap fills.
-            // A full buffer is replaced wholesale: teardown takes last-wins.
-            match session.restore_tx.try_send(req) {
-                Err(tokio::sync::mpsc::error::TrySendError::Full(_)) => {
-                    // Best effort under lock-free pressure: drop-and-retry once.
-                    // try_send races are benign here (last-writer-wins anyway).
-                    let _ = session.restore_tx.try_send(req);
-                }
-                _ => {}
-            }
+            // try_send, not await: restore_tx drains only at teardown, so an
+            // awaiting send would deadlock joiners once the cap fills. On Full
+            // the newest geometry is dropped in favor of an equally-fresh older
+            // one — teardown takes last-drained-wins either way, and every
+            // joiner passes the same attach-time snapshot, so loss is benign.
+            let _ = session.restore_tx.try_send(req);
         }
         run_bridge(session, socket, self.clone(), pane_id).await
     }
@@ -256,6 +251,11 @@ async fn run_session(
         Ok(child) => child,
         Err(e) => {
             warn!("cannot attach to pane {pane_id}: {e:#}");
+            // Mark closing BEFORE announcing failure: a concurrent attach() in
+            // the insert→remove window must not reuse this doomed session, and
+            // a late joiner must not miss the already-sent attach_failed on a
+            // broadcast channel that replays nothing.
+            session.bridges.lock().expect("bridges poisoned").closing = true;
             let _ = session.closed_tx.send("attach_failed".to_string());
             registry.remove(&pane_id, &session).await;
             return;
