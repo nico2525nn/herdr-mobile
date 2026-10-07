@@ -8,7 +8,6 @@ import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.Send
 import androidx.compose.material.icons.filled.Clear
-import androidx.compose.material.icons.filled.ContentPaste
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.OutlinedTextField
@@ -20,7 +19,6 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
@@ -31,6 +29,9 @@ import androidx.compose.ui.unit.dp
  * The Android IME composes inside this ordinary TextField; nothing is sent until the text is
  * committed (IME action or the send button), at which point the whole string goes to the
  * terminal as UTF-8. Composing text never trickles into the remote PTY mid-conversion.
+ *
+ * Paste comes from the IME/system long-press menu, not a dedicated button: a paste
+ * button would either discard the in-progress composition or need merge semantics.
  */
 @Composable
 fun CjkInputPanel(
@@ -38,7 +39,6 @@ fun CjkInputPanel(
     modifier: Modifier = Modifier,
 ) {
     var text by remember { mutableStateOf("") }
-    val clipboard = LocalClipboardManager.current
 
     fun commit() {
         if (text.isEmpty()) return
@@ -74,17 +74,6 @@ fun CjkInputPanel(
                 }
             },
         )
-        IconButton(
-            onClick = {
-                val pasted = clipboard.getText()?.text
-                if (!pasted.isNullOrEmpty()) {
-                    onSend(pasted)
-                    text = ""
-                }
-            },
-        ) {
-            Icon(Icons.Filled.ContentPaste, contentDescription = "Send clipboard to terminal")
-        }
         IconButton(onClick = { commit() }, enabled = text.isNotEmpty()) {
             Icon(Icons.AutoMirrored.Filled.Send, contentDescription = "Send to terminal")
         }
