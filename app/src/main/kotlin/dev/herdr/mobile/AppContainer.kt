@@ -11,6 +11,7 @@ import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.launch
@@ -54,7 +55,10 @@ class AppContainer(context: Context) {
                     Triple(s.transportMode, s.directUrl, active)
                 }
                 .distinctUntilChanged()
-                .collect {
+                // Debounce: URL/host keystrokes emit a distinct key per character.
+                // Without this every keystroke tears down and redials the tunnel.
+                .collectLatest {
+                    kotlinx.coroutines.delay(500)
                     val current = settingsRepository.settings.value
                     val rebuilt = settingsRepository.providerFor(current)
                     if (rebuilt != null) {

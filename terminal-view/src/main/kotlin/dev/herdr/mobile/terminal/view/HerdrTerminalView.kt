@@ -542,12 +542,17 @@ class HerdrTerminalView @JvmOverloads constructor(
             override fun sendKeyEvent(event: android.view.KeyEvent): Boolean {
                 // Same mapping as onKeyDown (DPAD/TAB/ESC/Ctrl chords): the IME
                 // and hardware paths must agree, or keys silently differ by source.
+                // Unhandled keys fall through to super (not unconditional true),
+                // or the framework/IME never sees ACTION_UP and system keys.
                 if (event.action == android.view.KeyEvent.ACTION_DOWN) {
                     if (handleHardwareKey(event.keyCode, event)) return true
                     val c = event.unicodeChar
-                    if (c != 0) onDirectInput?.invoke(String(Character.toChars(c)))
+                    if (c != 0) {
+                        onDirectInput?.invoke(String(Character.toChars(c)))
+                        return true
+                    }
                 }
-                return true
+                return super.sendKeyEvent(event)
             }
 
             override fun performEditorAction(editorAction: Int): Boolean {
