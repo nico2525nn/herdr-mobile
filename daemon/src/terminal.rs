@@ -133,26 +133,58 @@ impl TerminalRegistry {
         cols: u32,
         rows: u32,
     ) -> Result<Arc<TerminalSession>> {
-        let mut guard = self.sessions.lock().await;
-        if let Some(session) = guard.get(&pane_id) {
-            let reusable = {
-                let mut st = session.bridges.lock().expect("bridges poisoned");
-                if st.closing {
-                    false
-                } else {
-                    st.count += 1;
-                    // Newest geometry wins; the session task coalesces it to the child.
-                    true
+        // A closing session may still own the Herdr controller (restore resize +
+        // up to 250ms beat + child.kill still in flight). Wait for its teardown
+        // BEFORE spawning a fresh controller, or old and new overlap and the new
+        // attach can fail under takeover=false. Registry lock is released while
+        // waiting so run_session's remove() can proceed.
+        loop {
+            let old = {
+                let mut guard = self.sessions.lock().await;
+                match guard.get(&pane_id) {
+                    Some(session) => {
+                        let reusable = {
+                            let mut st = session.bridges.lock().expect("bridges poisoned");
+                            if st.closing {
+                                false
+                            } else {
+                                st.count += 1;
+                                true
+                            }
+                        };
+                        if reusable {
+                            let session = session.clone();
+                            drop(guard);
+                            // Newest geometry wins; the session task coalesces it.
+                            let _ = session
+                                .input_tx
+                                .send(SessionCommand::Resize(cols, rows))
+                                .await;
+                            return Ok(session);
+                        }
+                        // Closing: evict from the map now so no other attacher
+                        // queues behind it, then wait for ITS teardown outside
+                        // the registry lock.
+                        guard.remove(&pane_id)
+                    }
+                    None => None,
                 }
             };
-            if reusable {
-                let _ = session.input_tx.send(SessionCommand::Resize(cols, rows)).await;
-                return Ok(session.clone());
+            match old {
+                None => break,
+                Some(old) => {
+                    // Bounded wait: teardown is restore + 250ms beat + kill.
+                    // If it somehow hangs, proceed anyway — a failed fresh attach
+                    // surfaces as an error, never a deadlock.
+                    let _ = tokio::time::timeout(
+                        std::time::Duration::from_secs(5),
+                        old.closed_tx.subscribe().recv(),
+                    )
+                    .await;
+                }
             }
-            // Teardown already started on this session; fall through and build a
-            // fresh one. The old run_session drains via the pending shutdown.
-            guard.remove(&pane_id);
         }
+        let mut guard = self.sessions.lock().await;
         let (input_tx, input_rx) = mpsc::channel::<SessionCommand>(64);
         let (frames_tx, _) = broadcast::channel::<SessionFrame>(256);
         let (closed_tx, _) = broadcast::channel::<String>(4);
@@ -277,6 +309,10 @@ async fn run_session(
     if let Some((c, r)) = pending_resize {
         let _ = child.send_resize(c, r).await;
     }
+    // Teardown starts here on EVERY exit path (shutdown, child death, send
+    // failure). Flip closing first so a racing attach() never reuses us while
+    // the restore/kill below is still in flight.
+    session.bridges.lock().expect("bridges poisoned").closing = true;
     // Hand the viewport back before we go: the last restore request wins, so the pane does
     // not keep the phone's narrow grid after we detach. This runs on every exit path —
     // including when Herdr itself ended the controller (child death) — because the pane
