@@ -169,7 +169,8 @@ class TerminalViewModel(
      * daemon also cleans up dead sockets, so a missed call here is recoverable.
      */
     fun releaseForBackground() {
-        val backend = backendFlow.value ?: return
+        val backend = backendFlow.value
+        if (backend == null) return
         backendFlow.value = null
         attachJob?.cancel()
         val releaser = CoroutineScope(SupervisorJob() + Dispatchers.IO)
@@ -181,6 +182,18 @@ class TerminalViewModel(
                 releaser.cancel()
             }
         }
+    }
+
+    /**
+     * Called on ON_START after [releaseForBackground]. Re-attaches the kept target:
+     * without this the screen sits on "Attaching…" forever after returning from
+     * background. No-op when nothing was released or no target exists.
+     */
+    fun resumeAfterBackground() {
+        val target = targetFlow.value
+        val hasBackend = backendFlow.value != null
+        if (target == null || hasBackend) return
+        openTarget(target)
     }
 
     fun sendText(text: String) {

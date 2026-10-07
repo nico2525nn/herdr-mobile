@@ -28,6 +28,10 @@ pub struct TerminalSession {
     /// Bridges currently watching this session. Only the last one leaving tears the
     /// Herdr controller down; the comment on run_bridge's tail documents why.
     bridges: std::sync::Mutex<usize>,
+    /// Fired by the last bridge leaving. Wakes run_session even when the 64-deep
+    /// command queue is full of resizes — teardown correctness must never depend
+    /// on queue capacity.
+    shutdown: tokio::sync::Notify,
 }
 
 /// Geometry to hand back to Herdr on detach.
@@ -139,6 +143,7 @@ impl TerminalRegistry {
             closed_tx,
             restore_tx,
             bridges: std::sync::Mutex::new(1),
+            shutdown: tokio::sync::Notify::new(),
         });
         let runner_session = session.clone();
         let herdr = self.herdr.clone();
@@ -187,6 +192,10 @@ async fn run_session(
     let mut end_reason = String::from("detached");
     loop {
         tokio::select! {
+            _ = session.shutdown.notified() => {
+                end_reason = "released".to_string();
+                break;
+            }
             cmd = input_rx.recv() => {
                 let Some(cmd) = cmd else { end_reason = "released".to_string(); break };
                 match cmd {
@@ -270,34 +279,41 @@ async fn run_session(
     info!("terminal session for pane {pane_id} ended ({end_reason})");
 }
 
+/// RAII guard: every run_bridge exit path (handshake failure, client close,
+/// explicit release, frame-pump death) funnels through its Drop. The guard
+/// decrements the bridge count exactly once, and only the last bridge wakes the
+/// session for teardown — so a shared session survives one watcher going away,
+/// and a dead handshake can never leave a ghost controller holding the resize
+/// lock. Teardown goes through Notify, NOT the 64-deep command queue: a full
+/// queue of coalesced resizes must never block the release.
+struct BridgeGuard {
+    session: Arc<TerminalSession>,
+}
+impl BridgeGuard {
+    fn new(session: &Arc<TerminalSession>) -> Self {
+        BridgeGuard { session: session.clone() }
+    }
+}
+impl Drop for BridgeGuard {
+    fn drop(&mut self) {
+        let last = {
+            let mut n = self.session.bridges.lock().expect("bridges poisoned");
+            *n = n.saturating_sub(1);
+            *n == 0
+        };
+        if last {
+            self.session.shutdown.notify_one();
+        }
+    }
+}
+
 async fn run_bridge(
     session: Arc<TerminalSession>,
     socket: WebSocket,
     registry: Arc<TerminalRegistry>,
     pane_id: String,
 ) -> Result<()> {
-    // RAII guard: every exit path below (handshake failure, client close, explicit
-    // release, frame-pump death) funnels through here. The guard decrements the
-    // bridge count exactly once, and only the last bridge sends Release — so a
-    // shared session survives one watcher going away, and a dead handshake can
-    // never leave a ghost controller holding the resize lock.
-    struct BridgeGuard {
-        session: Arc<TerminalSession>,
-    }
-    impl Drop for BridgeGuard {
-        fn drop(&mut self) {
-            let last = {
-                let mut n = self.session.bridges.lock().expect("bridges poisoned");
-                *n = n.saturating_sub(1);
-                *n == 0
-            };
-            if last {
-                // run_session may already be gone; a closed channel is fine.
-                let _ = self.session.input_tx.try_send(SessionCommand::Release);
-            }
-        }
-    }
-    let _guard = BridgeGuard { session: session.clone() };
+    let _guard = BridgeGuard::new(&session);
     run_bridge_inner(session, socket, registry, pane_id).await
 }
 
@@ -506,6 +522,7 @@ async fn handle_client_text(text: &str, input_tx: &mpsc::Sender<SessionCommand>)
 #[cfg(test)]
 mod tests {
     use super::*;
+    use futures_util::FutureExt;
 
     #[tokio::test]
     async fn client_control_contract() {
@@ -538,69 +555,57 @@ mod tests {
         assert!(matches!(&got[4], SessionCommand::Mouse(a, b, 3, 4) if a == "down" && b == "left"));
     }
 
-    /// The BridgeGuard owns exactly-once teardown: dropping it decrements once,
-    /// and only the last bridge over a session emits Release.
+    /// The production BridgeGuard owns exactly-once teardown: dropping it
+    /// decrements once, and only the last bridge over a session wakes run_session.
+    /// This test exercises the REAL guard, not a copy — if the production Drop
+    /// breaks, this goes red.
     #[test]
     fn bridge_guard_last_only_releases() {
-        let (input_tx, mut input_rx) = mpsc::channel::<SessionCommand>(8);
+        let session = test_session(2);
+
+        // First bridge leaving: count drops to 1, no shutdown notification.
+        // NOTE: the count assert must run AFTER the guard drops (outside the
+        // block) — inside, the guard is still alive and the count is still 2.
+        {
+            let _g = BridgeGuard::new(&session);
+        }
+        assert_eq!(*session.bridges.lock().expect("poisoned"), 1);
+        assert!(
+            session.shutdown.notified().now_or_never().is_none(),
+            "first bridge must not wake the session"
+        );
+
+        // Last bridge leaving: count hits 0, shutdown fires exactly once.
+        {
+            let _g = BridgeGuard::new(&session);
+        }
+        assert_eq!(*session.bridges.lock().expect("poisoned"), 0);
+        assert!(
+            session.shutdown.notified().now_or_never().is_some(),
+            "last bridge must wake the session exactly once"
+        );
+        // Notify is a oneshot permit: a second wait finds nothing new.
+        assert!(
+            session.shutdown.notified().now_or_never().is_none(),
+            "no duplicate wakeup"
+        );
+    }
+
+    /// Test-only session with `n` bridges watching. Production attach() builds
+    /// the real ones; this mirrors its fields without spawning run_session.
+    fn test_session(n: usize) -> Arc<TerminalSession> {
+        let (input_tx, _input_rx) = mpsc::channel::<SessionCommand>(8);
         let (frames_tx, _) = broadcast::channel::<SessionFrame>(8);
         let (closed_tx, _) = broadcast::channel::<String>(2);
         let (restore_tx, _restore_rx) = mpsc::channel::<RestoreViewport>(2);
-        let session = Arc::new(TerminalSession {
+        Arc::new(TerminalSession {
             pane_id: "w1:pX".to_string(),
             input_tx,
             frames_tx,
             closed_tx,
             restore_tx,
-            bridges: std::sync::Mutex::new(2),
-        });
-
-        // First bridge leaving: count drops to 1, no Release.
-        {
-            struct G {
-                s: Arc<TerminalSession>,
-            }
-            impl Drop for G {
-                fn drop(&mut self) {
-                    let last = {
-                        let mut n = self.s.bridges.lock().expect("poisoned");
-                        *n = n.saturating_sub(1);
-                        *n == 0
-                    };
-                    if last {
-                        let _ = self.s.input_tx.try_send(SessionCommand::Release);
-                    }
-                }
-            }
-            let _g = G { s: session.clone() };
-        }
-        assert_eq!(*session.bridges.lock().expect("poisoned"), 1);
-        assert!(input_rx.try_recv().is_err(), "first bridge must not Release");
-
-        // Last bridge leaving: count hits 0, exactly one Release.
-        {
-            struct G {
-                s: Arc<TerminalSession>,
-            }
-            impl Drop for G {
-                fn drop(&mut self) {
-                    let last = {
-                        let mut n = self.s.bridges.lock().expect("poisoned");
-                        *n = n.saturating_sub(1);
-                        *n == 0
-                    };
-                    if last {
-                        let _ = self.s.input_tx.try_send(SessionCommand::Release);
-                    }
-                }
-            }
-            let _g = G { s: session.clone() };
-        }
-        assert_eq!(*session.bridges.lock().expect("poisoned"), 0);
-        assert!(
-            matches!(input_rx.try_recv(), Ok(SessionCommand::Release)),
-            "last bridge must Release exactly once"
-        );
-        assert!(input_rx.try_recv().is_err(), "no duplicate Release");
+            bridges: std::sync::Mutex::new(n),
+            shutdown: tokio::sync::Notify::new(),
+        })
     }
 }
