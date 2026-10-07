@@ -2,6 +2,7 @@ package dev.herdr.mobile.connection.ssh
 
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import dev.herdr.mobile.core.model.HostProfile
+import dev.herdr.mobile.core.model.UnknownHostKeyException
 import kotlinx.coroutines.runBlocking
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -100,6 +101,45 @@ class SshTailnetE2ETest {
                 inputStream.bufferedReader().readText()
             }
             assertTrue(body.contains("\"ok\":true"))
+        } finally {
+            provider.close()
+        }
+    }
+
+    /**
+     * First-use path with no stored host key and no auto-accept: must throw
+     * [UnknownHostKeyException] carrying a fingerprint and a `host type base64`
+     * known_hosts line — the payload the TOFU dialog persists on approval.
+     * This is the exact failure a fresh phone install hits on Test/Connect.
+     */
+    @Test
+    fun unknownHostKeyThrowsTofuPayload() = runBlocking {
+        val host = arg("host") ?: error("missing host arg")
+        val user = arg("user") ?: error("missing user arg")
+        val profile = HostProfile(
+            id = "e2e-tofu",
+            label = "e2e-tofu",
+            host = host,
+            username = user,
+            daemonPort = arg("daemonPort")?.toIntOrNull() ?: 8765,
+        )
+        val provider = SshTunnelProvider(
+            profile = profile,
+            privateKeyPem = { null },
+            password = { "wrong-password-for-tofu-probe" },
+            knownHosts = { null },
+            onUnknownHostKey = { _, _ -> false },
+            bearerToken = { null },
+        )
+        try {
+            provider.open()
+            error("expected UnknownHostKeyException")
+        } catch (e: UnknownHostKeyException) {
+            assertTrue(e.fingerprint.isNotBlank())
+            val parts = e.knownHostsLine.split(" ")
+            org.junit.Assert.assertEquals(3, parts.size)
+            org.junit.Assert.assertEquals(host, parts[0])
+            assertTrue(parts[2].isNotBlank())
         } finally {
             provider.close()
         }

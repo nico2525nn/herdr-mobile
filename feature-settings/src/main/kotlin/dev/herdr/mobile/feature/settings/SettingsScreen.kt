@@ -363,6 +363,33 @@ fun SettingsScreen(
             onSaveToken = { },
         )
     }
+    ui.pendingHostKey?.let { pending ->
+        AlertDialog(
+            onDismissRequest = { viewModel.dismissHostKey() },
+            title = { Text("Unknown host key") },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Text("${pending.host} presented a key this phone has never seen.")
+                    Text(
+                        pending.fingerprint,
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                    Text("Compare it with the server's key (ssh-keyscan, Termux, or your admin), then approve. A changed key on a known host is rejected outright and never shows this dialog.")
+                }
+            },
+            confirmButton = {
+                TextButton(onClick = { viewModel.approveHostKey() }) {
+                    Text("Approve & retry")
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { viewModel.dismissHostKey() }) {
+                    Text("Reject")
+                }
+            },
+        )
+    }
 }
 
 private fun ThemeMode.displayName(): String = when (this) {
@@ -380,11 +407,14 @@ private fun testSummary(result: ConnectionTestResult?): String = when (result) {
         FailureKind.DNS -> "DNS failure: ${result.detail}"
         FailureKind.AUTH -> "Auth failure: ${result.detail}"
         FailureKind.HOST_KEY_MISMATCH -> "Host key mismatch: ${result.detail}"
+        FailureKind.HOST_KEY_UNKNOWN -> "Unknown host key: ${result.detail}"
         FailureKind.UNREACHABLE -> "Unreachable: ${result.detail}"
         FailureKind.DAEMON_UNAVAILABLE -> "Daemon unavailable: ${result.detail}"
         FailureKind.PROTOCOL_MISMATCH -> "Protocol mismatch: ${result.detail}"
         FailureKind.UNKNOWN -> "Failed: ${result.detail}"
     }
+
+    is ConnectionTestResult.UnknownHostKey -> "Unknown host key: ${result.detail}"
 }
 
 @Composable

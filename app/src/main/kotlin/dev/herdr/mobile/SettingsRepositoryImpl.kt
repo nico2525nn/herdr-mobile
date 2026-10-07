@@ -9,6 +9,7 @@ import androidx.datastore.preferences.core.stringPreferencesKey
 import androidx.datastore.preferences.preferencesDataStore
 import dev.herdr.mobile.connection.direct.DirectProvider
 import dev.herdr.mobile.connection.ssh.SshTunnelProvider
+import dev.herdr.mobile.core.model.UnknownHostKeyException
 import dev.herdr.mobile.core.model.AppSettings
 import dev.herdr.mobile.core.model.ConnectionTestResult
 import dev.herdr.mobile.core.model.CursorStyle
@@ -198,6 +199,14 @@ class SettingsRepositoryImpl(
             resolved
         }
 
+    override suspend fun acceptHostKey(profileId: String, knownHostsLine: String): String {
+        val current = _settings.value.hostProfiles.firstOrNull { it.id == profileId }
+            ?: throw IllegalArgumentException("No such profile: $profileId")
+        val alias = storeKnownHosts(current.hostKeyAlias, knownHostsLine.trim())
+        updateProfile(current.copy(hostKeyAlias = alias))
+        return alias
+    }
+
     override suspend fun addProfile(profile: HostProfile) {
         update { it.copy(hostProfiles = it.hostProfiles + profile) }
     }
@@ -272,7 +281,18 @@ class SettingsRepositoryImpl(
             endpointProvider = provider,
             externalScope = CoroutineScope(SupervisorJob() + Dispatchers.Default),
         )
-        return probe.testConnection(provider)
+        return try {
+            probe.testConnection(provider)
+        } catch (e: UnknownHostKeyException) {
+            ConnectionTestResult.UnknownHostKey(
+                detail = "${e.host} presented an unknown key (${e.fingerprint}). " +
+                    "Verify it out of band, then approve below.",
+                profileId = e.profileId,
+                host = e.host,
+                fingerprint = e.fingerprint,
+                knownHostsLine = e.knownHostsLine,
+            )
+        }
     }
 
     companion object {

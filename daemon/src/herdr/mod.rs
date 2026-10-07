@@ -188,6 +188,18 @@ impl HerdrClient {
             .context("pane.read response has no read.text")
     }
 
+    /// Tab geometry for a pane: `(cols, rows)` of the pane rect as Herdr's layout
+    /// engine reports it. Used to restore the TUI's own size on terminal detach
+    /// instead of a hardcoded fallback that never matches any real window.
+    pub async fn pane_layout_size(&self, pane_id: &str) -> Result<(u32, u32)> {
+        let result = self.request("pane.layout", json!({"pane_id": pane_id})).await?;
+        let layout = result.get("layout").context("pane.layout response has no layout")?;
+        let area = layout.get("area").context("pane.layout response has no area")?;
+        let w = area.get("width").and_then(|v| v.as_u64()).context("pane.layout area has no width")?;
+        let h = area.get("height").and_then(|v| v.as_u64()).context("pane.layout area has no height")?;
+        Ok((w.min(400) as u32, h.min(200) as u32))
+    }
+
     pub async fn send_text(&self, pane_id: &str, text: &str) -> Result<()> {
         self.request("pane.send_text", json!({"pane_id": pane_id, "text": text}))
             .await?;

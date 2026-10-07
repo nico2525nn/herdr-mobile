@@ -77,7 +77,9 @@ impl TerminalRegistry {
     /// Attach (or reuse) and bridge the child to `socket`. Returns when either side closes.
     ///
     /// `restore` is the viewport to hand back to Herdr when this bridge goes away, so the
-    /// pane does not keep the phone's grid after we detach.
+    /// pane does not keep the phone's grid after we detach. `None` means: ask Herdr for
+    /// the pane's own layout now and hand that back — the TUI's size, whatever window it
+    /// currently has. An explicit value overrides it; `Some((0, _))` disables the restore.
     pub async fn bridge(
         self: &Arc<Self>,
         socket: WebSocket,
@@ -88,8 +90,19 @@ impl TerminalRegistry {
         restore: Option<(u32, u32)>,
     ) -> Result<()> {
         let session = self.attach(pane_id.clone(), takeover, cols, rows).await?;
-        if let Some((cols, rows)) = restore {
-            let _ = session.restore_tx.send(RestoreViewport { cols, rows }).await;
+        let restore: Option<RestoreViewport> = match restore {
+            // Explicit client value (or disable) wins.
+            Some((0, _)) => None,
+            Some((c, r)) => Some(RestoreViewport { cols: c, rows: r }),
+            // No client opinion: learn the TUI's own geometry now, before the phone's
+            // resize lands, and hand exactly that back on detach.
+            None => self.herdr.pane_layout_size(&pane_id).await.ok().map(|(c, r)| {
+                tracing::debug!("learned TUI geometry for {pane_id}: {c}x{r}");
+                RestoreViewport { cols: c, rows: r }
+            }),
+        };
+        if let Some(req) = restore {
+            let _ = session.restore_tx.send(req).await;
         }
         run_bridge(session, socket, self.clone(), pane_id).await
     }

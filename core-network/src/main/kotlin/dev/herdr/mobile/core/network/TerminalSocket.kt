@@ -93,9 +93,13 @@ class TerminalSocket(
             put("cols", cols.toString())
             put("rows", rows.toString())
             if (takeover) put("takeover", "true")
-            val (restoreCols, restoreRows) = restore ?: (120 to 30)
-            put("restore_cols", restoreCols.toString())
-            put("restore_rows", restoreRows.toString())
+            // No restore_* params: the daemon learns the pane's own TUI geometry at
+            // attach time and hands exactly that back on detach. Only an explicit
+            // restore overrides it (restore_cols=0 disables).
+            restore?.let { (restoreCols, restoreRows) ->
+                put("restore_cols", restoreCols.toString())
+                put("restore_rows", restoreRows.toString())
+            }
             endpoint.token?.let { put("token", it) }
         }
         val request = Request.Builder()

@@ -28,6 +28,14 @@ class SshClassifyTest {
     }
 
     @Test
+    fun `first-use reject classifies as HOST_KEY_UNKNOWN`() {
+        assertEquals(
+            FailureKind.HOST_KEY_UNKNOWN,
+            classifySshError("reject HostKey: 100.64.34.116"),
+        )
+    }
+
+    @Test
     fun `anything else is UNREACHABLE`() {
         assertEquals(FailureKind.UNREACHABLE, classifySshError("Connection timed out"))
     }

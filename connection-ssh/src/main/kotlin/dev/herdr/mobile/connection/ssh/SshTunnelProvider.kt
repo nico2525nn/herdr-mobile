@@ -4,6 +4,7 @@ import com.jcraft.jsch.JSch
 import com.jcraft.jsch.Session
 import dev.herdr.mobile.core.model.FailureKind
 import dev.herdr.mobile.core.model.HostProfile
+import dev.herdr.mobile.core.model.UnknownHostKeyException
 import dev.herdr.mobile.core.network.DaemonEndpoint
 import dev.herdr.mobile.core.network.DaemonEndpointProvider
 import kotlinx.coroutines.CoroutineScope
@@ -99,6 +100,23 @@ class SshTunnelProvider(
         try {
             session.connect(15_000)
         } catch (e: Exception) {
+            // First-use path: session.hostKey holds what the server presented even
+            // though the connect failed. Surface it for TOFU instead of a dead-end
+            // "reject HostKey" message the user cannot act on.
+            if (known == null) {
+                runCatching { session.hostKey }.getOrNull()?.let { hk ->
+                    val type = hk.type
+                    val key = hk.key
+                    if (type.isNotBlank() && key.isNotBlank()) {
+                        throw UnknownHostKeyException(
+                            profileId = profile.id,
+                            host = profile.host,
+                            fingerprint = runCatching { hk.getFingerPrint(jsch) }.getOrNull() ?: type,
+                            knownHostsLine = "${profile.host} $type $key",
+                        )
+                    }
+                }
+            }
             throw SshException(classifyConnect(e), "SSH connect failed: ${e.message}", e)
         }
         val localPort = freePort()
@@ -139,6 +157,9 @@ class SshTunnelProvider(
             message.contains("UnknownHostException", ignoreCase = true) -> FailureKind.DNS
             message.contains("Auth fail", ignoreCase = true) ||
                 message.contains("authentication", ignoreCase = true) -> FailureKind.AUTH
+            // JSch "reject HostKey" = no stored key to check against (first use);
+            // anything else mentioning HostKey = stored key disagrees (possible attack).
+            message.contains("reject HostKey", ignoreCase = true) -> FailureKind.HOST_KEY_UNKNOWN
             message.contains("HostKey", ignoreCase = true) -> FailureKind.HOST_KEY_MISMATCH
             else -> FailureKind.UNREACHABLE
         }
@@ -153,6 +174,7 @@ fun classifySshError(message: String): FailureKind {
     return when {
         message.contains("UnknownHostException", ignoreCase = true) -> FailureKind.DNS
         message.contains("Auth fail", ignoreCase = true) -> FailureKind.AUTH
+        message.contains("reject HostKey", ignoreCase = true) -> FailureKind.HOST_KEY_UNKNOWN
         message.contains("HostKey", ignoreCase = true) -> FailureKind.HOST_KEY_MISMATCH
         else -> FailureKind.UNREACHABLE
     }

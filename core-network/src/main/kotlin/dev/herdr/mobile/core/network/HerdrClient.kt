@@ -334,6 +334,22 @@ class HerdrClient(
         try {
             ep = provider.open()
         } catch (e: Exception) {
+            // TOFU payload must survive as typed data, not a classified string:
+            // walk the cause chain for UnknownHostKeyException specifically.
+            var cause: Throwable? = e
+            while (cause != null) {
+                if (cause is dev.herdr.mobile.core.model.UnknownHostKeyException) {
+                    return ConnectionTestResult.UnknownHostKey(
+                        detail = "${cause.host} presented an unknown key (${cause.fingerprint}). " +
+                            "Verify it out of band, then approve below.",
+                        profileId = cause.profileId,
+                        host = cause.host,
+                        fingerprint = cause.fingerprint,
+                        knownHostsLine = cause.knownHostsLine,
+                    )
+                }
+                cause = cause.cause
+            }
             return ConnectionTestResult.Failure(classify(e), userMessage(e))
         }
         return try {
@@ -389,6 +405,9 @@ class HerdrClient(
                     "protocol_mismatch" -> FailureKind.PROTOCOL_MISMATCH
                     else -> FailureKind.UNKNOWN
                 }
+            }
+            if (cause.message?.contains("reject HostKey", ignoreCase = true) == true) {
+                return FailureKind.HOST_KEY_UNKNOWN
             }
             if (cause.message?.contains("HostKey", ignoreCase = true) == true ||
                 cause.message?.contains("host key", ignoreCase = true) == true

@@ -24,6 +24,18 @@ data class SettingsUiState(
     val testing: Boolean = false,
     val testResult: ConnectionTestResult? = null,
     val error: String? = null,
+    /** TOFU prompt: server presented an unknown host key during the last test. */
+    val pendingHostKey: PendingHostKey? = null,
+)
+
+/** Fingerprint + known_hosts line the user is asked to approve (TOFU). */
+data class PendingHostKey(
+    val profileId: String,
+    val host: String,
+    /** e.g. `SHA256:abc... (ssh-ed25519)` — whatever JSch reported. */
+    val fingerprint: String,
+    /** Full `host type base64` line to store on approval. */
+    val knownHostsLine: String,
 )
 
 class SettingsViewModel(
@@ -135,9 +147,19 @@ class SettingsViewModel(
     fun testConnection() {
         testJob?.cancel()
         testJob = viewModelScope.launch {
-            _ui.value = _ui.value.copy(testing = true, testResult = null, error = null)
+            _ui.value = _ui.value.copy(testing = true, testResult = null, error = null, pendingHostKey = null)
             runCatching { repository.testConnection() }
-                .onSuccess { _ui.value = _ui.value.copy(testing = false, testResult = it) }
+                .onSuccess { result ->
+                    val pending = (result as? ConnectionTestResult.UnknownHostKey)?.let {
+                        PendingHostKey(
+                            profileId = it.profileId,
+                            host = it.host,
+                            fingerprint = it.fingerprint,
+                            knownHostsLine = it.knownHostsLine,
+                        )
+                    }
+                    _ui.value = _ui.value.copy(testing = false, testResult = result, pendingHostKey = pending)
+                }
                 .onFailure {
                     _ui.value = _ui.value.copy(
                         testing = false,
@@ -145,6 +167,26 @@ class SettingsViewModel(
                     )
                 }
         }
+    }
+
+    /**
+     * Approve the pending unknown host key (TOFU): persist the known_hosts line, then
+     * re-run the connection test so success is visible immediately.
+     */
+    fun approveHostKey() {
+        val pending = _ui.value.pendingHostKey ?: return
+        viewModelScope.launch {
+            runCatching { repository.acceptHostKey(pending.profileId, pending.knownHostsLine) }
+                .onSuccess {
+                    _ui.value = _ui.value.copy(pendingHostKey = null)
+                    testConnection()
+                }
+                .onFailure { _ui.value = _ui.value.copy(error = it.message) }
+        }
+    }
+
+    fun dismissHostKey() {
+        _ui.value = _ui.value.copy(pendingHostKey = null)
     }
 
     fun clearError() {

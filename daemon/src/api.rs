@@ -477,15 +477,16 @@ async fn terminal_ws(
     let rows = query.get("rows").and_then(|r| r.parse::<u32>().ok()).unwrap_or(30).clamp(5, 200);
     let takeover = query.get("takeover").map(|t| t == "true").unwrap_or(false);
     // Viewport to hand back to Herdr on detach, so the pane does not keep the phone's
-    // narrow grid after we go away. Defaults to 120x30 (Herdr's own fallback); pass
-    // `restore_cols=0` to disable the restore.
+    // narrow grid after we go away. No hardcoded fallback here: when the client sends
+    // nothing, the bridge learns the pane's own layout from Herdr at attach time.
+    // `restore_cols=0` disables the restore.
     let restore = match (
         query.get("restore_cols").and_then(|c| c.parse::<u32>().ok()),
         query.get("restore_rows").and_then(|r| r.parse::<u32>().ok()),
     ) {
         (Some(0), _) => None,
         (Some(c), Some(r)) if c > 0 && r > 0 => Some((c.min(400), r.min(200))),
-        _ => Some((120, 30)),
+        _ => None,
     };
     let terminals = state.terminals.clone();
     ws.on_upgrade(move |socket| async move {

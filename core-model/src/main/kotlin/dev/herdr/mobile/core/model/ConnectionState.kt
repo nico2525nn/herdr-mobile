@@ -36,7 +36,32 @@ sealed interface ConnectionTestResult {
     ) : ConnectionTestResult
 
     data class Failure(val kind: FailureKind, val detail: String) : ConnectionTestResult
+
+    /**
+     * The server presented a host key with no stored entry. The detail is human text;
+     * [pending] carries the TOFU approval payload (fingerprint + known_hosts line).
+     */
+    data class UnknownHostKey(
+        val detail: String,
+        val profileId: String,
+        val host: String,
+        val fingerprint: String,
+        val knownHostsLine: String,
+    ) : ConnectionTestResult
 }
+
+/**
+ * The server presented a host key with no stored entry to check against. Carries what
+ * the user needs for TOFU approval: a fingerprint to verify out of band and the full
+ * known_hosts line to persist on approval. Lives in core-model so both the SSH provider
+ * (thrower) and the client classifier (catcher) share it without a module cycle.
+ */
+class UnknownHostKeyException(
+    val profileId: String,
+    val host: String,
+    val fingerprint: String,
+    val knownHostsLine: String,
+) : Exception("Unknown host key for $host ($fingerprint)")
 
 enum class FailureKind {
     /** The host name did not resolve. */
@@ -50,6 +75,13 @@ enum class FailureKind {
 
     /** The stored host key does not match the one presented by the server. */
     HOST_KEY_MISMATCH,
+
+    /**
+     * The server presented a host key we have never seen. Unlike [HOST_KEY_MISMATCH]
+     * (stored key disagrees — possible attack, never auto-accept), this asks the user
+     * to verify the fingerprint out of band and approve it (TOFU).
+     */
+    HOST_KEY_UNKNOWN,
 
     /** The daemon answered but the Herdr socket behind it is not usable. */
     DAEMON_UNAVAILABLE,

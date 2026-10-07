@@ -37,4 +37,10 @@ interface SettingsRepository {
     suspend fun setActiveProfile(profileId: String?)
 
     suspend fun testConnection(): ConnectionTestResult
+
+    /**
+     * TOFU accept: stores [knownHostsLine] (a single `host type base64` line) under the
+     * profile's host-key alias so the next connect verifies against it. Returns the alias.
+     */
+    suspend fun acceptHostKey(profileId: String, knownHostsLine: String): String
 }
