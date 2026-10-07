@@ -438,6 +438,25 @@ private fun TerminalSurface(
                 settings.terminalLineHeight,
             )
             view.setCursorStyle(settings.cursorStyle)
+            // Rebind every composition: the factory closure runs once and its
+            // captured `bridge` State goes stale after a tab switch (remember
+            // yields a NEW State object). Stale callbacks tap/scroll the
+            // released backend, silently dropped by runCatching.
+            view.onDirectInput = { text -> onSendText(text) }
+            view.onDirectDelete = { onSendBytes(byteArrayOf(0x7F)) }
+            view.onTapCell = { col, row ->
+                val b = bridge
+                if (b != null) {
+                    scope.launch { runCatching { b.mouse("down", "left", col, row) } }
+                }
+            }
+            view.onSelection = { text ->
+                if (text.isNotEmpty()) {
+                    clipboard.setText(AnnotatedString(text))
+                }
+            }
+            view.onScrollLines = { lines -> bridge?.scrollBy(lines) }
+            view.onZoomFont = { _ -> }
         },
         modifier = Modifier
             .fillMaxSize()

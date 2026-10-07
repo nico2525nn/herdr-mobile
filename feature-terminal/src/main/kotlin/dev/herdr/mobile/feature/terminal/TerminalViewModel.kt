@@ -19,6 +19,7 @@ import kotlinx.coroutines.Job
 import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
+import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
@@ -151,12 +152,17 @@ class TerminalViewModel(
                 } catch (_: Exception) {
                 }
             }
+            // A cancelled (superseded) job must not publish: without this check
+            // two racing attaches both reach backendFlow and the loser leaks a
+            // live controller while last-writer-wins shows the wrong pane.
+            ensureActive()
             val connection = try {
                 client.openTerminal(target.paneId, cols = 90, rows = 30)
             } catch (e: Exception) {
                 messageFlow.value = "Cannot attach: ${e.message}"
                 return@launch
             }
+            ensureActive()
             messageFlow.value = null
             backendFlow.value = ConnectionTerminalBackend(connection, viewModelScope)
         }

@@ -410,6 +410,12 @@ async fn run_bridge_inner(
     registry: Arc<TerminalRegistry>,
     pane_id: String,
 ) -> Result<()> {
+    // Subscribe BEFORE any handshake IO: run_session can fail fast (spawn
+    // failure -> attach_failed on closed_tx, a broadcast with no replay). A
+    // bridge subscribing after that send would miss it and hang on a blank
+    // terminal that never errors.
+    let mut frames_rx = session.frames_tx.subscribe();
+    let mut closed_rx = session.closed_tx.subscribe();
     // Pre-populate the view before the first frame: visible screen wrapped in home+clear.
     let prelude = match registry.herdr.pane_read_visible(&pane_id).await {
         Ok(text) => format!("\x1b[2J\x1b[H{text}").into_bytes(),
@@ -420,8 +426,6 @@ async fn run_bridge_inner(
     };
 
     let (mut sink, mut stream) = socket.split();
-    let mut frames_rx = session.frames_tx.subscribe();
-    let mut closed_rx = session.closed_tx.subscribe();
 
     // Replay the latest known geometry first so the client never sizes blind.
     let ready = serde_json::json!({
