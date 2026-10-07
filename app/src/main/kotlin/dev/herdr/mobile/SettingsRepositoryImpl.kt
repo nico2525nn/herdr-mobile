@@ -276,8 +276,10 @@ class SettingsRepositoryImpl(
     }
 
     companion object {
-        fun create(context: Context): SettingsRepositoryImpl {
-            val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+        fun create(
+            context: Context,
+            scope: CoroutineScope = CoroutineScope(SupervisorJob() + Dispatchers.Default),
+        ): SettingsRepositoryImpl {
             return SettingsRepositoryImpl(context.applicationContext, KeystoreSecrets(context), scope)
         }
     }
