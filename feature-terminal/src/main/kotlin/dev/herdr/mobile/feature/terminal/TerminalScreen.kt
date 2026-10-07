@@ -9,6 +9,8 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.imePadding
+import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.pager.HorizontalPager
@@ -65,7 +67,11 @@ fun TerminalScreen(
     var tabMenu by remember { mutableStateOf<TabMenuTarget?>(null) }
     var renameTarget by remember { mutableStateOf<TabMenuTarget?>(null) }
 
-    Column(modifier = modifier.fillMaxSize()) {
+    // navigationBarsPadding keeps the panel above the gesture bar when the
+    // keyboard is hidden; imePadding lifts it above the keyboard when shown.
+    // The terminal Box above shrinks accordingly, so its bottom edge always
+    // sits exactly on top of the panel — never behind the keyboard.
+    Column(modifier = modifier.fillMaxSize().navigationBarsPadding().imePadding()) {
         WorkspaceRail(
             state = state,
             onNavigateHome = onNavigateHome,
@@ -109,6 +115,7 @@ fun TerminalScreen(
                 TerminalSurface(
                     state = state,
                     onSendBytes = { viewModel.sendBytes(it) },
+                    onSendText = { viewModel.sendText(it) },
                 )
             }
         }
@@ -286,6 +293,7 @@ private fun TerminalPlaceholder(connection: ConnectionState, hasTarget: Boolean)
 private fun TerminalSurface(
     state: TerminalUiState,
     onSendBytes: (ByteArray) -> Unit,
+    onSendText: (String) -> Unit,
 ) {
     val backend = state.backend ?: return
     val settings = state.settings
@@ -310,6 +318,8 @@ private fun TerminalSurface(
                     settings.terminalLineHeight,
                 )
                 view.setCursorStyle(settings.cursorStyle)
+                view.onDirectInput = { text -> onSendText(text) }
+                view.onDirectDelete = { onSendBytes(byteArrayOf(0x7F)) }
                 view.onScrollLines = { lines ->
                     bridge?.scrollBy(lines)
                     if (lines != 0) {

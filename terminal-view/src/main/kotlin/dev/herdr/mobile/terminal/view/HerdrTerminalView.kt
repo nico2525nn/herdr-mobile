@@ -4,11 +4,16 @@ import android.content.Context
 import android.graphics.Canvas
 import android.graphics.Paint
 import android.graphics.Typeface
+import android.os.Bundle
 import android.util.AttributeSet
 import android.view.GestureDetector
 import android.view.MotionEvent
 import android.view.ScaleGestureDetector
 import android.view.View
+import android.view.inputmethod.BaseInputConnection
+import android.view.inputmethod.EditorInfo
+import android.view.inputmethod.InputConnection
+import android.view.inputmethod.InputMethodManager
 import dev.herdr.mobile.core.model.CursorStyle
 import dev.herdr.mobile.terminal.emulator.TerminalCell
 import dev.herdr.mobile.terminal.emulator.TerminalColor
@@ -39,6 +44,10 @@ class HerdrTerminalView @JvmOverloads constructor(
     var onTapCell: ((col: Int, row: Int) -> Unit)? = null
     var onZoomFont: ((deltaSp: Float) -> Unit)? = null
     var onSelection: ((text: String) -> Unit)? = null
+    /** ASCII / direct keys from the soft keyboard (no composition). */
+    var onDirectInput: ((text: String) -> Unit)? = null
+    /** DEL key from the soft keyboard. */
+    var onDirectDelete: (() -> Unit)? = null
 
     private var frame: FrameSnapshot = FrameSnapshot.empty()
     private var scheme: TerminalColorScheme? = null
@@ -61,6 +70,10 @@ class HerdrTerminalView @JvmOverloads constructor(
     private val gestures = GestureDetector(context, object : GestureDetector.SimpleOnGestureListener() {
         override fun onSingleTapUp(e: MotionEvent): Boolean {
             cellAt(e.x, e.y)?.let { (col, row) -> onTapCell?.invoke(col, row) }
+            // Terminal tap always summons the keyboard: direct ASCII input goes
+            // through our InputConnection, CJK goes through the bottom panel.
+            requestFocus()
+            showKeyboard()
             return true
         }
 
@@ -235,6 +248,47 @@ class HerdrTerminalView @JvmOverloads constructor(
         return true
     }
 
+    override fun onKeyDown(keyCode: Int, event: android.view.KeyEvent): Boolean {
+        // Hardware / adb key events bypass the InputConnection entirely.
+        if (event.action == android.view.KeyEvent.ACTION_DOWN) {
+            when (keyCode) {
+                android.view.KeyEvent.KEYCODE_DEL -> {
+                    onDirectDelete?.invoke()
+                    return true
+                }
+                android.view.KeyEvent.KEYCODE_ENTER -> {
+                    onDirectInput?.invoke("\r")
+                    return true
+                }
+                else -> {
+                    val c = event.unicodeChar
+                    if (c != 0) {
+                        onDirectInput?.invoke(String(Character.toChars(c)))
+                        return true
+                    }
+                }
+            }
+        }
+        return super.onKeyDown(keyCode, event)
+    }
+
+    override fun onKeyUp(keyCode: Int, event: android.view.KeyEvent): Boolean {
+        // Consume to keep focus; the work happens on key down.
+        return true
+    }
+
+    override fun onKeyPreIme(keyCode: Int, event: android.view.KeyEvent): Boolean {
+        // System back while the keyboard is up: dismiss the keyboard instead of
+        // leaving the terminal screen. The view keeps focus for the next tap.
+        if (keyCode == android.view.KeyEvent.KEYCODE_BACK &&
+            event.action == android.view.KeyEvent.ACTION_UP
+        ) {
+            hideKeyboard()
+            return true
+        }
+        return super.onKeyPreIme(keyCode, event)
+    }
+
     override fun onDraw(canvas: Canvas) {
         super.onDraw(canvas)
         val snapshot = frame
@@ -342,5 +396,75 @@ class HerdrTerminalView @JvmOverloads constructor(
     override fun onDetachedFromWindow() {
         super.onDetachedFromWindow()
         scaleDetector = null
+    }
+
+    /** Show the soft keyboard for direct input. No-op when nothing consumes it. */
+    fun showKeyboard() {
+        requestFocus()
+        val imm = context.getSystemService(Context.INPUT_METHOD_SERVICE) as? InputMethodManager
+            ?: return
+        imm.showSoftInput(this, InputMethodManager.SHOW_IMPLICIT)
+    }
+
+    fun hideKeyboard() {
+        val imm = context.getSystemService(Context.INPUT_METHOD_SERVICE) as? InputMethodManager
+            ?: return
+        imm.hideSoftInputFromWindow(windowToken, 0)
+    }
+
+    override fun onCheckIsTextEditor(): Boolean = true
+
+    override fun onCreateInputConnection(outAttrs: EditorInfo): InputConnection {
+        outAttrs.actionLabel = null
+        // Plain text with no suggestions: the terminal interprets every key itself.
+        // No TYPE_TEXT_FLAG_NO_SUGGESTIONS on purpose — Gboard needs the class only.
+        outAttrs.inputType = android.text.InputType.TYPE_CLASS_TEXT or
+            android.text.InputType.TYPE_TEXT_VARIATION_VISIBLE_PASSWORD or
+            android.text.InputType.TYPE_TEXT_FLAG_NO_SUGGESTIONS
+        outAttrs.imeOptions = EditorInfo.IME_ACTION_NONE or
+            EditorInfo.IME_FLAG_NO_FULLSCREEN
+        return object : BaseInputConnection(this, false) {
+            override fun commitText(text: CharSequence?, newCursorPosition: Int): Boolean {
+                if (!text.isNullOrEmpty()) onDirectInput?.invoke(text.toString())
+                return true
+            }
+
+            override fun setComposingText(text: CharSequence?, newCursorPosition: Int): Boolean {
+                // CJK composition belongs to the bottom pre-composition panel, not the
+                // grid: commit it as-is rather than dropping keystrokes silently.
+                if (!text.isNullOrEmpty()) onDirectInput?.invoke(text.toString())
+                return true
+            }
+
+            override fun deleteSurroundingText(beforeLength: Int, afterLength: Int): Boolean {
+                repeat(beforeLength.coerceAtLeast(1)) { onDirectDelete?.invoke() }
+                return true
+            }
+
+            override fun sendKeyEvent(event: android.view.KeyEvent): Boolean {
+                if (event.action == android.view.KeyEvent.ACTION_DOWN) {
+                    when (event.keyCode) {
+                        android.view.KeyEvent.KEYCODE_DEL -> onDirectDelete?.invoke()
+                        android.view.KeyEvent.KEYCODE_ENTER ->
+                            onDirectInput?.invoke("\r")
+                        else -> {
+                            val c = event.unicodeChar
+                            if (c != 0) onDirectInput?.invoke(String(Character.toChars(c)))
+                        }
+                    }
+                }
+                return true
+            }
+
+            override fun performEditorAction(editorAction: Int): Boolean {
+                if (editorAction == EditorInfo.IME_ACTION_DONE ||
+                    editorAction == EditorInfo.IME_ACTION_GO
+                ) {
+                    onDirectInput?.invoke("\r")
+                    return true
+                }
+                return super.performEditorAction(editorAction)
+            }
+        }
     }
 }
