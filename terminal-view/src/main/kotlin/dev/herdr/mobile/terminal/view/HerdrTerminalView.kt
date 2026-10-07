@@ -251,62 +251,65 @@ class HerdrTerminalView @JvmOverloads constructor(
     override fun onKeyDown(keyCode: Int, event: android.view.KeyEvent): Boolean {
         // Hardware / adb key events bypass the InputConnection entirely.
         if (event.action == android.view.KeyEvent.ACTION_DOWN) {
-            val handled = when (keyCode) {
-                android.view.KeyEvent.KEYCODE_DEL -> {
-                    onDirectDelete?.invoke()
-                    true
-                }
-                android.view.KeyEvent.KEYCODE_ENTER -> {
-                    onDirectInput?.invoke("\r")
-                    true
-                }
-                android.view.KeyEvent.KEYCODE_DPAD_UP -> {
-                    onDirectInput?.invoke("\u001B[A")
-                    true
-                }
-                android.view.KeyEvent.KEYCODE_DPAD_DOWN -> {
-                    onDirectInput?.invoke("\u001B[B")
-                    true
-                }
-                android.view.KeyEvent.KEYCODE_DPAD_LEFT -> {
-                    onDirectInput?.invoke("\u001B[D")
-                    true
-                }
-                android.view.KeyEvent.KEYCODE_DPAD_RIGHT -> {
-                    onDirectInput?.invoke("\u001B[C")
-                    true
-                }
-                android.view.KeyEvent.KEYCODE_TAB -> {
-                    onDirectInput?.invoke("\t")
-                    true
-                }
-                android.view.KeyEvent.KEYCODE_ESCAPE -> {
-                    onDirectInput?.invoke("\u001B")
-                    true
-                }
-                else -> {
-                    val c = event.unicodeChar
-                    // Ctrl+key often reports unicodeChar==0: synthesize the control
-                    // byte from the keycode letter instead of dropping it.
-                    if (c != 0) {
-                        onDirectInput?.invoke(String(Character.toChars(c)))
-                        true
-                    } else if (event.isCtrlPressed) {
-                        val ctrl = keyCodeToCtrlByte(keyCode)
-                        if (ctrl != null) {
-                            onDirectInput?.invoke(String(byteArrayOf(ctrl), Charsets.ISO_8859_1))
-                            true
-                        } else {
-                            false
-                        }
-                    } else {
-                        false
-                    }
-                }
-            }
-            if (handled) return true
+            if (handleHardwareKey(keyCode, event)) return true
         }
         return super.onKeyDown(keyCode, event)
+    }
+
+    /**
+     * Shared mapping for onKeyDown and InputConnection.sendKeyEvent: DPAD/TAB/ESC
+     * escape sequences, DEL/ENTER, printable chars, and Ctrl chords synthesized
+     * from the keycode when unicodeChar==0. Returns true when consumed.
+     */
+    private fun handleHardwareKey(keyCode: Int, event: android.view.KeyEvent): Boolean {
+        when (keyCode) {
+            android.view.KeyEvent.KEYCODE_DEL -> {
+                onDirectDelete?.invoke()
+                return true
+            }
+            android.view.KeyEvent.KEYCODE_ENTER -> {
+                onDirectInput?.invoke("\r")
+                return true
+            }
+            android.view.KeyEvent.KEYCODE_DPAD_UP -> {
+                onDirectInput?.invoke("\u001B[A")
+                return true
+            }
+            android.view.KeyEvent.KEYCODE_DPAD_DOWN -> {
+                onDirectInput?.invoke("\u001B[B")
+                return true
+            }
+            android.view.KeyEvent.KEYCODE_DPAD_LEFT -> {
+                onDirectInput?.invoke("\u001B[D")
+                return true
+            }
+            android.view.KeyEvent.KEYCODE_DPAD_RIGHT -> {
+                onDirectInput?.invoke("\u001B[C")
+                return true
+            }
+            android.view.KeyEvent.KEYCODE_TAB -> {
+                onDirectInput?.invoke("\t")
+                return true
+            }
+            android.view.KeyEvent.KEYCODE_ESCAPE -> {
+                onDirectInput?.invoke("\u001B")
+                return true
+            }
+        }
+        val c = event.unicodeChar
+        // Ctrl+key often reports unicodeChar==0: synthesize the control
+        // byte from the keycode letter instead of dropping it.
+        if (c != 0) {
+            onDirectInput?.invoke(String(Character.toChars(c)))
+            return true
+        } else if (event.isCtrlPressed) {
+            val ctrl = keyCodeToCtrlByte(keyCode)
+            if (ctrl != null) {
+                onDirectInput?.invoke(String(byteArrayOf(ctrl), Charsets.ISO_8859_1))
+                return true
+            }
+        }
+        return false
     }
 
     private fun keyCodeToCtrlByte(keyCode: Int): Byte? {
@@ -514,16 +517,12 @@ class HerdrTerminalView @JvmOverloads constructor(
             }
 
             override fun sendKeyEvent(event: android.view.KeyEvent): Boolean {
+                // Same mapping as onKeyDown (DPAD/TAB/ESC/Ctrl chords): the IME
+                // and hardware paths must agree, or keys silently differ by source.
                 if (event.action == android.view.KeyEvent.ACTION_DOWN) {
-                    when (event.keyCode) {
-                        android.view.KeyEvent.KEYCODE_DEL -> onDirectDelete?.invoke()
-                        android.view.KeyEvent.KEYCODE_ENTER ->
-                            onDirectInput?.invoke("\r")
-                        else -> {
-                            val c = event.unicodeChar
-                            if (c != 0) onDirectInput?.invoke(String(Character.toChars(c)))
-                        }
-                    }
+                    if (handleHardwareKey(event.keyCode, event)) return true
+                    val c = event.unicodeChar
+                    if (c != 0) onDirectInput?.invoke(String(Character.toChars(c)))
                 }
                 return true
             }

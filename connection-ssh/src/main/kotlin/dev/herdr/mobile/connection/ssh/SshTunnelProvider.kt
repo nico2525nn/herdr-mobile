@@ -122,7 +122,12 @@ class SshTunnelProvider(
             }
             throw SshException(classifyConnect(e), "SSH connect failed: ${e.message}", e)
         }
-        val localPort = freePort()
+        // Race-free port pick: hold a ServerSocket open to reserve the port,
+        // read its number, then close it immediately before forwarding. The
+        // window is microseconds (vs. close-then-rebind-later), and JSch's
+        // setPortForwardingL needs a CLOSED port — forwarding onto a HELD
+        // socket fails with "cannot be bound".
+        val localPort = ServerSocket(0).use { it.localPort }
         try {
             session.setPortForwardingL(localPort, profile.daemonHost, profile.daemonPort)
         } catch (e: Exception) {
@@ -148,10 +153,6 @@ class SshTunnelProvider(
         val session = sessionRef.getAndSet(null)
         runCatching { session?.disconnect() }
         Unit
-    }
-
-    private fun freePort(): Int {
-        ServerSocket(0).use { return it.localPort }
     }
 
     private fun classifyConnect(e: Exception): FailureKind {

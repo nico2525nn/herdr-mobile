@@ -42,12 +42,23 @@ class AppContainer(context: Context) {
             externalScope = scope,
         )
         // Rebuild the provider whenever transport-relevant settings change; the client
-        // picks the new one up on its next (re)connect.
+        // picks the new one up on its next (re)connect. The key covers the full
+        // profile content (host/port/user/aliases), not just the id: editing any
+        // field of the active profile must tear down the stale tunnel, or edits
+        // apply only after a process restart.
         scope.launch {
             settingsRepository.settings
-                .map { s -> settingsRepository.providerFor(s)?.id to s.transportMode }
+                .map { s ->
+                    val active = s.hostProfiles.firstOrNull { it.id == s.activeProfileId }
+                        ?: s.hostProfiles.firstOrNull()
+                    Triple(
+                        settingsRepository.providerFor(s)?.id,
+                        s.transportMode,
+                        active,
+                    )
+                }
                 .distinctUntilChanged()
-                .collect { (id, _) ->
+                .collect { (id, _, _) ->
                     val current = settingsRepository.settings.value
                     val rebuilt = settingsRepository.providerFor(current)
                     if (rebuilt?.id != providerFlow.value?.id && rebuilt != null ||

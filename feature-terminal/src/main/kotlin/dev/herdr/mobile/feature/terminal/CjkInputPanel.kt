@@ -21,8 +21,6 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalClipboardManager
-import androidx.compose.ui.platform.LocalFocusManager
-import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
@@ -40,14 +38,14 @@ fun CjkInputPanel(
     modifier: Modifier = Modifier,
 ) {
     var text by remember { mutableStateOf("") }
-    val focus = LocalFocusManager.current
     val clipboard = LocalClipboardManager.current
 
     fun commit() {
         if (text.isEmpty()) return
         onSend(text)
         text = ""
-        focus.clearFocus(force = true)
+        // Deliberately NOT clearing focus: continuous CJK input must keep the
+        // keyboard up. The user dismisses it with system back when done.
     }
 
     Row(
@@ -60,7 +58,8 @@ fun CjkInputPanel(
             onValueChange = { text = it },
             modifier = Modifier.weight(1f),
             placeholder = { Text("Type, convert, then send") },
-            singleLine = true,
+            singleLine = false,
+            maxLines = 3,
             keyboardOptions = KeyboardOptions(
                 keyboardType = KeyboardType.Text,
                 imeAction = ImeAction.Send,
@@ -81,7 +80,6 @@ fun CjkInputPanel(
                 if (!pasted.isNullOrEmpty()) {
                     onSend(pasted)
                     text = ""
-                    focus.clearFocus(force = true)
                 }
             },
         ) {
