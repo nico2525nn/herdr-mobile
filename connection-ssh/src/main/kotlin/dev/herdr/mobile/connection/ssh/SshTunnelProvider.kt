@@ -66,14 +66,17 @@ class SshTunnelProvider(
         JSch.setConfig("ssh-ed25519", "com.jcraft.jsch.bc.SignatureEd25519")
         JSch.setConfig("ssh-ed448", "com.jcraft.jsch.bc.SignatureEd448")
         if (key != null) {
-            runCatching {
+            val keyOk = runCatching {
                 jsch.addIdentity("herdr-mobile-${profile.id}", key.toByteArray(), null, null)
-            }.onFailure {
-                // A corrupt stored key must never block password auth.
+            }.isSuccess
+            if (!keyOk && secret != null) {
+                // A corrupt stored key must never block password auth: skip the
+                // key and continue with the password below.
+                android.util.Log.w("SshTunnel", "stored key unusable, falling back to password auth")
+            } else if (!keyOk) {
                 throw SshException(
                     FailureKind.AUTH,
-                    "Stored key is invalid (${it.message}); re-enter the password or fix the key",
-                    it,
+                    "Stored key is invalid; fix the key or enter a password",
                 )
             }
         }

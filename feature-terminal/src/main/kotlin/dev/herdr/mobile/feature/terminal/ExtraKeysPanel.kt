@@ -56,7 +56,10 @@ fun ExtraKeysPanel(
         modifier = modifier.fillMaxWidth(),
         verticalArrangement = Arrangement.spacedBy(8.dp),
     ) {
-        TerminalKeyEncoder.DEFAULT_LAYOUT.forEach { row ->
+        (TerminalKeyEncoder.DEFAULT_LAYOUT + listOf(TerminalKeyEncoder.LETTER_ROW)).forEach { row ->
+            // The letter row only helps with a latched modifier; without one it
+            // duplicates nothing (letters are typed on the keyboard instead).
+            if (row === TerminalKeyEncoder.LETTER_ROW && latched == null) return@forEach
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.spacedBy(8.dp),

@@ -54,6 +54,22 @@ object TerminalKeyEncoder {
     )
 
     /**
+     * Letter row for Ctrl chords (Ctrl-C / Ctrl-D / …). The two-row panel has no
+     * letters, which made the CTRL latch a dead end; hosts that want Ctrl chords
+     * append this row. Letters send as-is; with a latched CTRL they become 0x01…
+     * via [withModifier], with ALT they become ESC-prefixed.
+     */
+    val LETTER_ROW: List<Key> = listOf(
+        Key("A", bytes = "a".toByteArray()),
+        Key("C", bytes = "c".toByteArray()),
+        Key("D", bytes = "d".toByteArray()),
+        Key("G", bytes = "g".toByteArray()),
+        Key("L", bytes = "l".toByteArray()),
+        Key("R", bytes = "r".toByteArray()),
+        Key("Z", bytes = "z".toByteArray()),
+    )
+
+    /**
      * Apply a latched [modifier] to a printable [key]: `ctrl+c` → 0x03, `alt+x` → ESC x.
      * Non-printable keys ignore the modifier and are sent as-is.
      *

@@ -26,6 +26,7 @@ import dev.herdr.mobile.feature.settings.SettingsRepository
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.cancel
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -33,6 +34,7 @@ import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.withTimeout
 import kotlinx.serialization.builtins.ListSerializer
 import kotlinx.serialization.json.Json
 import java.util.UUID
@@ -277,21 +279,34 @@ class SettingsRepositoryImpl(
         val provider = providerFor(settings)
             ?: return ConnectionTestResult.Failure(FailureKind.UNKNOWN, "No host profile configured")
         // A throwaway client so the test never disturbs the live link.
+        // Scope AND provider are both closed afterwards: probe.testConnection
+        // skips closing when provider === endpointProvider, so without this
+        // every Test tap leaks an SSH session + local forward + scope.
+        val probeScope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
         val probe = HerdrClient(
             endpointProvider = provider,
-            externalScope = CoroutineScope(SupervisorJob() + Dispatchers.Default),
+            externalScope = probeScope,
         )
         return try {
-            probe.testConnection(provider)
-        } catch (e: UnknownHostKeyException) {
-            ConnectionTestResult.UnknownHostKey(
-                detail = "${e.host} presented an unknown key (${e.fingerprint}). " +
-                    "Verify it out of band, then approve below.",
-                profileId = e.profileId,
-                host = e.host,
-                fingerprint = e.fingerprint,
-                knownHostsLine = e.knownHostsLine,
-            )
+            withTimeout(30_000) {
+                try {
+                    probe.testConnection(provider)
+                } catch (e: UnknownHostKeyException) {
+                    ConnectionTestResult.UnknownHostKey(
+                        detail = "${e.host} presented an unknown key (${e.fingerprint}). " +
+                            "Verify it out of band, then approve below.",
+                        profileId = e.profileId,
+                        host = e.host,
+                        fingerprint = e.fingerprint,
+                        knownHostsLine = e.knownHostsLine,
+                    )
+                }
+            }
+        } finally {
+            probeScope.launch {
+                runCatching { provider.close() }
+            }.join()
+            probeScope.cancel()
         }
     }
 
