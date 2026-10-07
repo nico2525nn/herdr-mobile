@@ -33,7 +33,8 @@ class EventSocket(
 
     fun stream(): Flow<Signal> = callbackFlow {
         val ep = endpoint()
-        val url = ep.wsUrl("/v1/events", ep.token?.let { mapOf("token" to it) } ?: emptyMap())
+        // Token travels in the Authorization header only, never the query.
+        val url = ep.wsUrl("/v1/events")
         val request = Request.Builder()
             .url(url)
             .apply { ep.token?.let { header("Authorization", "Bearer $it") } }

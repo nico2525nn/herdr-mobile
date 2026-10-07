@@ -52,5 +52,8 @@ class ConnectionTerminalBackend(
 
     override suspend fun scrollDown(lines: Int) = inner.scrollDown(lines)
 
+    override suspend fun mouse(action: String, button: String, column: Int, row: Int) =
+        inner.mouse(action, button, column, row)
+
     override suspend fun release() = inner.release()
 }

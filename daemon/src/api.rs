@@ -40,20 +40,21 @@ pub fn router(state: AppState) -> Router {
 // Auth
 // ---------------------------------------------------------------------------
 
-fn bearer(headers: &HeaderMap, query: &HashMap<String, String>) -> Option<String> {
-    if let Some(header) = headers.get(axum::http::header::AUTHORIZATION).and_then(|h| h.to_str().ok()) {
-        if let Some(token) = header.strip_prefix("Bearer ") {
-            return Some(token.to_string());
-        }
-    }
-    query.get("token").cloned()
+fn bearer(headers: &HeaderMap) -> Option<String> {
+    // Header only. A query-string fallback would defeat the client's effort to
+    // keep tokens out of URLs (proxies/logs/crash reports).
+    headers
+        .get(axum::http::header::AUTHORIZATION)
+        .and_then(|h| h.to_str().ok())
+        .and_then(|h| h.strip_prefix("Bearer "))
+        .map(str::to_string)
 }
 
-fn check_auth(state: &AppState, headers: &HeaderMap, query: &HashMap<String, String>) -> Result<(), Response> {
+fn check_auth(state: &AppState, headers: &HeaderMap) -> Result<(), Response> {
     let Some(configured) = state.config.token.as_deref() else {
         return Ok(());
     };
-    match bearer(headers, query) {
+    match bearer(headers) {
         Some(presented) if auth::tokens_equal(configured, &presented) => Ok(()),
         _ => Err(api_error(StatusCode::UNAUTHORIZED, "unauthorized", "invalid or missing bearer token")),
     }
@@ -89,7 +90,7 @@ fn herdr_error(e: anyhow::Error) -> Response {
 // ---------------------------------------------------------------------------
 
 async fn health(State(state): State<AppState>, headers: HeaderMap) -> Response {
-    if let Err(e) = check_auth(&state, &headers, &HashMap::new()) {
+    if let Err(e) = check_auth(&state, &headers) {
         return e;
     }
     let (connected, error, version, protocol) = state.cache.health_parts();
@@ -116,7 +117,7 @@ async fn health(State(state): State<AppState>, headers: HeaderMap) -> Response {
 }
 
 async fn snapshot(State(state): State<AppState>, headers: HeaderMap) -> Response {
-    if let Err(e) = check_auth(&state, &headers, &HashMap::new()) {
+    if let Err(e) = check_auth(&state, &headers) {
         return e;
     }
     match state.cache.snapshot() {
@@ -130,7 +131,7 @@ async fn snapshot(State(state): State<AppState>, headers: HeaderMap) -> Response
 }
 
 async fn workspaces(State(state): State<AppState>, headers: HeaderMap) -> Response {
-    if let Err(e) = check_auth(&state, &headers, &HashMap::new()) {
+    if let Err(e) = check_auth(&state, &headers) {
         return e;
     }
     match state.cache.snapshot() {
@@ -152,7 +153,7 @@ async fn workspaces(State(state): State<AppState>, headers: HeaderMap) -> Respon
 }
 
 async fn panes(State(state): State<AppState>, headers: HeaderMap) -> Response {
-    if let Err(e) = check_auth(&state, &headers, &HashMap::new()) {
+    if let Err(e) = check_auth(&state, &headers) {
         return e;
     }
     match state.cache.snapshot() {
@@ -187,7 +188,7 @@ async fn pane_input(
     Path(pane_id): Path<String>,
     Json(body): Json<Value>,
 ) -> Response {
-    if let Err(e) = check_auth(&state, &headers, &HashMap::new()) {
+    if let Err(e) = check_auth(&state, &headers) {
         return e;
     }
     let encoding = body.get("encoding").and_then(|e| e.as_str()).unwrap_or("utf-8");
@@ -232,7 +233,7 @@ async fn pane_interrupt(
     headers: HeaderMap,
     Path(pane_id): Path<String>,
 ) -> Response {
-    if let Err(e) = check_auth(&state, &headers, &HashMap::new()) {
+    if let Err(e) = check_auth(&state, &headers) {
         return e;
     }
     match state.cache.herdr_client().send_keys(&pane_id, &["ctrl+c".to_string()]).await {
@@ -247,7 +248,7 @@ async fn pane_resize(
     Path(pane_id): Path<String>,
     Json(body): Json<Value>,
 ) -> Response {
-    if let Err(e) = check_auth(&state, &headers, &HashMap::new()) {
+    if let Err(e) = check_auth(&state, &headers) {
         return e;
     }
     let cols = body.get("cols").and_then(|c| c.as_u64()).unwrap_or(0) as u32;
@@ -282,7 +283,7 @@ async fn agent_report(
     headers: HeaderMap,
     Json(body): Json<Value>,
 ) -> Response {
-    if let Err(e) = check_auth(&state, &headers, &HashMap::new()) {
+    if let Err(e) = check_auth(&state, &headers) {
         return e;
     }
     let Some(pane_id) = body.get("paneId").and_then(|v| v.as_str()) else {
@@ -324,7 +325,7 @@ async fn tab_create(
     headers: HeaderMap,
     Json(body): Json<Value>,
 ) -> Response {
-    if let Err(e) = check_auth(&state, &headers, &HashMap::new()) {
+    if let Err(e) = check_auth(&state, &headers) {
         return e;
     }
     let Some(workspace_id) = body.get("workspaceId").and_then(|v| v.as_str()) else {
@@ -342,7 +343,7 @@ async fn tab_close(
     headers: HeaderMap,
     Path(tab_id): Path<String>,
 ) -> Response {
-    if let Err(e) = check_auth(&state, &headers, &HashMap::new()) {
+    if let Err(e) = check_auth(&state, &headers) {
         return e;
     }
     match state.cache.herdr_client().tab_close(&tab_id).await {
@@ -357,7 +358,7 @@ async fn tab_rename(
     Path(tab_id): Path<String>,
     Json(body): Json<Value>,
 ) -> Response {
-    if let Err(e) = check_auth(&state, &headers, &HashMap::new()) {
+    if let Err(e) = check_auth(&state, &headers) {
         return e;
     }
     let Some(label) = body.get("label").and_then(|v| v.as_str()).map(str::trim) else {
@@ -379,10 +380,9 @@ async fn tab_rename(
 async fn events_ws(
     State(state): State<AppState>,
     headers: HeaderMap,
-    Query(query): Query<HashMap<String, String>>,
     ws: WebSocketUpgrade,
 ) -> Response {
-    if let Err(e) = check_auth(&state, &headers, &query) {
+    if let Err(e) = check_auth(&state, &headers) {
         return e;
     }
     ws.on_upgrade(move |socket| serve_events(socket, state.bus.clone(), state.cache.clone()))
@@ -470,7 +470,7 @@ async fn terminal_ws(
     Path(pane_id): Path<String>,
     ws: WebSocketUpgrade,
 ) -> Response {
-    if let Err(e) = check_auth(&state, &headers, &query) {
+    if let Err(e) = check_auth(&state, &headers) {
         return e;
     }
     let cols = query.get("cols").and_then(|c| c.parse::<u32>().ok()).unwrap_or(90).clamp(20, 400);

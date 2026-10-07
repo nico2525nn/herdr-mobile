@@ -30,7 +30,11 @@ data class DaemonEndpoint(
         builder.append(path)
         if (query.isNotEmpty()) {
             builder.append('?')
-            builder.append(query.entries.joinToString("&") { (k, v) -> "$k=$v" })
+            // URL-encoded: tokens carry +/= which raw interpolation corrupts.
+            builder.append(query.entries.joinToString("&") { (k, v) ->
+                java.net.URLEncoder.encode(k, "UTF-8") + "=" +
+                    java.net.URLEncoder.encode(v, "UTF-8")
+            })
         }
         return builder.toString()
     }

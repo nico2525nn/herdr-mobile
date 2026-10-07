@@ -41,6 +41,8 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.platform.LocalClipboardManager
+import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
@@ -331,6 +333,7 @@ private fun TerminalSurface(
 ) {
     val backend = state.backend ?: return
     val backendState by backend.state.collectAsStateWithLifecycle(initialValue = BackendState.Idle)
+    val clipboard = LocalClipboardManager.current
     // Attach failure / disconnect must never render as a blank terminal: show the
     // reason instead, and stop feeding a dead backend to the view.
     when (val bs = backendState) {
@@ -368,6 +371,20 @@ private fun TerminalSurface(
                 view.setCursorStyle(settings.cursorStyle)
                 view.onDirectInput = { text -> onSendText(text) }
                 view.onDirectDelete = { onSendBytes(byteArrayOf(0x7F)) }
+                view.onTapCell = { col, row ->
+                    // Mouse-mode apps (vim, less, tmux): forward the tap as a
+                    // left-button press. Non-mouse apps ignore it server-side.
+                    val b = bridge
+                    if (b != null) {
+                        scope.launch { runCatching { b.mouse("down", "left", col, row) } }
+                    }
+                }
+                view.onSelection = { text ->
+                    // Copy to clipboard; the user pastes via the CJK panel.
+                    if (text.isNotEmpty()) {
+                        clipboard.setText(AnnotatedString(text))
+                    }
+                }
                 view.onScrollLines = { lines ->
                     bridge?.scrollBy(lines)
                     if (lines != 0) {

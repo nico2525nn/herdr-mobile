@@ -116,6 +116,9 @@ class TerminalBridge(
 
     suspend fun sendText(text: String) = backend.sendText(text)
 
+    suspend fun mouse(action: String, button: String, column: Int, row: Int) =
+        backend.mouse(action, button, column, row)
+
     /**
      * Release the backend connection. Suspends until the release frame has been
      * handed to the backend — never fire-and-forget on a scope that dies with us,

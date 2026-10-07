@@ -10,6 +10,8 @@ import dev.herdr.mobile.core.network.DaemonEndpointProvider
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import okhttp3.HttpUrl.Companion.toHttpUrl
 import java.net.ServerSocket
@@ -44,14 +46,26 @@ class SshTunnelProvider(
 
     private val sessionRef = AtomicReference<Session?>(null)
     private val localPortRef = AtomicReference<Int?>(null)
+    // Serializes concurrent open() (reconnect loop + kick + test): without it
+    // two callers both see sessionRef==null, both dial, and the loser leaks a
+    // connected session + local forward.
+    private val openMutex = Mutex()
 
     override suspend fun open(): DaemonEndpoint = withContext(Dispatchers.IO) {
-        val live = sessionRef.get()
-        val port = localPortRef.get()
-        if (live?.isConnected == true && port != null) {
-            return@withContext endpoint(port)
+        val result: DaemonEndpoint = openMutex.withLock {
+            val live = sessionRef.get()
+            val port = localPortRef.get()
+            if (live?.isConnected == true && port != null) {
+                endpoint(port)
+            } else {
+                openLocked()
+            }
         }
-        close()
+        result
+    }
+
+    private suspend fun openLocked(): DaemonEndpoint {
+        closeLocked()
         val key = privateKeyPem()
         val secret = password()
         if (key == null && secret == null) {
@@ -136,7 +150,7 @@ class SshTunnelProvider(
         }
         sessionRef.set(session)
         localPortRef.set(localPort)
-        endpoint(localPort)
+        return endpoint(localPort)
     }
 
     private fun endpoint(localPort: Int): DaemonEndpoint {
@@ -149,10 +163,13 @@ class SshTunnelProvider(
     }
 
     override suspend fun close() = withContext(Dispatchers.IO) {
+        openMutex.withLock { closeLocked() }
+    }
+
+    private fun closeLocked() {
         localPortRef.set(null)
         val session = sessionRef.getAndSet(null)
         runCatching { session?.disconnect() }
-        Unit
     }
 
     private fun classifyConnect(e: Exception): FailureKind {

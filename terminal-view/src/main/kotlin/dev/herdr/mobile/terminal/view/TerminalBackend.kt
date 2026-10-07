@@ -30,6 +30,9 @@ interface TerminalBackend {
 
     suspend fun scrollDown(lines: Int)
 
+    /** Mouse event for mouse-mode apps (vim, less, tmux mouse). */
+    suspend fun mouse(action: String, button: String, column: Int, row: Int)
+
     suspend fun release()
 }
 

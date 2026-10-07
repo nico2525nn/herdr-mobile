@@ -100,7 +100,8 @@ class TerminalSocket(
                 put("restore_cols", restoreCols.toString())
                 put("restore_rows", restoreRows.toString())
             }
-            endpoint.token?.let { put("token", it) }
+            // No token in the query: Authorization header carries it. Query
+            // strings land in proxies/logs/crash reports.
         }
         val request = Request.Builder()
             .url(endpoint.wsUrl("/v1/terminal/$paneId", query))
