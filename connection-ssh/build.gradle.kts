@@ -10,6 +10,7 @@ android {
 
     defaultConfig {
         minSdk = 26
+        testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
 
     compileOptions {
@@ -27,6 +28,12 @@ kotlin {
 dependencies {
     api(project(":core-network"))
     implementation(libs.jsch)
+    // Ed25519/Ed448 signing on Android API < 35 (JCE EdDSA arrived in API 35);
+    // JSch's BC-backed SignatureEd25519 needs these classes at runtime.
+    implementation(libs.bouncycastle.bcprov)
     implementation(libs.kotlinx.coroutines.android)
     testImplementation(libs.junit)
+    androidTestImplementation(libs.androidx.test.ext.junit)
+    androidTestImplementation(libs.androidx.test.runner)
+    androidTestImplementation(libs.kotlinx.coroutines.android)
 }

@@ -6,7 +6,9 @@ import dev.herdr.mobile.core.model.FailureKind
 import dev.herdr.mobile.core.model.HostProfile
 import dev.herdr.mobile.core.network.DaemonEndpoint
 import dev.herdr.mobile.core.network.DaemonEndpointProvider
+import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import okhttp3.HttpUrl.Companion.toHttpUrl
 import java.net.ServerSocket
@@ -20,6 +22,10 @@ import java.util.concurrent.atomic.AtomicReference
  * free loopback port to `daemonHost:daemonPort` on the far side, and returns an endpoint
  * pointing at it. The private key never leaves [privateKeyPem]; host keys are verified
  * against [knownHosts] unless the user explicitly accepted a new one through [onUnknownHostKey].
+ *
+ * JSch's default Ed25519 signer (`jce.SignatureEd25519`) needs Java 15+ JCE EdDSA, which
+ * Android only ships from API 35. The bundled BouncyCastle-backed signer is registered
+ * instead so Ed25519 keys work on every supported API level.
  *
  * Blocking JSch calls run on [Dispatchers.IO].
  */
@@ -54,6 +60,10 @@ class SshTunnelProvider(
             )
         }
         val jsch = JSch()
+        // Prefer the BouncyCastle-backed EdDSA signers: the JCE ones need API 35+.
+        // Static config so every JSch session in this process benefits.
+        JSch.setConfig("ssh-ed25519", "com.jcraft.jsch.bc.SignatureEd25519")
+        JSch.setConfig("ssh-ed448", "com.jcraft.jsch.bc.SignatureEd448")
         if (key != null) {
             runCatching {
                 jsch.addIdentity("herdr-mobile-${profile.id}", key.toByteArray(), null, null)
@@ -148,18 +158,50 @@ fun classifySshError(message: String): FailureKind {
     }
 }
 
+/**
+ * Decision bridge for JSch host-key prompts. JSch calls [promptYesNo] on its own thread and
+ * blocks for the answer, so the suspend [decide] is bridged with a short bounded wait. The
+ * wait is capped at 30s; on timeout the key is rejected rather than silently accepted.
+ */
 private class AcceptHostKeyUserInfo(
     private val host: String,
-    private val onUnknown: suspend (host: String, fingerprint: String) -> Boolean,
+    private val decide: suspend (host: String, fingerprint: String) -> Boolean,
 ) : com.jcraft.jsch.UserInfo {
-    // JSch calls these on a background thread; the decision suspends, so bridge with a
-    // runBlocking-free handoff is impossible here — instead deny by default and let the
-    // Settings UI pre-accept via knownHosts. Returning false keeps the security property:
-    // unknown keys never pass silently.
-    override fun promptYesNo(msg: String?): Boolean = false
+    @Volatile
+    private var answer: Boolean? = null
+
+    override fun promptYesNo(msg: String?): Boolean {
+        val fingerprint = msg?.let { extractFingerprint(it) }
+        // Fast path for tests and pre-accepted flows that answer immediately.
+        val scope = CoroutineScope(Dispatchers.Default)
+        val job = scope.launch {
+            answer = runCatching { decide(host, fingerprint ?: (msg ?: "")) }.getOrDefault(false)
+        }
+        // Bounded wait: never hang the SSH thread forever.
+        val deadline = System.currentTimeMillis() + 30_000
+        while (System.currentTimeMillis() < deadline) {
+            if (job.isCompleted) break
+            Thread.sleep(50)
+        }
+        if (!job.isCompleted) {
+            job.cancel()
+            return false
+        }
+        return answer == true
+    }
+
     override fun getPassphrase(): String? = null
     override fun getPassword(): String? = null
     override fun promptPassphrase(msg: String?): Boolean = false
     override fun promptPassword(msg: String?): Boolean = false
     override fun showMessage(msg: String?) = Unit
+}
+
+private fun extractFingerprint(msg: String): String {
+    // JSch messages embed the key fingerprint; pass the raw text through when no
+    // fingerprint pattern is found so the UI can still show something meaningful.
+    val hex = Regex("([0-9a-fA-F]{2}:){7,}[0-9a-fA-F]{2}").find(msg)?.value
+    if (hex != null) return hex
+    val base64 = Regex("SHA256:[A-Za-z0-9+/=]+").find(msg)?.value
+    return base64 ?: msg.take(200)
 }
