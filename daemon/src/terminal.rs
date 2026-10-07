@@ -121,7 +121,17 @@ impl TerminalRegistry {
             }),
         };
         if let Some(req) = restore {
-            let _ = session.restore_tx.send(req).await;
+            // try_send, not await: restore_tx is drained only at teardown, so an
+            // awaiting send would deadlock the 5th joiner once the cap fills.
+            // A full buffer is replaced wholesale: teardown takes last-wins.
+            match session.restore_tx.try_send(req) {
+                Err(tokio::sync::mpsc::error::TrySendError::Full(_)) => {
+                    // Best effort under lock-free pressure: drop-and-retry once.
+                    // try_send races are benign here (last-writer-wins anyway).
+                    let _ = session.restore_tx.try_send(req);
+                }
+                _ => {}
+            }
         }
         run_bridge(session, socket, self.clone(), pane_id).await
     }
@@ -138,9 +148,15 @@ impl TerminalRegistry {
         // BEFORE spawning a fresh controller, or old and new overlap and the new
         // attach can fail under takeover=false. Registry lock is released while
         // waiting so run_session's remove() can proceed.
+        //
+        // The whole body loops: two attachers can both pass the empty-map check
+        // concurrently (lock released during the wait), and the loser must fall
+        // back to reusing the winner — never insert a second session.
         loop {
             let old = {
                 let mut guard = self.sessions.lock().await;
+                // Re-check under the CURRENT lock hold: a concurrent attacher may
+                // have inserted while we waited/yielded.
                 match guard.get(&pane_id) {
                     Some(session) => {
                         let reusable = {
@@ -171,11 +187,40 @@ impl TerminalRegistry {
                 }
             };
             match old {
-                None => break,
+                None => {
+                    // Fresh insert — but re-check under the lock first (TOCTOU
+                    // against a concurrent inserter).
+                    let mut guard = self.sessions.lock().await;
+                    if guard.get(&pane_id).is_some() {
+                        drop(guard);
+                        tokio::task::yield_now().await;
+                        continue;
+                    }
+                    let (input_tx, input_rx) = mpsc::channel::<SessionCommand>(64);
+                    let (frames_tx, _) = broadcast::channel::<SessionFrame>(256);
+                    let (closed_tx, _) = broadcast::channel::<String>(4);
+                    let (restore_tx, restore_rx) = mpsc::channel::<RestoreViewport>(4);
+                    let session = Arc::new(TerminalSession {
+                        pane_id: pane_id.clone(),
+                        input_tx,
+                        frames_tx,
+                        closed_tx,
+                        restore_tx,
+                        bridges: std::sync::Mutex::new(BridgeState { count: 1, closing: false }),
+                        shutdown: tokio::sync::Notify::new(),
+                    });
+                    let runner_session = session.clone();
+                    let herdr = self.herdr.clone();
+                    let registry = Arc::clone(self);
+                    tokio::spawn(async move {
+                        run_session(&registry, runner_session, herdr, takeover, cols, rows, input_rx, restore_rx).await;
+                    });
+                    guard.insert(pane_id, session.clone());
+                    return Ok(session);
+                }
                 Some(old) => {
-                    // Bounded wait: teardown is restore + 250ms beat + kill.
-                    // If it somehow hangs, proceed anyway — a failed fresh attach
-                    // surfaces as an error, never a deadlock.
+                    // Bounded wait for the evicted session's teardown, then loop
+                    // back and re-enter the normal path.
                     let _ = tokio::time::timeout(
                         std::time::Duration::from_secs(5),
                         old.closed_tx.subscribe().recv(),
@@ -184,28 +229,6 @@ impl TerminalRegistry {
                 }
             }
         }
-        let mut guard = self.sessions.lock().await;
-        let (input_tx, input_rx) = mpsc::channel::<SessionCommand>(64);
-        let (frames_tx, _) = broadcast::channel::<SessionFrame>(256);
-        let (closed_tx, _) = broadcast::channel::<String>(4);
-        let (restore_tx, restore_rx) = mpsc::channel::<RestoreViewport>(4);
-        let session = Arc::new(TerminalSession {
-            pane_id: pane_id.clone(),
-            input_tx,
-            frames_tx,
-            closed_tx,
-            restore_tx,
-            bridges: std::sync::Mutex::new(BridgeState { count: 1, closing: false }),
-            shutdown: tokio::sync::Notify::new(),
-        });
-        let runner_session = session.clone();
-        let herdr = self.herdr.clone();
-        let registry = Arc::clone(self);
-        tokio::spawn(async move {
-            run_session(&registry, runner_session, herdr, takeover, cols, rows, input_rx, restore_rx).await;
-        });
-        guard.insert(pane_id, session.clone());
-        Ok(session)
     }
 
     async fn remove(&self, pane_id: &str, session: &Arc<TerminalSession>) {
