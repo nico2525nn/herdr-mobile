@@ -25,13 +25,21 @@ pub struct TerminalSession {
     /// Viewport to restore on the Herdr side when the last bridge goes away, so the pane
     /// does not keep the phone's narrow grid after we detach.
     restore_tx: mpsc::Sender<RestoreViewport>,
-    /// Bridges currently watching this session. Only the last one leaving tears the
-    /// Herdr controller down; the comment on run_bridge's tail documents why.
-    bridges: std::sync::Mutex<usize>,
+    /// Bridges currently watching this session, plus whether teardown started.
+    /// Only the last bridge leaving flips `closing` and wakes run_session; once
+    /// `closing` is set, attach() never reuses the session — a re-attach racing
+    /// with teardown gets a fresh session instead of a dying one.
+    bridges: std::sync::Mutex<BridgeState>,
     /// Fired by the last bridge leaving. Wakes run_session even when the 64-deep
     /// command queue is full of resizes — teardown correctness must never depend
     /// on queue capacity.
     shutdown: tokio::sync::Notify,
+}
+
+/// Watcher count + teardown flag. See `TerminalSession.bridges`.
+struct BridgeState {
+    count: usize,
+    closing: bool,
 }
 
 /// Geometry to hand back to Herdr on detach.
@@ -127,10 +135,23 @@ impl TerminalRegistry {
     ) -> Result<Arc<TerminalSession>> {
         let mut guard = self.sessions.lock().await;
         if let Some(session) = guard.get(&pane_id) {
-            // Newest geometry wins; the session task coalesces it to the child.
-            let _ = session.input_tx.send(SessionCommand::Resize(cols, rows)).await;
-            *session.bridges.lock().expect("bridges poisoned") += 1;
-            return Ok(session.clone());
+            let reusable = {
+                let mut st = session.bridges.lock().expect("bridges poisoned");
+                if st.closing {
+                    false
+                } else {
+                    st.count += 1;
+                    // Newest geometry wins; the session task coalesces it to the child.
+                    true
+                }
+            };
+            if reusable {
+                let _ = session.input_tx.send(SessionCommand::Resize(cols, rows)).await;
+                return Ok(session.clone());
+            }
+            // Teardown already started on this session; fall through and build a
+            // fresh one. The old run_session drains via the pending shutdown.
+            guard.remove(&pane_id);
         }
         let (input_tx, input_rx) = mpsc::channel::<SessionCommand>(64);
         let (frames_tx, _) = broadcast::channel::<SessionFrame>(256);
@@ -142,7 +163,7 @@ impl TerminalRegistry {
             frames_tx,
             closed_tx,
             restore_tx,
-            bridges: std::sync::Mutex::new(1),
+            bridges: std::sync::Mutex::new(BridgeState { count: 1, closing: false }),
             shutdown: tokio::sync::Notify::new(),
         });
         let runner_session = session.clone();
@@ -297,9 +318,16 @@ impl BridgeGuard {
 impl Drop for BridgeGuard {
     fn drop(&mut self) {
         let last = {
-            let mut n = self.session.bridges.lock().expect("bridges poisoned");
-            *n = n.saturating_sub(1);
-            *n == 0
+            let mut st = self.session.bridges.lock().expect("bridges poisoned");
+            st.count = st.count.saturating_sub(1);
+            if st.count == 0 {
+                // Mark teardown before waking: a re-attach racing with the
+                // pending shutdown must not reuse this dying session.
+                st.closing = true;
+                true
+            } else {
+                false
+            }
         };
         if last {
             self.session.shutdown.notify_one();
@@ -556,30 +584,39 @@ mod tests {
     }
 
     /// The production BridgeGuard owns exactly-once teardown: dropping it
-    /// decrements once, and only the last bridge over a session wakes run_session.
-    /// This test exercises the REAL guard, not a copy — if the production Drop
-    /// breaks, this goes red.
+    /// decrements once, and only the last bridge over a session wakes run_session
+    /// and marks it closing. This test exercises the REAL guard, not a copy —
+    /// if the production Drop breaks, this goes red.
     #[test]
     fn bridge_guard_last_only_releases() {
         let session = test_session(2);
 
-        // First bridge leaving: count drops to 1, no shutdown notification.
+        // First bridge leaving: count drops to 1, no shutdown notification,
+        // session still reusable.
         // NOTE: the count assert must run AFTER the guard drops (outside the
         // block) — inside, the guard is still alive and the count is still 2.
         {
             let _g = BridgeGuard::new(&session);
         }
-        assert_eq!(*session.bridges.lock().expect("poisoned"), 1);
+        {
+            let st = session.bridges.lock().expect("poisoned");
+            assert_eq!(st.count, 1);
+            assert!(!st.closing, "open session must stay reusable");
+        }
         assert!(
             session.shutdown.notified().now_or_never().is_none(),
             "first bridge must not wake the session"
         );
 
-        // Last bridge leaving: count hits 0, shutdown fires exactly once.
+        // Last bridge leaving: count hits 0, closing flips, shutdown fires once.
         {
             let _g = BridgeGuard::new(&session);
         }
-        assert_eq!(*session.bridges.lock().expect("poisoned"), 0);
+        {
+            let st = session.bridges.lock().expect("poisoned");
+            assert_eq!(st.count, 0);
+            assert!(st.closing, "drained session must refuse reuse");
+        }
         assert!(
             session.shutdown.notified().now_or_never().is_some(),
             "last bridge must wake the session exactly once"
@@ -604,7 +641,7 @@ mod tests {
             frames_tx,
             closed_tx,
             restore_tx,
-            bridges: std::sync::Mutex::new(n),
+            bridges: std::sync::Mutex::new(BridgeState { count: n, closing: false }),
             shutdown: tokio::sync::Notify::new(),
         })
     }

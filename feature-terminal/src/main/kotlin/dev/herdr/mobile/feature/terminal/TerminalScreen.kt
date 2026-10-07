@@ -328,17 +328,6 @@ private fun TerminalSurface(
     // View size → grid size → backend resize, debounced by the bridge/daemon coalescing.
     var viewSizePx by remember { mutableStateOf(0 to 0) }
 
-    // When the backend is released for background, drop the bridge so the next
-    // onSizeChanged (from the resume re-attach) creates a fresh one. Without
-    // this the stale bridge holds a dead backend and the screen never redraws.
-    LaunchedEffect(backend) {
-        if (backend == null) {
-            bridge?.let {
-                bridge = null
-            }
-        }
-    }
-
     AndroidView(
         factory = { context ->
             HerdrTerminalView(context).also { view ->
