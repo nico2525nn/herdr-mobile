@@ -161,6 +161,28 @@ class TerminalViewModel(
         pageFlow.value = page
     }
 
+    /**
+     * Called when the app goes to background (Activity ON_STOP) while the terminal
+     * screen is visible. The Compose tree is NOT disposed in this case, so neither
+     * DisposableEffect nor onCleared runs — without this, the controller (and its
+     * resize lock) leaks until the process dies. Best effort with a timeout; the
+     * daemon also cleans up dead sockets, so a missed call here is recoverable.
+     */
+    fun releaseForBackground() {
+        val backend = backendFlow.value ?: return
+        backendFlow.value = null
+        attachJob?.cancel()
+        val releaser = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+        releaser.launch {
+            try {
+                withTimeout(5_000) { backend.release() }
+            } catch (_: Exception) {
+            } finally {
+                releaser.cancel()
+            }
+        }
+    }
+
     fun sendText(text: String) {
         val backend = backendFlow.value ?: return
         viewModelScope.launch { runCatching { backend.sendText(text) } }

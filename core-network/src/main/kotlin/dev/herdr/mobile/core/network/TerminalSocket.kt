@@ -172,7 +172,12 @@ class TerminalSocket(
         outbound.send(OutboundFrame.Text(record))
     }
 
+    private val released = AtomicBoolean(false)
+
     override suspend fun release() {
+        // Idempotent: DisposableEffect and onCleared race on the same socket when
+        // the screen goes away. Only the first call sends/closes; the rest no-op.
+        if (!released.compareAndSet(false, true)) return
         val record = HerdrJson.encodeToString(
             dev.herdr.mobile.core.model.TerminalRelease.serializer(),
             dev.herdr.mobile.core.model.TerminalRelease(),

@@ -72,6 +72,20 @@ fun TerminalScreen(
     var tabMenu by remember { mutableStateOf<TabMenuTarget?>(null) }
     var renameTarget by remember { mutableStateOf<TabMenuTarget?>(null) }
 
+    // App backgrounded (Home button, task switch) does NOT dispose this screen,
+    // so neither DisposableEffect nor onCleared runs. Release the controller or
+    // its resize lock leaks until the process dies.
+    val lifecycle = androidx.lifecycle.compose.LocalLifecycleOwner.current.lifecycle
+    DisposableEffect(lifecycle, viewModel) {
+        val observer = androidx.lifecycle.LifecycleEventObserver { _, event ->
+            if (event == androidx.lifecycle.Lifecycle.Event.ON_STOP) {
+                viewModel.releaseForBackground()
+            }
+        }
+        lifecycle.addObserver(observer)
+        onDispose { lifecycle.removeObserver(observer) }
+    }
+
     // navigationBarsPadding keeps the panel above the gesture bar when the
     // keyboard is hidden; imePadding lifts it above the keyboard when shown.
     // The terminal Box above shrinks accordingly, so its bottom edge always
