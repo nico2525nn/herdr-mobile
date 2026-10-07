@@ -529,8 +529,15 @@ private fun BottomInputPanel(
         initialPage = pages.indexOf(state.inputPage).coerceAtLeast(0),
         pageCount = { pages.size },
     )
-    LaunchedEffect(pagerState.currentPage) {
-        onPageChange(pages[pagerState.currentPage])
+    // When a panel is disabled in Settings, pages shrinks: clamp the pager or
+    // pages[currentPage] throws IndexOutOfBounds on a stale page 1.
+    LaunchedEffect(pages.size) {
+        if (pagerState.currentPage >= pages.size) {
+            pagerState.scrollToPage(0)
+        }
+    }
+    LaunchedEffect(pagerState.currentPage, pages.size) {
+        pages.getOrNull(pagerState.currentPage)?.let { onPageChange(it) }
     }
     Surface(
         tonalElevation = 3.dp,

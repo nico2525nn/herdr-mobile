@@ -349,14 +349,25 @@ class HerdrTerminalView @JvmOverloads constructor(
         // System back while the keyboard is up: dismiss the keyboard instead of
         // leaving the terminal screen. Intercept ACTION_DOWN: by ACTION_UP the
         // framework has usually already consumed DOWN (finishing the screen),
-        // so UP-only handling never fires on most devices.
+        // so UP-only handling never fires on most devices. Only consume when
+        // the IME is actually visible — otherwise back must navigate away.
         if (keyCode == android.view.KeyEvent.KEYCODE_BACK &&
-            event.action == android.view.KeyEvent.ACTION_DOWN
+            event.action == android.view.KeyEvent.ACTION_DOWN &&
+            isKeyboardVisible()
         ) {
             hideKeyboard()
             return true
         }
         return super.onKeyPreIme(keyCode, event)
+    }
+
+    private fun isKeyboardVisible(): Boolean {
+        val imm = context.getSystemService(Context.INPUT_METHOD_SERVICE)
+            as? InputMethodManager ?: return false
+        // isAcceptingText is true while an input connection is active; combined
+        // with window focus it approximates IME visibility without an API-30
+        // WindowInsets query (minSdk 26).
+        return imm.isAcceptingText && hasWindowFocus()
     }
 
     override fun onDraw(canvas: Canvas) {

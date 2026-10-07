@@ -265,6 +265,10 @@ async fn run_session(
     let _ = session.frames_tx.send(SessionFrame::Ready { cols, rows, resumed: false });
     let mut last_resize = tokio::time::Instant::now();
     let mut pending_resize: Option<(u32, u32)> = None;
+    // Fixed deadline for the pending flush: a fresh sleep() per select! poll
+    // restarts on every arriving command, starving sustained resize streams.
+    // The deadline is set once when the first pending resize lands.
+    let mut flush_at: Option<tokio::time::Instant> = None;
     let mut end_reason = String::from("detached");
     loop {
         tokio::select! {
@@ -289,6 +293,9 @@ async fn run_session(
                             let _ = session.frames_tx.send(SessionFrame::Ready { cols: c, rows: r, resumed: false });
                         } else {
                             pending_resize = Some((c, r));
+                            if flush_at.is_none() {
+                                flush_at = Some(last_resize + std::time::Duration::from_millis(120));
+                            }
                         }
                     }
                     SessionCommand::Scroll(direction, lines) => {
@@ -320,7 +327,13 @@ async fn run_session(
                     }
                 }
             }
-            _ = tokio::time::sleep(std::time::Duration::from_millis(120)), if pending_resize.is_some() => {
+            _ = async {
+                match flush_at {
+                    Some(t) => tokio::time::sleep_until(t).await,
+                    None => std::future::pending::<()>().await,
+                }
+            }, if pending_resize.is_some() => {
+                flush_at = None;
                 if let Some((c, r)) = pending_resize.take() {
                     if child.send_resize(c, r).await.is_err() { break; }
                     last_resize = tokio::time::Instant::now();

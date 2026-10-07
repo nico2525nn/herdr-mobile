@@ -59,7 +59,10 @@ class AppContainer(context: Context) {
                     val rebuilt = settingsRepository.providerFor(current)
                     if (rebuilt != null) {
                         providerFlow.value?.let { old ->
-                            runCatching { old.close() }
+                            try {
+                                old.close()
+                            } catch (_: Exception) {
+                            }
                         }
                         providerFlow.value = rebuilt
                         client.kick()

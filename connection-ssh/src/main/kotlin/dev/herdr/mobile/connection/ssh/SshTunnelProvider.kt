@@ -9,6 +9,8 @@ import dev.herdr.mobile.core.network.DaemonEndpoint
 import dev.herdr.mobile.core.network.DaemonEndpointProvider
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.cancel
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
@@ -174,27 +176,25 @@ class SshTunnelProvider(
 
     private fun classifyConnect(e: Exception): FailureKind {
         val message = (e.message ?: "") + " " + (e.cause?.message ?: "")
-        return when {
-            message.contains("UnknownHostException", ignoreCase = true) -> FailureKind.DNS
-            message.contains("Auth fail", ignoreCase = true) ||
-                message.contains("authentication", ignoreCase = true) -> FailureKind.AUTH
-            // JSch "reject HostKey" = no stored key to check against (first use);
-            // anything else mentioning HostKey = stored key disagrees (possible attack).
-            message.contains("reject HostKey", ignoreCase = true) -> FailureKind.HOST_KEY_UNKNOWN
-            message.contains("HostKey", ignoreCase = true) -> FailureKind.HOST_KEY_MISMATCH
-            else -> FailureKind.UNREACHABLE
-        }
+        return classifySshError(message)
     }
 }
 
 class SshException(val kind: FailureKind, message: String, cause: Throwable? = null) :
     Exception(message, cause)
 
-/** Test hook: expose the classification without opening a socket. */
+/**
+ * Single classification truth, shared by production and tests: [classifyConnect]
+ * flattens exception+cause into one string and delegates here, so the test hook
+ * can never diverge from the real path again.
+ */
 fun classifySshError(message: String): FailureKind {
     return when {
         message.contains("UnknownHostException", ignoreCase = true) -> FailureKind.DNS
-        message.contains("Auth fail", ignoreCase = true) -> FailureKind.AUTH
+        message.contains("Auth fail", ignoreCase = true) ||
+            message.contains("authentication", ignoreCase = true) -> FailureKind.AUTH
+        // JSch "reject HostKey" = no stored key to check against (first use);
+        // anything else mentioning HostKey = stored key disagrees (possible attack).
         message.contains("reject HostKey", ignoreCase = true) -> FailureKind.HOST_KEY_UNKNOWN
         message.contains("HostKey", ignoreCase = true) -> FailureKind.HOST_KEY_MISMATCH
         else -> FailureKind.UNREACHABLE
@@ -210,27 +210,34 @@ private class AcceptHostKeyUserInfo(
     private val host: String,
     private val decide: suspend (host: String, fingerprint: String) -> Boolean,
 ) : com.jcraft.jsch.UserInfo {
-    @Volatile
-    private var answer: Boolean? = null
-
     override fun promptYesNo(msg: String?): Boolean {
         val fingerprint = msg?.let { extractFingerprint(it) }
-        // Fast path for tests and pre-accepted flows that answer immediately.
-        val scope = CoroutineScope(Dispatchers.Default)
-        val job = scope.launch {
-            answer = runCatching { decide(host, fingerprint ?: (msg ?: "")) }.getOrDefault(false)
+        // Per-call latch + local result: no shared @Volatile slot (concurrent
+        // prompts cannot race), no busy sleep, no leaked scope — the scope is
+        // cancelled in finally on every path.
+        val latch = java.util.concurrent.CountDownLatch(1)
+        val answerRef = java.util.concurrent.atomic.AtomicBoolean(false)
+        val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+        scope.launch {
+            try {
+                answerRef.set(runCatching { decide(host, fingerprint ?: (msg ?: "")) }.getOrDefault(false))
+            } finally {
+                latch.countDown()
+            }
         }
-        // Bounded wait: never hang the SSH thread forever.
-        val deadline = System.currentTimeMillis() + 30_000
-        while (System.currentTimeMillis() < deadline) {
-            if (job.isCompleted) break
-            Thread.sleep(50)
-        }
-        if (!job.isCompleted) {
-            job.cancel()
+        try {
+            // Bounded wait: never hang the SSH thread forever. Timeout rejects
+            // rather than silently accepting.
+            if (!latch.await(30, java.util.concurrent.TimeUnit.SECONDS)) {
+                return false
+            }
+        } catch (_: InterruptedException) {
+            Thread.currentThread().interrupt()
             return false
+        } finally {
+            scope.cancel()
         }
-        return answer == true
+        return answerRef.get()
     }
 
     override fun getPassphrase(): String? = null
