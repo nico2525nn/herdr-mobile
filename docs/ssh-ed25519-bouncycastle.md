@@ -28,3 +28,13 @@ JSch.setConfig("ssh-ed448", "com.jcraft.jsch.bc.SignatureEd448")
 - `passwordAuthTunnelReachesDaemon` SKIPPED unless a real account password is passed
   via `-Pandroid.testInstrumentationRunnerArguments.password=...` (sshd here has no
   password to test against; a dummy value must not fail the suite).
+
+## Release signing
+
+`app/build.gradle.kts` wires a `herdrRelease` signing config into the `release`
+build type. Keystore: `~/.config/herdr-mobile/release.keystore` (outside the repo,
+`600`). Password: `HERDR_RELEASE_KEYSTORE_PASSWORD` env var (optional
+`HERDR_RELEASE_KEY_ALIAS`, default `herdr`).
+
+- Password set + keystore present → `app-release.apk` (signed, `apksigner verify` clean).
+- Otherwise → `app-release-unsigned.apk` (CI/verification builds keep working).

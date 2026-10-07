@@ -31,6 +31,21 @@ android {
                 getDefaultProguardFile("proguard-android-optimize.txt"),
                 "proguard-rules.pro",
             )
+            // Release signing: keystore lives OUTSIDE the repo
+            // (~/.config/herdr-mobile/release.keystore). The password comes from the
+            // HERDR_RELEASE_KEYSTORE_PASSWORD env var, never from a committed file.
+            // Unset password = unsigned APK (CI/verification builds).
+            val homeDir = providers.systemProperty("user.home").get()
+            val keystoreCandidate = rootProject.file("$homeDir/.config/herdr-mobile/release.keystore")
+            val keystorePassword: String? = providers.environmentVariable("HERDR_RELEASE_KEYSTORE_PASSWORD").orNull
+            if (keystoreCandidate.isFile && !keystorePassword.isNullOrBlank()) {
+                signingConfig = signingConfigs.maybeCreate("herdrRelease").apply {
+                    storeFile = keystoreCandidate
+                    storePassword = keystorePassword
+                    keyAlias = providers.environmentVariable("HERDR_RELEASE_KEY_ALIAS").orNull ?: "herdr"
+                    keyPassword = keystorePassword
+                }
+            }
         }
     }
 
