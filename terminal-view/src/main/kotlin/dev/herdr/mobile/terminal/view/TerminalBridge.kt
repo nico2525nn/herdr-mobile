@@ -106,9 +106,15 @@ class TerminalBridge(
 
     suspend fun sendText(text: String) = backend.sendText(text)
 
-    fun release() {
+    /**
+     * Release the backend connection. Suspends until the release frame has been
+     * handed to the backend — never fire-and-forget on a scope that dies with us,
+     * or the release never reaches Herdr and the direct-attach resize lock leaks.
+     */
+    suspend fun release() {
         pump?.cancel()
-        scope.launch { runCatching { backend.release() } }
+        pump = null
+        runCatching { backend.release() }
         scope.cancel()
     }
 }

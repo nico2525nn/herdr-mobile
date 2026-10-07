@@ -50,7 +50,12 @@ import dev.herdr.mobile.core.model.ConnectionState
 import dev.herdr.mobile.core.model.InputPanelPage
 import dev.herdr.mobile.terminal.view.HerdrTerminalView
 import dev.herdr.mobile.terminal.view.TerminalBridge
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.cancel
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withTimeout
 
 /**
  * Deep-interaction screen: compact workspace/tab rails, the terminal surface, and the
@@ -368,8 +373,22 @@ private fun TerminalSurface(
 
     DisposableEffect(backend) {
         onDispose {
-            bridge?.release()
+            // The bridge release suspends until the release frame reaches the
+            // backend; run it on a fresh scope with a timeout, never on a scope
+            // that is being torn down with us.
+            val toRelease = bridge
             bridge = null
+            if (toRelease != null) {
+                val releaser = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+                releaser.launch {
+                    try {
+                        withTimeout(5_000) { toRelease.release() }
+                    } catch (_: Exception) {
+                    } finally {
+                        releaser.cancel()
+                    }
+                }
+            }
         }
     }
 

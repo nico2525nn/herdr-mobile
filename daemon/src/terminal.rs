@@ -25,6 +25,9 @@ pub struct TerminalSession {
     /// Viewport to restore on the Herdr side when the last bridge goes away, so the pane
     /// does not keep the phone's narrow grid after we detach.
     restore_tx: mpsc::Sender<RestoreViewport>,
+    /// Bridges currently watching this session. Only the last one leaving tears the
+    /// Herdr controller down; the comment on run_bridge's tail documents why.
+    bridges: std::sync::Mutex<usize>,
 }
 
 /// Geometry to hand back to Herdr on detach.
@@ -77,9 +80,13 @@ impl TerminalRegistry {
     /// Attach (or reuse) and bridge the child to `socket`. Returns when either side closes.
     ///
     /// `restore` is the viewport to hand back to Herdr when this bridge goes away, so the
-    /// pane does not keep the phone's grid after we detach. `None` means: ask Herdr for
-    /// the pane's own layout now and hand that back — the TUI's size, whatever window it
-    /// currently has. An explicit value overrides it; `Some((0, _))` disables the restore.
+    /// pane does not keep the phone's grid after we detach. `None` means: read the
+    /// pane's tab-layout rect now (before the phone's resize lands) and hand that back.
+    /// NOTE: per Herdr #4437 this is the tab-layout rect, not any one desktop client's
+    /// live PTY grid — with multiple clients there is no single "desktop geometry".
+    /// It is still the best available estimate of the pre-attach size, and strictly
+    /// better than a hardcoded fallback. An explicit value overrides it;
+    /// `Some((0, _))` disables the restore.
     pub async fn bridge(
         self: &Arc<Self>,
         socket: WebSocket,
@@ -94,10 +101,10 @@ impl TerminalRegistry {
             // Explicit client value (or disable) wins.
             Some((0, _)) => None,
             Some((c, r)) => Some(RestoreViewport { cols: c, rows: r }),
-            // No client opinion: learn the TUI's own geometry now, before the phone's
-            // resize lands, and hand exactly that back on detach.
+            // No client opinion: snapshot the tab-layout rect now (best available
+            // pre-attach estimate) and hand exactly that back on detach.
             None => self.herdr.pane_layout_size(&pane_id).await.ok().map(|(c, r)| {
-                tracing::debug!("learned TUI geometry for {pane_id}: {c}x{r}");
+                tracing::debug!("learned tab-layout rect for {pane_id}: {c}x{r}");
                 RestoreViewport { cols: c, rows: r }
             }),
         };
@@ -118,6 +125,7 @@ impl TerminalRegistry {
         if let Some(session) = guard.get(&pane_id) {
             // Newest geometry wins; the session task coalesces it to the child.
             let _ = session.input_tx.send(SessionCommand::Resize(cols, rows)).await;
+            *session.bridges.lock().expect("bridges poisoned") += 1;
             return Ok(session.clone());
         }
         let (input_tx, input_rx) = mpsc::channel::<SessionCommand>(64);
@@ -130,6 +138,7 @@ impl TerminalRegistry {
             frames_tx,
             closed_tx,
             restore_tx,
+            bridges: std::sync::Mutex::new(1),
         });
         let runner_session = session.clone();
         let herdr = self.herdr.clone();
@@ -318,7 +327,14 @@ async fn run_bridge(
                         return Ok(None);
                     }
                 }
-                Message::Close(_) => return Ok(None),
+                // Socket closed without an explicit release (app killed, network
+                // drop, release frame lost in a race): treat it as a release so
+                // the direct-attach resize lock never leaks. Sessions shared by
+                // other bridges stay alive; only OUR controller goes away.
+                Message::Close(_) => {
+                    let _ = input_tx.send(SessionCommand::Release).await;
+                    return Ok(None);
+                }
                 _ => {}
             }
         }
@@ -386,7 +402,16 @@ async fn run_bridge(
         }
         _ = pump_frames => {}
     }
-    // One bridge leaving must not kill a session others still watch.
+    // One bridge leaving must not kill a session others still watch: only the
+    // last bridge sends Release; the rest just close their own socket.
+    let last = {
+        let mut n = session.bridges.lock().expect("bridges poisoned");
+        *n = n.saturating_sub(1);
+        *n == 0
+    };
+    if last {
+        let _ = session.input_tx.send(SessionCommand::Release).await;
+    }
     let _ = sink.close().await;
     Ok(())
 }

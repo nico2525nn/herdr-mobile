@@ -13,7 +13,11 @@ import dev.herdr.mobile.core.model.TerminalColorScheme
 import dev.herdr.mobile.core.model.Workspace
 import dev.herdr.mobile.core.network.HerdrClient
 import dev.herdr.mobile.terminal.emulator.TerminalThemes
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.cancel
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
@@ -21,6 +25,7 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withTimeout
 
 /** Which pane Terminal shows right now, and how it got there. */
 data class TerminalTarget(
@@ -217,8 +222,18 @@ class TerminalViewModel(
         val backend = backendFlow.value
         backendFlow.value = null
         if (backend != null) {
-            // The ViewModel scope is already going away; release on a best-effort basis.
-            viewModelScope.launch { runCatching { backend.release() } }
+            // viewModelScope is cancelled with us; cleanup must not depend on it.
+            // runBlocking is wrong here too (main thread risk), so use a fresh
+            // scope with a bounded wait: best effort, but actually attempted.
+            val releaser = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+            releaser.launch {
+                try {
+                    withTimeout(5_000) { backend.release() }
+                } catch (_: Exception) {
+                } finally {
+                    releaser.cancel()
+                }
+            }
         }
     }
 

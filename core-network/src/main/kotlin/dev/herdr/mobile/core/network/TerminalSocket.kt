@@ -93,8 +93,8 @@ class TerminalSocket(
             put("cols", cols.toString())
             put("rows", rows.toString())
             if (takeover) put("takeover", "true")
-            // No restore_* params: the daemon learns the pane's own TUI geometry at
-            // attach time and hands exactly that back on detach. Only an explicit
+            // No restore_* params: the daemon snapshots the pane's tab-layout rect
+            // at attach time and hands exactly that back on detach. Only an explicit
             // restore overrides it (restore_cols=0 disables).
             restore?.let { (restoreCols, restoreRows) ->
                 put("restore_cols", restoreCols.toString())
@@ -178,11 +178,24 @@ class TerminalSocket(
             dev.herdr.mobile.core.model.TerminalRelease(),
         )
         try {
-            outbound.send(OutboundFrame.Text(record))
+            // Send the release frame DIRECTLY on the socket, not through the pump
+            // channel: the pump may not have drained yet when we close, and a
+            // queued-but-unsent release leaks the direct-attach resize lock.
+            val ws = socket
+            if (ws != null) {
+                ws.send(record)
+                // Give OkHttp one flush cycle before the close frame.
+                kotlinx.coroutines.delay(150)
+            } else {
+                outbound.send(OutboundFrame.Text(record))
+            }
         } catch (_: Exception) {
             // Channel already closed; the socket teardown below finishes the job.
         }
-        outbound.close()
+        try {
+            outbound.close()
+        } catch (_: Exception) {
+        }
         try {
             socket?.close(1000, "release")
         } catch (_: Exception) {
