@@ -49,6 +49,7 @@ import dev.herdr.mobile.core.designsystem.StatusDot
 import dev.herdr.mobile.core.model.ConnectionState
 import dev.herdr.mobile.core.model.InputPanelPage
 import dev.herdr.mobile.terminal.view.HerdrTerminalView
+import dev.herdr.mobile.terminal.view.BackendState
 import dev.herdr.mobile.terminal.view.TerminalBridge
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -311,12 +312,38 @@ private fun TerminalPlaceholder(connection: ConnectionState, hasTarget: Boolean)
 }
 
 @Composable
+private fun TerminalErrorBody(message: String) {
+    Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+        Text(
+            text = message,
+            style = MaterialTheme.typography.bodyLarge,
+            color = MaterialTheme.colorScheme.error,
+            modifier = Modifier.padding(20.dp),
+        )
+    }
+}
+
+@Composable
 private fun TerminalSurface(
     state: TerminalUiState,
     onSendBytes: (ByteArray) -> Unit,
     onSendText: (String) -> Unit,
 ) {
     val backend = state.backend ?: return
+    val backendState by backend.state.collectAsStateWithLifecycle(initialValue = BackendState.Idle)
+    // Attach failure / disconnect must never render as a blank terminal: show the
+    // reason instead, and stop feeding a dead backend to the view.
+    when (val bs = backendState) {
+        is BackendState.Failed -> {
+            TerminalErrorBody("Attach failed (${bs.code}): ${bs.message}")
+            return
+        }
+        is BackendState.Detached -> {
+            TerminalErrorBody("Detached (${bs.reason})")
+            return
+        }
+        else -> {}
+    }
     val settings = state.settings
     var bridge by remember(backend) { mutableStateOf<TerminalBridge?>(null) }
     var viewRef by remember { mutableStateOf<HerdrTerminalView?>(null) }
@@ -377,8 +404,19 @@ private fun TerminalSurface(
                     )
                     bridge = created
                     created.start(cols, rows)
+                    // Backend-scoped, not composition-scoped: when the backend
+                    // changes, DisposableEffect releases the old bridge AND this
+                    // collector dies with it. A composition-scoped launch would
+                    // leak one collector per pane switch, each able to render
+                    // stale snapshots over the new bridge's output.
                     scope.launch {
-                        created.frame.collect { snapshot -> view.render(snapshot) }
+                        try {
+                            created.frame.collect { snapshot -> view.render(snapshot) }
+                        } catch (_: Exception) {
+                        }
+                    }.also { collector ->
+                        // Tie the collector to the bridge lifetime explicitly.
+                        created.onRelease = { collector.cancel() }
                     }
                     scope.launch { backend.resize(cols, rows) }
                 } else {

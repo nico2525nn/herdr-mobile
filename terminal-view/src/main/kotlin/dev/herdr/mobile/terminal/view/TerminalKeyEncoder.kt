@@ -56,9 +56,14 @@ object TerminalKeyEncoder {
     /**
      * Apply a latched [modifier] to a printable [key]: `ctrl+c` → 0x03, `alt+x` → ESC x.
      * Non-printable keys ignore the modifier and are sent as-is.
+     *
+     * Returns null when the combination is meaningless (e.g. CTRL+TAB): the
+     * caller keeps the latch instead of silently swallowing it. Keys carrying
+     * only [Key.herdrKeys] also return null — no consumer implements that path
+     * yet, so sending empty bytes would be a silent no-op.
      */
-    fun withModifier(modifier: Modifier?, key: Key): ByteArray {
-        val base = key.bytes ?: return byteArrayOf()
+    fun withModifier(modifier: Modifier?, key: Key): ByteArray? {
+        val base = key.bytes ?: return null
         if (modifier == null || base.size != 1) return base
         val byte = base[0].toInt() and 0xFF
         return when (modifier) {
@@ -67,7 +72,9 @@ object TerminalKeyEncoder {
                 if (lower in 0x61..0x7A || byte in 0x40..0x5F) {
                     byteArrayOf((byte and 0x1F).toByte())
                 } else {
-                    base
+                    // Meaningless combination (CTRL+TAB, CTRL+/ …): signal it so
+                    // the UI can keep the latch and/or give feedback.
+                    null
                 }
             }
 

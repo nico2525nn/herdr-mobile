@@ -48,8 +48,18 @@ class TerminalBridge(
     val bell: StateFlow<Long> = _bell.asStateFlow()
 
     private var pump: Job? = null
+    private var started = false
+    /** Invoked when release() runs, so hosts can cancel per-bridge collectors. */
+    var onRelease: (() -> Unit)? = null
 
+    /**
+     * Starts frame pumping. Must be called exactly once per bridge; a second
+     * call is a programming error and is ignored instead of duplicating all
+     * emulator input with a second collector.
+     */
     fun start(cols: Int, rows: Int) {
+        if (started) return
+        started = true
         scope.launch(emulatorContext) {
             emulator.resize(cols, rows)
             publish()
@@ -114,6 +124,7 @@ class TerminalBridge(
     suspend fun release() {
         pump?.cancel()
         pump = null
+        runCatching { onRelease?.invoke() }
         runCatching { backend.release() }
         scope.cancel()
     }

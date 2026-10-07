@@ -16,6 +16,7 @@ import dev.herdr.mobile.terminal.emulator.TerminalThemes
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -25,6 +26,7 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeout
 
 /** Which pane Terminal shows right now, and how it got there. */
@@ -137,8 +139,18 @@ class TerminalViewModel(
         attachJob?.cancel()
         targetFlow.value = target
         attachJob = viewModelScope.launch {
-            runCatching { backendFlow.value?.release() }
+            // Release the old backend UNCANCELLABLY: TerminalSocket.release()
+            // suspends (direct send + flush beat) and a rapid tab switch would
+            // otherwise cancel us mid-release — leaving released=true but the
+            // socket never closed, with the pump suspended forever.
+            val old = backendFlow.value
             backendFlow.value = null
+            if (old != null) {
+                try {
+                    withContext(NonCancellable) { old.release() }
+                } catch (_: Exception) {
+                }
+            }
             val connection = try {
                 client.openTerminal(target.paneId, cols = 90, rows = 30)
             } catch (e: Exception) {
@@ -169,10 +181,13 @@ class TerminalViewModel(
      * daemon also cleans up dead sockets, so a missed call here is recoverable.
      */
     fun releaseForBackground() {
+        // Cancel a pending attach FIRST: openTerminal/connect are non-suspending,
+        // so an in-flight attachJob would otherwise publish a live socket after
+        // we return — leaking a controller while resumeAfterBackground no-ops.
+        attachJob?.cancel()
         val backend = backendFlow.value
         if (backend == null) return
         backendFlow.value = null
-        attachJob?.cancel()
         val releaser = CoroutineScope(SupervisorJob() + Dispatchers.IO)
         releaser.launch {
             try {

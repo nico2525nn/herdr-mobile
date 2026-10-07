@@ -43,8 +43,13 @@ fun ExtraKeysPanel(
             latched = if (latched == key.modifier) null else key.modifier
             return
         }
-        onSend(TerminalKeyEncoder.withModifier(latched, key))
-        latched = null
+        val bytes = TerminalKeyEncoder.withModifier(latched, key)
+        if (bytes != null) {
+            onSend(bytes)
+            latched = null
+        }
+        // Null = meaningless combination or unimplemented key path: keep the latch
+        // so the user can pick a working key instead of losing the modifier.
     }
 
     Column(

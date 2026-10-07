@@ -251,37 +251,99 @@ class HerdrTerminalView @JvmOverloads constructor(
     override fun onKeyDown(keyCode: Int, event: android.view.KeyEvent): Boolean {
         // Hardware / adb key events bypass the InputConnection entirely.
         if (event.action == android.view.KeyEvent.ACTION_DOWN) {
-            when (keyCode) {
+            val handled = when (keyCode) {
                 android.view.KeyEvent.KEYCODE_DEL -> {
                     onDirectDelete?.invoke()
-                    return true
+                    true
                 }
                 android.view.KeyEvent.KEYCODE_ENTER -> {
                     onDirectInput?.invoke("\r")
-                    return true
+                    true
+                }
+                android.view.KeyEvent.KEYCODE_DPAD_UP -> {
+                    onDirectInput?.invoke("\u001B[A")
+                    true
+                }
+                android.view.KeyEvent.KEYCODE_DPAD_DOWN -> {
+                    onDirectInput?.invoke("\u001B[B")
+                    true
+                }
+                android.view.KeyEvent.KEYCODE_DPAD_LEFT -> {
+                    onDirectInput?.invoke("\u001B[D")
+                    true
+                }
+                android.view.KeyEvent.KEYCODE_DPAD_RIGHT -> {
+                    onDirectInput?.invoke("\u001B[C")
+                    true
+                }
+                android.view.KeyEvent.KEYCODE_TAB -> {
+                    onDirectInput?.invoke("\t")
+                    true
+                }
+                android.view.KeyEvent.KEYCODE_ESCAPE -> {
+                    onDirectInput?.invoke("\u001B")
+                    true
                 }
                 else -> {
                     val c = event.unicodeChar
+                    // Ctrl+key often reports unicodeChar==0: synthesize the control
+                    // byte from the keycode letter instead of dropping it.
                     if (c != 0) {
                         onDirectInput?.invoke(String(Character.toChars(c)))
-                        return true
+                        true
+                    } else if (event.isCtrlPressed) {
+                        val ctrl = keyCodeToCtrlByte(keyCode)
+                        if (ctrl != null) {
+                            onDirectInput?.invoke(String(byteArrayOf(ctrl), Charsets.ISO_8859_1))
+                            true
+                        } else {
+                            false
+                        }
+                    } else {
+                        false
                     }
                 }
             }
+            if (handled) return true
         }
         return super.onKeyDown(keyCode, event)
     }
 
+    private fun keyCodeToCtrlByte(keyCode: Int): Byte? {
+        // KEYCODE_A..Z -> 0x01..0x1A.
+        if (keyCode in android.view.KeyEvent.KEYCODE_A..android.view.KeyEvent.KEYCODE_Z) {
+            return (keyCode - android.view.KeyEvent.KEYCODE_A + 1).toByte()
+        }
+        return when (keyCode) {
+            android.view.KeyEvent.KEYCODE_SPACE -> 0x00.toByte()
+            android.view.KeyEvent.KEYCODE_SLASH -> 0x1F.toByte()
+            else -> null
+        }
+    }
+
     override fun onKeyUp(keyCode: Int, event: android.view.KeyEvent): Boolean {
-        // Consume to keep focus; the work happens on key down.
-        return true
+        // Only consume what onKeyDown consumed; anything else belongs to the
+        // framework/IME (modifiers, system keys).
+        return when (keyCode) {
+            android.view.KeyEvent.KEYCODE_DEL,
+            android.view.KeyEvent.KEYCODE_ENTER,
+            android.view.KeyEvent.KEYCODE_DPAD_UP,
+            android.view.KeyEvent.KEYCODE_DPAD_DOWN,
+            android.view.KeyEvent.KEYCODE_DPAD_LEFT,
+            android.view.KeyEvent.KEYCODE_DPAD_RIGHT,
+            android.view.KeyEvent.KEYCODE_TAB,
+            android.view.KeyEvent.KEYCODE_ESCAPE -> true
+            else -> super.onKeyUp(keyCode, event)
+        }
     }
 
     override fun onKeyPreIme(keyCode: Int, event: android.view.KeyEvent): Boolean {
         // System back while the keyboard is up: dismiss the keyboard instead of
-        // leaving the terminal screen. The view keeps focus for the next tap.
+        // leaving the terminal screen. Intercept ACTION_DOWN: by ACTION_UP the
+        // framework has usually already consumed DOWN (finishing the screen),
+        // so UP-only handling never fires on most devices.
         if (keyCode == android.view.KeyEvent.KEYCODE_BACK &&
-            event.action == android.view.KeyEvent.ACTION_UP
+            event.action == android.view.KeyEvent.ACTION_DOWN
         ) {
             hideKeyboard()
             return true
@@ -430,14 +492,24 @@ class HerdrTerminalView @JvmOverloads constructor(
             }
 
             override fun setComposingText(text: CharSequence?, newCursorPosition: Int): Boolean {
-                // CJK composition belongs to the bottom pre-composition panel, not the
-                // grid: commit it as-is rather than dropping keystrokes silently.
-                if (!text.isNullOrEmpty()) onDirectInput?.invoke(text.toString())
-                return true
+                // Composing text is UNCONFIRMED (kana readings, pinyin fragments):
+                // never send it to the PTY. The IME follows with commitText() for
+                // the confirmed string. Sending both would duplicate + pollute
+                // the remote line. CJK composition belongs to the bottom panel.
+                return super.setComposingText(text, newCursorPosition)
+            }
+
+            override fun finishComposingText(): Boolean {
+                return super.finishComposingText()
             }
 
             override fun deleteSurroundingText(beforeLength: Int, afterLength: Int): Boolean {
-                repeat(beforeLength.coerceAtLeast(1)) { onDirectDelete?.invoke() }
+                // (0,0) is a composing-region cleanup ping, not a delete request:
+                // honor it only when there is actually something to delete.
+                // afterLength (forward delete) maps to ESC [ 3 ~.
+                if (beforeLength == 0 && afterLength == 0) return super.deleteSurroundingText(0, 0)
+                repeat(beforeLength) { onDirectDelete?.invoke() }
+                repeat(afterLength) { onDirectInput?.invoke("\u001B[3~") }
                 return true
             }
 
