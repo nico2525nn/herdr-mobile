@@ -26,6 +26,7 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.stateIn
+import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeout
@@ -162,7 +163,16 @@ class TerminalViewModel(
                 messageFlow.value = "Cannot attach: ${e.message}"
                 return@launch
             }
-            ensureActive()
+            // Cancelled between openTerminal (non-suspending: creates+connects)
+            // and publish: release the orphan or its controller + resize lock
+            // leak on the daemon (no idle timeout there).
+            if (!isActive) {
+                try {
+                    withContext(NonCancellable) { connection.release() }
+                } catch (_: Exception) {
+                }
+                return@launch
+            }
             messageFlow.value = null
             backendFlow.value = ConnectionTerminalBackend(connection, viewModelScope)
         }
@@ -173,6 +183,18 @@ class TerminalViewModel(
         val tab = snapshot.tab(tabId) ?: return
         val pane = tab.activePane ?: return
         openTarget(TerminalTarget(workspaceId, tabId, pane.id))
+    }
+
+    /**
+     * Re-attach the current target after a failure/disconnect. Drops the dead
+     * backend first so the new attach starts clean — without this a Detached
+     * screen has no recovery path except leaving and re-entering.
+     */
+    fun retryAttach() {
+        val target = targetFlow.value ?: return
+        // Clear synchronously so the placeholder shows immediately, then attach.
+        backendFlow.value = null
+        openTarget(target)
     }
 
     fun setInputPage(page: InputPanelPage) {

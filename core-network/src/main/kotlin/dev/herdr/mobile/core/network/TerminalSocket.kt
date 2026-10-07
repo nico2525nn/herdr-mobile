@@ -75,8 +75,11 @@ class TerminalSocket(
     override val state: StateFlow<TerminalAttachmentState> = _state.asStateFlow()
 
     private val _inbound = MutableSharedFlow<TerminalInbound>(
-        extraBufferCapacity = 256,
-        onBufferOverflow = BufferOverflow.DROP_OLDEST,
+        // Lossless: DROP_OLDEST on PTY bytes silently desyncs the emulator
+        // under burst output (and can drop Ready/Closed itself). The daemon
+        // is the backpressure source; the client must not discard.
+        extraBufferCapacity = 1024,
+        onBufferOverflow = BufferOverflow.SUSPEND,
     )
     override val inbound: Flow<TerminalInbound> = _inbound.asSharedFlow()
 
@@ -128,7 +131,13 @@ class TerminalSocket(
     }
 
     private fun emit(value: TerminalInbound) {
-        _inbound.tryEmit(value)
+        // tryEmit with SUSPEND overflow never drops: it returns false only
+        // when no collector is ready AND the buffer is full, in which case we
+        // suspend-emit on the scope so bursts apply backpressure instead of
+        // silently desyncing the emulator.
+        if (!_inbound.tryEmit(value)) {
+            scope.launch { _inbound.emit(value) }
+        }
     }
 
     override suspend fun send(data: ByteArray) {

@@ -139,6 +139,7 @@ fun TerminalScreen(
                     state = state,
                     onSendBytes = { viewModel.sendBytes(it) },
                     onSendText = { viewModel.sendText(it) },
+                    onRetry = { viewModel.retryAttach() },
                 )
             }
         }
@@ -313,14 +314,24 @@ private fun TerminalPlaceholder(connection: ConnectionState, hasTarget: Boolean)
 }
 
 @Composable
-private fun TerminalErrorBody(message: String) {
+private fun TerminalErrorBody(message: String, onRetry: (() -> Unit)? = null) {
     Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-        Text(
-            text = message,
-            style = MaterialTheme.typography.bodyLarge,
-            color = MaterialTheme.colorScheme.error,
+        Column(
+            horizontalAlignment = Alignment.CenterHorizontally,
+            verticalArrangement = Arrangement.spacedBy(12.dp),
             modifier = Modifier.padding(20.dp),
-        )
+        ) {
+            Text(
+                text = message,
+                style = MaterialTheme.typography.bodyLarge,
+                color = MaterialTheme.colorScheme.error,
+            )
+            if (onRetry != null) {
+                TextButton(onClick = onRetry) {
+                    Text("Retry")
+                }
+            }
+        }
     }
 }
 
@@ -329,19 +340,20 @@ private fun TerminalSurface(
     state: TerminalUiState,
     onSendBytes: (ByteArray) -> Unit,
     onSendText: (String) -> Unit,
+    onRetry: () -> Unit,
 ) {
     val backend = state.backend ?: return
     val backendState by backend.state.collectAsStateWithLifecycle(initialValue = BackendState.Idle)
     val clipboard = LocalClipboardManager.current
     // Attach failure / disconnect must never render as a blank terminal: show the
-    // reason instead, and stop feeding a dead backend to the view.
+    // reason with a retry instead, and stop feeding a dead backend to the view.
     when (val bs = backendState) {
         is BackendState.Failed -> {
-            TerminalErrorBody("Attach failed (${bs.code}): ${bs.message}")
+            TerminalErrorBody("Attach failed (${bs.code}): ${bs.message}", onRetry)
             return
         }
         is BackendState.Detached -> {
-            TerminalErrorBody("Detached (${bs.reason})")
+            TerminalErrorBody("Detached (${bs.reason})", onRetry)
             return
         }
         else -> {}

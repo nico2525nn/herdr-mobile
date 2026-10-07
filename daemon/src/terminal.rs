@@ -109,6 +109,13 @@ impl TerminalRegistry {
         restore: Option<(u32, u32)>,
     ) -> Result<()> {
         let session = self.attach(pane_id.clone(), takeover, cols, rows).await?;
+        // Subscribe BEFORE the restore RPC below: run_session can fail fast
+        // (spawn failure -> attach_failed on closed_tx, a broadcast with no
+        // replay). Any await between attach and subscribe — RPC included —
+        // lets the failure slip through with zero receivers, hanging the
+        // bridge on a blank terminal.
+        let frames_rx = session.frames_tx.subscribe();
+        let closed_rx = session.closed_tx.subscribe();
         let restore: Option<RestoreViewport> = match restore {
             // Explicit client value (or disable) wins.
             Some((0, _)) => None,
@@ -128,7 +135,7 @@ impl TerminalRegistry {
             // joiner passes the same attach-time snapshot, so loss is benign.
             let _ = session.restore_tx.try_send(req);
         }
-        run_bridge(session, socket, self.clone(), pane_id).await
+        run_bridge(session, socket, self.clone(), pane_id, frames_rx, closed_rx).await
     }
 
     async fn attach(
@@ -412,9 +419,11 @@ async fn run_bridge(
     socket: WebSocket,
     registry: Arc<TerminalRegistry>,
     pane_id: String,
+    frames_rx: broadcast::Receiver<SessionFrame>,
+    closed_rx: broadcast::Receiver<String>,
 ) -> Result<()> {
     let _guard = BridgeGuard::new(&session);
-    run_bridge_inner(session, socket, registry, pane_id).await
+    run_bridge_inner(session, socket, registry, pane_id, frames_rx, closed_rx).await
 }
 
 async fn run_bridge_inner(
@@ -422,13 +431,11 @@ async fn run_bridge_inner(
     socket: WebSocket,
     registry: Arc<TerminalRegistry>,
     pane_id: String,
+    mut frames_rx: broadcast::Receiver<SessionFrame>,
+    mut closed_rx: broadcast::Receiver<String>,
 ) -> Result<()> {
-    // Subscribe BEFORE any handshake IO: run_session can fail fast (spawn
-    // failure -> attach_failed on closed_tx, a broadcast with no replay). A
-    // bridge subscribing after that send would miss it and hang on a blank
-    // terminal that never errors.
-    let mut frames_rx = session.frames_tx.subscribe();
-    let mut closed_rx = session.closed_tx.subscribe();
+    // Receivers arrive pre-subscribed from bridge(): any await between attach
+    // and subscribe lets attach_failed slip through with zero receivers.
     // Pre-populate the view before the first frame: visible screen wrapped in home+clear.
     let prelude = match registry.herdr.pane_read_visible(&pane_id).await {
         Ok(text) => format!("\x1b[2J\x1b[H{text}").into_bytes(),
