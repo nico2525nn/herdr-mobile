@@ -61,8 +61,21 @@ class AppContainer(context: Context) {
                     kotlinx.coroutines.delay(500)
                     val current = settingsRepository.settings.value
                     val rebuilt = settingsRepository.providerFor(current)
-                    if (rebuilt != null) {
-                        providerFlow.value?.let { old ->
+                    val old = providerFlow.value
+                    if (rebuilt == null) {
+                        // Last profile deleted (or transport unusable): close the
+                        // stale tunnel instead of staying connected to a deleted
+                        // host. The client surfaces no-profile state on kick.
+                        if (old != null) {
+                            try {
+                                old.close()
+                            } catch (_: Exception) {
+                            }
+                            providerFlow.value = null
+                            client.kick()
+                        }
+                    } else {
+                        if (old != null) {
                             try {
                                 old.close()
                             } catch (_: Exception) {

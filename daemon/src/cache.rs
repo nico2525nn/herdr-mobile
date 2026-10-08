@@ -331,7 +331,7 @@ impl SessionCache {
         }) else {
             return vec![];
         };
-        vec![self.emit(
+        let ev = self.emit(
             "tab.renamed",
             Some(workspace_id.to_string()),
             Some(tab_id.to_string()),
@@ -341,7 +341,9 @@ impl SessionCache {
             revision,
             None,
             None,
-        )]
+        );
+        self.sync_snapshot_seq();
+        vec![ev]
     }
 
     fn apply_workspace_rename(&self, event: &HerdrEvent) -> Vec<SemanticEvent> {
@@ -356,7 +358,7 @@ impl SessionCache {
         }) else {
             return vec![];
         };
-        vec![self.emit(
+        let ev = self.emit(
             "workspace.renamed",
             Some(workspace_id.to_string()),
             None,
@@ -366,7 +368,9 @@ impl SessionCache {
             revision,
             None,
             None,
-        )]
+        );
+        self.sync_snapshot_seq();
+        vec![ev]
     }
 
     async fn apply_structural(&self, event: &HerdrEvent) -> Result<Vec<SemanticEvent>> {
@@ -383,7 +387,7 @@ impl SessionCache {
         let workspace_id = event.data.get("workspace_id").and_then(|v| v.as_str()).map(str::to_string);
         let tab_id = event.data.get("tab_id").and_then(|v| v.as_str()).map(str::to_string);
         let pane_id = event.data.get("pane_id").and_then(|v| v.as_str()).map(str::to_string);
-        Ok(vec![self.emit(
+        let ev = self.emit(
             kind,
             workspace_id,
             tab_id,
@@ -393,7 +397,9 @@ impl SessionCache {
             summary.revision,
             Some(event.data.clone()),
             None,
-        )])
+        );
+        self.sync_snapshot_seq();
+        Ok(vec![ev])
     }
 }
 

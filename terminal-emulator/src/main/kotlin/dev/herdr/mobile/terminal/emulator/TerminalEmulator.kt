@@ -395,20 +395,22 @@ class TerminalEmulator(
             return
         }
         when (b) {
-            'D'.code -> index() // IND
+            'D'.code -> { index(); state = State.GROUND } // IND
             'E'.code -> { // NEL
                 cursorColValue = 0
                 index()
+                state = State.GROUND
             }
-            'M'.code -> reverseIndex() // RI
-            '7'.code -> decSaved = capture() // DECSC
-            '8'.code -> decSaved?.let { restore(it, withRegion = false) } // DECRC
+            'M'.code -> { reverseIndex(); state = State.GROUND } // RI
+            '7'.code -> { decSaved = capture(); state = State.GROUND } // DECSC
+            '8'.code -> { decSaved?.let { restore(it, withRegion = false) }; state = State.GROUND } // DECRC
             'c'.code -> fullReset() // RIS
             'H'.code -> { // HTS
                 tabStops.add(cursorColValue)
                 touch()
+                state = State.GROUND
             }
-            'Z'.code -> respond(DA_RESPONSE) // DECID, answer like primary DA
+            'Z'.code -> { respond(DA_RESPONSE); state = State.GROUND } // DECID, answer like primary DA
             '='.code, '>'.code -> state = State.GROUND // keypad modes, ignored
             '('.code, ')'.code, '%'.code, '$'.code -> state = State.ESC_CHARSET
             '#'.code -> state = State.ESC_HASH
@@ -1121,6 +1123,19 @@ class TerminalEmulator(
         }
         val row = active()[cursorRowValue]
         val attrs = currentAttrs()
+        // Clear neighbor halves of any wide glyph we overlap: writing on a
+        // continuation cell must blank the old lead (else the view draws it
+        // over the new char), and writing a narrow char on a lead cell must
+        // blank the stale continuation (else a phantom blank follows).
+        if (row.getOrNull(cursorColValue)?.wideContinuation == true && cursorColValue > 0) {
+            row[cursorColValue - 1] = TerminalCell(32, false, attrs)
+        }
+        if (!wide && cursorColValue + 1 < colsValue &&
+            row.getOrNull(cursorColValue + 1)?.wideContinuation == true
+        ) {
+            // Cursor sits on the lead of a wide glyph; the continuation dies.
+            row[cursorColValue + 1] = TerminalCell(32, false, attrs)
+        }
         if (wide && cursorColValue + 1 < colsValue) {
             row[cursorColValue] = TerminalCell(cp, false, attrs)
             row[cursorColValue + 1] = TerminalCell(32, true, attrs)

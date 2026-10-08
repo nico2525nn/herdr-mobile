@@ -55,11 +55,14 @@ impl HerdrClient {
         writer.flush().await?;
         let mut lines = BufReader::new(reader).lines();
         loop {
-            let line = lines
-                .next_line()
-                .await
-                .context("herdr closed the connection mid-request")?
-                .context("herdr closed the connection mid-request")?;
+            let line = tokio::time::timeout(
+                std::time::Duration::from_secs(15),
+                lines.next_line(),
+            )
+            .await
+            .context("herdr request timed out waiting for a matching response")?
+            .context("herdr closed the connection mid-request")?
+            .context("herdr closed the connection mid-request")?;
             let value: Value = serde_json::from_str(&line)
                 .with_context(|| format!("herdr sent invalid JSON: {line:.200}"))?;
             // Herdr echoes the request id on decodable requests, but uses `"id":""` when the

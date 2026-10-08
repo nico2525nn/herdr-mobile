@@ -16,13 +16,17 @@ class ModelContractTest {
         assertEquals(AgentStatus.WORKING, AgentStatus.fromWire("working"))
         assertEquals(AgentStatus.DONE, AgentStatus.fromWire("done"))
         assertEquals(AgentStatus.IDLE, AgentStatus.fromWire("idle"))
+        assertEquals(AgentStatus.FAILED, AgentStatus.fromWire("failed"))
         assertEquals(AgentStatus.UNKNOWN, AgentStatus.fromWire("unknown"))
-        assertEquals(AgentStatus.UNKNOWN, AgentStatus.fromWire("failed"))
         assertEquals(AgentStatus.UNKNOWN, AgentStatus.fromWire(null))
     }
 
     @Test
-    fun `roll-up prefers blocked over working over done over idle over unknown`() {
+    fun `roll-up prefers failed over blocked over working over done over idle over unknown`() {
+        assertEquals(
+            AgentStatus.FAILED,
+            AgentStatus.rollUp(listOf(AgentStatus.BLOCKED, AgentStatus.FAILED, AgentStatus.WORKING)),
+        )
         assertEquals(
             AgentStatus.BLOCKED,
             AgentStatus.rollUp(listOf(AgentStatus.IDLE, AgentStatus.WORKING, AgentStatus.BLOCKED)),
@@ -39,11 +43,11 @@ class ModelContractTest {
 
     @Test
     fun `roll-up priority is explicit, not ordinal`() {
-        // `failed` must be insertable above `blocked` without renumbering: priorities are
-        // spaced, and the order is a strict total order matching the plan.
+        // Priorities are spaced, and the order is a strict total order matching
+        // the plan: failed outranks blocked (a failure anywhere dominates).
         val ordered = AgentStatus.entries.sortedBy { it.priority }
         assertEquals(
-            listOf(AgentStatus.UNKNOWN, AgentStatus.IDLE, AgentStatus.DONE, AgentStatus.WORKING, AgentStatus.BLOCKED),
+            listOf(AgentStatus.UNKNOWN, AgentStatus.IDLE, AgentStatus.DONE, AgentStatus.WORKING, AgentStatus.BLOCKED, AgentStatus.FAILED),
             ordered,
         )
     }
