@@ -147,6 +147,13 @@ class TerminalSocket(
         }
     }
 
+    private fun closeInboundLane() {
+        // Stops the forwarder: without this each attach leaks one coroutine +
+        // channel + socket refs on the app-lifetime scope, parked on receive
+        // forever after release.
+        inboundLane.close()
+    }
+
     private fun emit(value: TerminalInbound) {
         // UNLIMITED channel never suspends the OkHttp callback thread; order
         // is preserved by the single consumer above. Backpressure lives at
@@ -230,6 +237,7 @@ class TerminalSocket(
             outbound.close()
         } catch (_: Exception) {
         }
+        closeInboundLane()
         try {
             socket?.close(1000, "release")
         } catch (_: Exception) {

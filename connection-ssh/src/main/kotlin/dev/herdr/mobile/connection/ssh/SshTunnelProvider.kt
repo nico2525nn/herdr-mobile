@@ -127,11 +127,18 @@ class SshTunnelProvider(
                     val type = hk.type
                     val key = hk.key
                     if (type.isNotBlank() && key.isNotBlank()) {
+                        // Non-22 ports need the [host]:port form or JSch never
+                        // matches the stored line and TOFU loops forever.
+                        val hostPart = if (profile.port != 22) {
+                            "[${profile.host}]:${profile.port}"
+                        } else {
+                            profile.host
+                        }
                         throw UnknownHostKeyException(
                             profileId = profile.id,
                             host = profile.host,
                             fingerprint = runCatching { hk.getFingerPrint(jsch) }.getOrNull() ?: type,
-                            knownHostsLine = "${profile.host} $type $key",
+                            knownHostsLine = "$hostPart $type $key",
                         )
                     }
                 }
