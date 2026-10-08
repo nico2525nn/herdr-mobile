@@ -169,9 +169,15 @@ private fun AppNav(
             }
         },
     ) { padding ->
+        // Static start: routing ALL links (cold start included) through the
+        // LaunchedEffect above. Tying startDestination to the link (startTerminal
+        // ?: HomeRoute) resets the NavHost every time the link changes — the
+        // navigate-then-snap-back-to-Home bug. Cold start works identically:
+        // onCreate sets the value before first composition, the effect fires
+        // once and navigates.
         NavHost(
             navController = nav,
-            startDestination = startTerminal ?: HomeRoute,
+            startDestination = HomeRoute,
             modifier = Modifier.padding(padding),
         ) {
             composable<HomeRoute> {

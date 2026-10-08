@@ -38,26 +38,19 @@ object HerdrNotifications {
 
     /**
      * Returns true when [event] passes both the type filter and the user's toggles.
-     * Failed is a first-class status from the daemon (not message sniffing):
-     * BLOCKED-with-"fail"-text is kept as a legacy fallback for old daemons.
+     * DONE and BLOCKED only: Herdr (0.9.1–0.9.3) emits no failure status or
+     * failure detail (no message/reason fields on status events), so a FAILED
+     * branch would be dead code. FAILED stays in the enum for wire compat.
      */
     fun shouldNotify(
         event: SemanticEvent,
         notifyDone: Boolean,
         notifyBlocked: Boolean,
-        notifyFailed: Boolean,
     ): Boolean {
         if (!event.isAlertWorthy) return false
         return when (event.status) {
             AgentStatus.DONE -> notifyDone
-            AgentStatus.FAILED -> notifyFailed
-            AgentStatus.BLOCKED ->
-                if (event.message?.contains("fail", ignoreCase = true) == true) {
-                    notifyFailed
-                } else {
-                    notifyBlocked
-                }
-
+            AgentStatus.BLOCKED -> notifyBlocked
             else -> false
         }
     }
@@ -71,14 +64,21 @@ object HerdrNotifications {
         val status = event.status ?: return
         val title = when (status) {
             AgentStatus.DONE -> "Done${workspaceLabel?.let { " · $it" } ?: ""}"
-            AgentStatus.FAILED -> "Failed${workspaceLabel?.let { " · $it" } ?: ""}"
             AgentStatus.BLOCKED -> "Blocked${workspaceLabel?.let { " · $it" } ?: ""}"
             else -> return
         }
         val body = tabLabel?.takeIf { it.isNotBlank() } ?: status.name.lowercase()
 
         val intent = Intent(Intent.ACTION_VIEW).apply {
-            `package` = context.packageName
+            // Explicit component: resolves without any intent-filter (the
+            // manifest deliberately has no dataless VIEW filter — it would
+            // match every implicit VIEW in the system). Package-only explicit
+            // intents still need a filter and fail with ACTIVITY_NOT_FOUND.
+            // NOTE: literal class package, not context.packageName: the debug
+            // build's applicationId (dev.herdr.mobile.debug) differs from the
+            // class package (dev.herdr.mobile), and deriving from packageName
+            // fails with CLASS_NOT_FOUND on debug builds.
+            setClassName(context.packageName, "dev.herdr.mobile.MainActivity")
             putExtra(EXTRA_WORKSPACE_ID, event.workspaceId)
             putExtra(EXTRA_TAB_ID, event.tabId)
             putExtra(EXTRA_PANE_ID, event.paneId)

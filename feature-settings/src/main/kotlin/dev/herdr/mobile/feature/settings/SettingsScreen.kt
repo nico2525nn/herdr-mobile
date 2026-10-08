@@ -311,22 +311,11 @@ fun SettingsScreen(
                 SettingsRow(
                     headline = "Blocked",
                     supporting = "Agent waits for input or permission",
-                    showDivider = true,
+                    showDivider = false,
                     trailing = {
                         Switch(
                             checked = settings.notifyBlocked,
                             onCheckedChange = { viewModel.setNotifyBlocked(it) },
-                        )
-                    },
-                )
-                SettingsRow(
-                    headline = "Failed",
-                    supporting = "Agent exited or errored",
-                    showDivider = false,
-                    trailing = {
-                        Switch(
-                            checked = settings.notifyFailed,
-                            onCheckedChange = { viewModel.setNotifyFailed(it) },
                         )
                     },
                 )

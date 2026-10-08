@@ -26,10 +26,9 @@
                 <action android:name="android.intent.action.MAIN" />
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
-            <intent-filter>
-                <action android:name="android.intent.action.VIEW" />
-                <category android:name="android.intent.category.DEFAULT" />
-            </intent-filter>
+            <!-- No VIEW filter: notification taps use an explicit package-set
+                 intent that resolves without one. A dataless VIEW filter would
+                 match every implicit VIEW in the system (chooser pollution). -->
         </activity>
     </application>
 </manifest>

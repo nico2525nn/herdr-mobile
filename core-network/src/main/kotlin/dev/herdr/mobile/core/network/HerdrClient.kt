@@ -18,6 +18,7 @@ import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.isActive
@@ -89,6 +90,19 @@ class HerdrClient(
 
     private val _state = MutableStateFlow(HerdrClientState())
     val state: StateFlow<HerdrClientState> = _state.asStateFlow()
+
+    /**
+     * Every semantic event as it arrives, BEFORE folding. Notifications consume
+     * this (exact transitions, no coalescing loss); snapshots remain the UI
+     * source. Replay 0 + conflated buffer: slow collectors drop interim
+     * events, and the snapshot-diff backstop in NotificationRelay covers gaps.
+     */
+    private val _events = kotlinx.coroutines.flow.MutableSharedFlow<SemanticEvent>(
+        replay = 0,
+        extraBufferCapacity = 64,
+        onBufferOverflow = kotlinx.coroutines.channels.BufferOverflow.DROP_OLDEST,
+    )
+    val events: kotlinx.coroutines.flow.SharedFlow<SemanticEvent> = _events.asSharedFlow()
 
     private var loop: Job? = null
 
@@ -291,6 +305,10 @@ class HerdrClient(
     }
 
     private suspend fun applyEvent(event: SemanticEvent) {
+        // Emit before folding: Gap/Refetch outcomes drop the event from the
+        // snapshot, but its transition (working->done) still happened and
+        // notifications must fire exactly once for it.
+        _events.tryEmit(event)
         val current = _state.value.snapshot ?: run {
             refetch("event without snapshot")
             return

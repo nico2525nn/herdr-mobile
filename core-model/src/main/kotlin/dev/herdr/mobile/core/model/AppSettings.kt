@@ -134,7 +134,6 @@ data class AppSettings(
 
     val notifyDone: Boolean = true,
     val notifyBlocked: Boolean = true,
-    val notifyFailed: Boolean = true,
 ) {
     companion object {
         const val DEFAULT_EXTRA_KEYS_LAYOUT = "termux_default"
