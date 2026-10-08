@@ -123,6 +123,18 @@ class TerminalBridge(
 
     suspend fun sendText(text: String) = backend.sendText(text)
 
+    /**
+     * Snap a scrolled viewport back to live. Called from the input-tick
+     * observer (user typed): bridge.send is emulator-responses only, NOT user
+     * input, so snapping here would never fire for typing.
+     */
+    fun snapToBottom() {
+        scope.launch(emulatorContext) {
+            emulator.snapToBottomOnInput()
+            publish()
+        }
+    }
+
     suspend fun mouse(action: String, button: String, column: Int, row: Int) =
         backend.mouse(action, button, column, row)
 

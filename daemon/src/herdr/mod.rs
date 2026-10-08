@@ -180,12 +180,32 @@ impl HerdrClient {
 
     /// Visible screen as ANSI text, used to pre-populate a terminal view before frames arrive.
     pub async fn pane_read_visible(&self, pane_id: &str) -> Result<String> {
-        let result = self
-            .request(
-                "pane.read",
-                json!({"pane_id": pane_id, "source": "visible", "format": "ansi", "strip_ansi": false}),
-            )
-            .await?;
+        self.pane_read_source(pane_id, "visible", None).await
+    }
+
+    /// Up to `lines` of scrollback history (oldest first) as ANSI text. Herdr
+    /// caps at ~1000 lines; fewer when the pane is young. Ends at (and usually
+    /// overlaps) the visible screen — callers trim the overlap.
+    pub async fn pane_read_recent(&self, pane_id: &str, lines: u32) -> Result<String> {
+        self.pane_read_source(pane_id, "recent", Some(lines)).await
+    }
+
+    async fn pane_read_source(
+        &self,
+        pane_id: &str,
+        source: &str,
+        lines: Option<u32>,
+    ) -> Result<String> {
+        let mut params = serde_json::Map::from_iter([
+            ("pane_id".to_string(), json!(pane_id)),
+            ("source".to_string(), json!(source)),
+            ("format".to_string(), json!("ansi")),
+            ("strip_ansi".to_string(), json!(false)),
+        ]);
+        if let Some(lines) = lines {
+            params.insert("lines".to_string(), json!(lines));
+        }
+        let result = self.request("pane.read", Value::Object(params)).await?;
         result
             .get("read")
             .and_then(|r| r.get("text"))

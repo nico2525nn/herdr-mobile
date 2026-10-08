@@ -145,6 +145,7 @@ fun TerminalScreen(
                     onSendText = { viewModel.sendText(it) },
                     onRetry = { viewModel.retryAttach() },
                     terminalFocusRequest = terminalFocusRequest,
+                    inputTick = viewModel.inputTick.collectAsStateWithLifecycle().value,
                 )
             }
         }
@@ -350,6 +351,7 @@ private fun TerminalSurface(
     onSendText: (String) -> Unit,
     onRetry: () -> Unit,
     terminalFocusRequest: Int,
+    inputTick: Int,
 ) {
     val backend = state.backend ?: return
     val backendState by backend.state.collectAsStateWithLifecycle(initialValue = BackendState.Idle)
@@ -389,6 +391,14 @@ private fun TerminalSurface(
         if (terminalFocusRequest > 0) {
             viewRef?.requestFocus()
             viewRef?.showKeyboard()
+        }
+    }
+
+    // User input snaps a scrolled viewport home (back at the prompt). Guard 0:
+    // the initial value must not yank on mount.
+    LaunchedEffect(inputTick) {
+        if (inputTick > 0) {
+            bridgeRef.value?.snapToBottom()
         }
     }
 

@@ -77,6 +77,14 @@ class TerminalSocket(
         // Lossless: DROP_OLDEST on PTY bytes silently desyncs the emulator
         // under burst output (and can drop Ready/Closed itself). The daemon
         // is the backpressure source; the client must not discard.
+        //
+        // replay covers the attach race: the daemon sends ready + history
+        // prelude within milliseconds of connect, but the bridge pump
+        // subscribes ~100ms later (Compose composition). With replay=0 those
+        // first messages sit in the buffer invisible to the late subscriber —
+        // the prelude (and its 1000 history rows) is silently lost. 256
+        // dwarfs any attach burst (prelude + a few live frames).
+        replay = 256,
         extraBufferCapacity = 1024,
         onBufferOverflow = BufferOverflow.SUSPEND,
     )

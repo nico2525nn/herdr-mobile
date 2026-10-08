@@ -84,6 +84,19 @@ class TerminalViewModel(
     private val stickyFlow =
         MutableStateFlow<Set<TerminalKeyEncoder.Modifier>>(emptySet())
 
+    /**
+     * Increments on every user input send (text, bytes, extra keys). The
+     * terminal surface collects it to snap a scrolled viewport back to live:
+     * typing means the user is back at the prompt. Output never touches it,
+     * so reading history while output flows doesn't yank.
+     */
+    private val _inputTick = MutableStateFlow(0)
+    val inputTick: StateFlow<Int> = _inputTick.asStateFlow()
+
+    private fun tickInput() {
+        _inputTick.value += 1
+    }
+
     // Declared BEFORE init: viewModelScope.launch on the main thread starts
     // undispatched, so the first StateFlow emit can reach flushPending while
     // the constructor is still running. A later declaration NPEs on monitor-enter.
@@ -312,6 +325,7 @@ class TerminalViewModel(
      * Bounded at 64 entries; failures surface as a status message.
      */
     private fun enqueueOrSend(op: suspend (ConnectionTerminalBackend) -> Unit) {
+        tickInput()
         val backend = backendFlow.value
         if (backend != null) {
             viewModelScope.launch {
@@ -402,6 +416,7 @@ class TerminalViewModel(
     }
 
     fun interrupt() {
+        tickInput()
         val paneId = targetFlow.value?.paneId ?: return
         viewModelScope.launch {
             // Fastest path first: raw ETX byte. The REST fallback covers panes whose

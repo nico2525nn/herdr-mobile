@@ -413,8 +413,11 @@ class TerminalEmulatorTest {
         e.scrollBy(5)
         e.write("zz")
         assertEquals(5, e.scrollbackOffset)
-        // But a write that pushes a new scrollback row snaps back to live.
+        // New output does NOT snap (stable view while reading history).
         e.write("\r\n")
+        assertEquals(5, e.scrollbackOffset)
+        // Only input snaps back.
+        e.snapToBottomOnInput()
         assertEquals(0, e.scrollbackOffset)
     }
 
@@ -544,112 +547,71 @@ class TerminalEmulatorTest {
         assertEquals(24, e.lines.size)
     }
 
-    @Test fun heightShrinkPreservesTopRowsInOrder() {
-        // Viewport keeps the live bottom; vanishing TOP rows (older than the
-        // screen) append to history in order — no duplicates, no reversal.
+    @Test fun heightShrinkKeepsLiveBottom() {
+        // Shrink keeps the live bottom rows on screen; history is untouched
+        // (no push: the daemon prelude owns pre-attach history, live scrolls
+        // bank post-attach rows).
         val e = emu(cols = 4, rows = 4)
-        e.write("R0\r\nR1\r\nR2\r\nR3") // screen full, no trailing scroll
-        e.resize(4, 2) // viewport keeps R2,R3; R0,R1 enter history
+        e.write("R0\r\nR1\r\nR2\r\nR3")
+        e.resize(4, 2)
         assertEquals("R2", rowText(e, 0).trim())
         assertEquals("R3", rowText(e, 1).trim())
         e.scrollBy(10)
-        assertEquals("R0", rowText(e, 0).trim())
-        assertEquals("R1", rowText(e, 1).trim())
+        assertEquals(0, e.scrollbackOffset) // shrink banked nothing
     }
 
-    @Test fun heightGrowPullsTailAndSkipsRepaintMerge() {
-        // Grow pulls tail rows back to the screen (Herdr's repaint shows the
-        // same rows); the repaint merge is on holiday so older-than-tail rows
-        // never append after newer ones (time reversal).
-        val e = emu(cols = 4, rows = 4)
-        e.write("R0\r\nR1\r\nR2\r\nR3")
-        e.resize(4, 2) // history: R0,R1; screen: R2,R3
-        e.resize(4, 4) // pull R0,R1 back; screen whole again
-        assertEquals("R0", rowText(e, 0).trim())
-        assertEquals("R3", rowText(e, 3).trim())
-        e.scrollBy(10)
-        assertEquals(0, e.scrollbackOffset) // drained by the pull
-        // Repaint arrives (grace): nothing banked despite full turnover.
-        e.write(esc("[1;1H") + "R0" + esc("[2;1H") + "R1" + esc("[3;1H") + "R2" + esc("[4;1H") + "R3")
-        e.scrollBy(10)
-        assertEquals(0, e.scrollbackOffset)
-        // Grace expires after 5 writes; new output banks normally again.
-        repeat(5) { e.write("k") }
-        repeat(4) { i -> e.write("M$i\r\n") }
-        e.scrollBy(10)
-        assertTrue(e.scrollbackOffset > 0)
-    }
-
-    @Test fun membershipFilterSkipsRebankedRows() {
-        // Same turnover twice (repaint storm): second banks nothing.
-        val e = emu(cols = 4, rows = 3)
-        e.write("A0\r\nA1\r\nA2")
-        val repaint = esc("[1;1H") + "B0" + esc("[2;1H") + "B1" + esc("[3;1H") + "B2"
-        e.write(repaint) // turnover banks A0,A1,A2
-        e.write("X") // perturb so the next repaint isn't a no-op touch
-        e.write(esc("[H") + esc("[2J")) // ED2 disarms; use plain repaint instead
-        e.write(repaint) // same turnover again
-        e.scrollBy(20)
-        // A0,A1,A2 banked once (membership filter); X-row once.
-        var countA0 = 0
-        // Walk the whole history via repeated reads is awkward; assert bound:
-        // offset <= 4 proves no stacking (naive would stack 3+1+3=7).
-        assertTrue(e.scrollbackOffset <= 4)
-    }
-
-    @Test fun widthChangeClearsScrollback() {
-        // Reflow changes wrapping: old rows no longer match the grid.
+    @Test fun widthChangeKeepsScrollback() {
+        // Rewrap in place (banked rows keep their own widths; the view pads
+        // or clips). Clearing here used to eat history on rotation.
         val e = emu(cols = 4, rows = 3)
         repeat(5) { i -> e.write("L$i\r\n") }
         e.scrollBy(10)
         assertTrue(e.scrollbackOffset > 0)
         e.resize(6, 3)
-        assertEquals(0, e.scrollbackOffset)
+        assertTrue(e.scrollbackOffset > 0)
     }
 
-    @Test fun repaintShiftBanksHistoryViaMerge() {
-        // Herdr streams output as cursor-addressed repaints (zero LFs): a pure
-        // CUP repaint that shifts the window must still bank scrolled-off rows.
-        val e = emu(cols = 4, rows = 3)
-        e.write("A0\r\nA1\r\nA2") // screen full, no scroll yet
-        // Repaint showing one row newer: CUP paints A1,A2,A3 over rows 0,1,2.
-        e.write(esc("[1;1H") + "A1" + esc("[2;1H") + "A2" + esc("[3;1H") + "A3")
+
+
+
+
+    @Test fun historyPreludeCapturesThenPaintsLive() {
+        // Daemon prelude: CLEAR + history lines + MARKER + HOME + visible.
+        // History banks to scrollback; visible paints the screen; no overlap.
+        val e = emu(cols = 10, rows = 3)
+        val marker = "\u001B]314159;herdr-history-end\u0007"
+        e.write("\u001B[2J\u001B[H" + "H0\nH1\n" + marker + "\n\u001B[H" + "V0\r\nV1")
+        assertEquals("V0", rowText(e, 0).trim())
+        assertEquals("V1", rowText(e, 1).trim())
         e.scrollBy(10)
-        assertEquals(1, e.scrollbackOffset) // A0 banked via merge
-        assertEquals("A0", rowText(e, 0).trim())
+        assertEquals(2, e.scrollbackOffset)
+        assertEquals("H0", rowText(e, 0).trim())
+        assertEquals("H1", rowText(e, 1).trim())
     }
 
-    @Test fun repaintWithoutShiftBanksNothing() {
-        // Same-viewport repaint (prompt rewrite): no shift, no banking.
-        val e = emu(cols = 4, rows = 3)
-        e.write("A0\r\nA1\r\n$ ")
-        e.write(esc("[3;3H") + "x") // prompt grows in place
-        e.scrollBy(10)
-        assertEquals(0, e.scrollbackOffset)
-    }
-
-    @Test fun fullTurnoverBanksPreRows() {
-        // Burst output coalesced into one viewport repaint (every row new):
-        // all pre-rows scrolled off and must bank.
+    @Test fun inPlaceRewriteMustNotCreateScrollback() {
+        // Cursor-addressed rewrites paint in place; without scroll-push they
+        // must never fabricate history (the old mergeViewportScroll did).
         val e = emu(cols = 4, rows = 3)
         e.write("A0\r\nA1\r\nA2")
-        e.write(esc("[1;1H") + "B0" + esc("[2;1H") + "B1" + esc("[3;1H") + "B2")
+        e.write(esc("[1;1H") + "B0" + esc("[2;1H") + "B1")
         e.scrollBy(10)
-        assertEquals(3, e.scrollbackOffset)
-        assertEquals("A0", rowText(e, 0).trim())
-        assertEquals("A2", rowText(e, 2).trim())
+        assertEquals(0, e.scrollbackOffset)
+        assertEquals("B0", rowText(e, 0).trim())
+        assertEquals("B1", rowText(e, 1).trim())
     }
 
-    @Test fun turnoverSkipsBlanksAndDedupes() {
-        // Blank pre-rows never bank; re-merging the same turnover (repaint
-        // storm) must not stack copies.
-        val e = emu(cols = 4, rows = 3)
-        e.write("A0\r\nA1") // third row blank
-        val repaint = esc("[1;1H") + "B0" + esc("[2;1H") + "B1" + esc("[3;1H") + "B2"
-        e.write(repaint)
-        e.write(repaint) // identical storm: second is a no-op touch
+    @Test fun repeatedOutputBanksEveryTime() {
+        // Identical repeated lines are legitimate history (the old membership
+        // filter dropped them, breaking `seq` twice / yes-command).
+        val e = emu(cols = 4, rows = 2)
+        e.write("ZZ\r\n")
+        e.write("ZZ\r\n")
+        e.write("ZZ\r\n")
         e.scrollBy(10)
-        assertEquals(2, e.scrollbackOffset) // A0,A1 only (no blank, no dupes)
+        assertEquals(2, e.scrollbackOffset) // two ZZ rows banked
+        assertEquals("ZZ", rowText(e, 0).trim())
+        assertEquals("ZZ", rowText(e, 1).trim())
     }
 
     @Test fun sameSizeResizeKeepsScrollback() {

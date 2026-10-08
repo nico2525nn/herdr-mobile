@@ -438,11 +438,16 @@ async fn run_bridge_inner(
 ) -> Result<()> {
     // Receivers arrive pre-subscribed from bridge(): any await between attach
     // and subscribe lets attach_failed slip through with zero receivers.
-    // Pre-populate the view before the first frame: visible screen wrapped in home+clear.
-    let prelude = match registry.herdr.pane_read_visible(&pane_id).await {
-        Ok(text) => format!("\x1b[2J\x1b[H{text}").into_bytes(),
+    // Pre-populate the view before the first frame: up to 1000 lines of real
+    // Herdr history, then the visible screen. The client parses the history
+    // block into scrollback (it never reflows it) and paints visible live.
+    // Overlap (history tail == visible head) is trimmed by line content so no
+    // row appears twice; when trimming fails conservatively the client shows
+    // a few duplicated rows rather than losing history.
+    let prelude = match build_history_prelude(&registry.herdr, &pane_id).await {
+        Ok(bytes) => bytes,
         Err(e) => {
-            debug!("pane.read prelude failed for {pane_id} ({e:#}); starting from frames only");
+            debug!("history prelude failed for {pane_id} ({e:#}); starting from frames only");
             vec![]
         }
     };
@@ -581,6 +586,99 @@ fn base64_decode(text: &str) -> anyhow::Result<Vec<u8>> {
         .map_err(|e| anyhow::anyhow!("bad base64: {e}"))
 }
 
+/// History prelude: CLEAR HOME + history text + MARKER + HOME + visible
+/// screen. The client splits on the marker; history lines carry their own SGR
+/// runs so colors survive without reflowing.
+///
+/// Layout: `CLEAR HOME <history> \n MARKER \n HOME <visible>`.
+/// MARKER is a private-use OSC sequence no terminal output can contain.
+const HISTORY_MARKER: &str = "\x1b]314159;herdr-history-end\x07";
+
+async fn build_history_prelude(
+    herdr: &crate::herdr::HerdrClient,
+    pane_id: &str,
+) -> anyhow::Result<Vec<u8>> {
+    let recent = herdr.pane_read_recent(pane_id, 1000).await?;
+    let visible = herdr.pane_read_visible(pane_id).await?;
+    Ok(build_history_prelude_from_texts(&recent, &visible).into_bytes())
+}
+
+/// Pure part of [build_history_prelude]: trims the history/visible overlap by
+/// stripped line content, keeping the LAST occurrence boundary (visible wins).
+/// Blank-line runs are unreliable anchors (prompts/padding repeat), so the
+/// overlap must contain at least one non-blank line; otherwise no trim.
+fn build_history_prelude_from_texts(recent: &str, visible: &str) -> String {
+    let hist_lines: Vec<&str> = recent.split('\n').collect();
+    let vis_lines: Vec<&str> = visible.split('\n').collect();
+    let overlap = overlap_len(&hist_lines, &vis_lines);
+    let history_only = hist_lines[..hist_lines.len() - overlap].join("\n");
+    format!("\x1b[2J\x1b[H{history_only}\n{HISTORY_MARKER}\n\x1b[H{visible}")
+}
+
+/// Length of the longest suffix of `hist` (stripped) that prefixes `vis`.
+/// Requires >= 1 non-blank line in the overlap; blank-only overlaps return 0.
+fn overlap_len(hist: &[&str], vis: &[&str]) -> usize {
+    let max = hist.len().min(vis.len());
+    let mut best = 0;
+    for k in 1..=max {
+        let mut ok = true;
+        let mut nonblank = false;
+        for i in 0..k {
+            let a = strip_ansi_osc(hist[hist.len() - k + i]);
+            let b = strip_ansi_osc(vis[i]);
+            if a != b {
+                ok = false;
+                break;
+            }
+            if !a.trim().is_empty() {
+                nonblank = true;
+            }
+        }
+        if ok && nonblank {
+            best = k;
+        }
+    }
+    best
+}
+
+/// Strips SGR/CSI sequences and OSC hyperlinks for overlap comparison. The
+/// client parses the ORIGINAL bytes (colors intact); this is compare-only.
+fn strip_ansi_osc(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    let mut chars = s.chars().peekable();
+    while let Some(c) = chars.next() {
+        if c == '\x1b' {
+            match chars.peek() {
+                Some('[') => {
+                    chars.next();
+                    for c2 in chars.by_ref() {
+                        if c2.is_ascii_alphabetic() {
+                            break;
+                        }
+                    }
+                }
+                Some(']') => {
+                    chars.next();
+                    let mut prev_esc = false;
+                    for c2 in chars.by_ref() {
+                        if c2 == '\x07' {
+                            break;
+                        }
+                        if prev_esc && c2 == '\\' {
+                            break;
+                        }
+                        prev_esc = c2 == '\x1b';
+                    }
+                }
+                _ => {}
+            }
+        } else if c != '\r' {
+            out.push(c);
+        }
+    }
+    out
+}
+
 /// Returns false when the bridge should stop (client sent `release`).
 async fn handle_client_text(text: &str, input_tx: &mpsc::Sender<SessionCommand>) -> bool {
     let value: serde_json::Value = match serde_json::from_str(text) {
@@ -633,6 +731,48 @@ async fn handle_client_text(text: &str, input_tx: &mpsc::Sender<SessionCommand>)
 mod tests {
     use super::*;
     use futures_util::FutureExt;
+
+    #[test]
+    fn overlap_trims_visible_head() {
+        let recent = "h1\nh2\nv1\nv2";
+        let visible = "v1\nv2\n$ ";
+        assert_eq!(overlap_len(&split(recent), &split(visible)), 2);
+        let prelude = build_history_prelude_from_texts(recent, visible);
+        assert!(prelude.contains("h1\nh2\n"));
+        assert!(prelude.contains(HISTORY_MARKER));
+        // Overlapped rows appear once (in visible part, after the marker).
+        let after = prelude.split(HISTORY_MARKER).nth(1).unwrap();
+        assert!(after.contains("v1\nv2"));
+        let before = prelude.split(HISTORY_MARKER).next().unwrap();
+        assert!(!before.contains("v1"));
+    }
+
+    #[test]
+    fn overlap_ignores_ansi_and_cr() {
+        let recent = "a\n\x1b[32mgreen\x1b[0m\r\ntail";
+        let visible = "green\r\ntail";
+        assert_eq!(overlap_len(&split(recent), &split(visible)), 2);
+    }
+
+    #[test]
+    fn overlap_requires_nonblank_anchor() {
+        // Blank-only overlap (prompt padding) must not trim: it would eat
+        // legitimate blank history rows on every attach.
+        let recent = "h1\n\n\n";
+        let visible = "\n\n$ ";
+        assert_eq!(overlap_len(&split(recent), &split(visible)), 0);
+    }
+
+    #[test]
+    fn overlap_empty_recent_keeps_visible() {
+        let prelude = build_history_prelude_from_texts("", "v1\n$ ");
+        assert!(prelude.contains(HISTORY_MARKER));
+        assert!(prelude.ends_with("\x1b[Hv1\n$ "));
+    }
+
+    fn split(s: &str) -> Vec<&str> {
+        s.split('\n').collect()
+    }
 
     #[tokio::test]
     async fn client_control_contract() {
