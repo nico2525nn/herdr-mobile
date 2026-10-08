@@ -75,9 +75,7 @@ object HerdrNotifications {
             AgentStatus.BLOCKED -> "Blocked${workspaceLabel?.let { " · $it" } ?: ""}"
             else -> return
         }
-        val body = listOfNotNull(tabLabel, event.message?.takeIf { it.isNotBlank() })
-            .joinToString(" · ")
-            .ifBlank { status.name.lowercase() }
+        val body = tabLabel?.takeIf { it.isNotBlank() } ?: status.name.lowercase()
 
         val intent = Intent(Intent.ACTION_VIEW).apply {
             `package` = context.packageName
@@ -99,6 +97,8 @@ object HerdrNotifications {
             .setContentIntent(pending)
             .setAutoCancel(true)
             .setOnlyAlertOnce(false)
+            // IDs only, never terminal output: private even with the body above.
+            .setVisibility(NotificationCompat.VISIBILITY_PRIVATE)
             .build()
         val manager = context.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
         manager.notify(notificationId(event), notification)

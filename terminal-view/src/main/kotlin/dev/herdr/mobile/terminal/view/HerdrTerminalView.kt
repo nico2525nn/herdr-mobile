@@ -347,39 +347,24 @@ class HerdrTerminalView @JvmOverloads constructor(
 
     override fun onKeyPreIme(keyCode: Int, event: android.view.KeyEvent): Boolean {
         // System back while the keyboard is up: dismiss the keyboard instead of
-        // leaving the terminal screen. Track DOWN but only consume UP: consuming
-        // DOWN based on isAcceptingText (true whenever this always-editor view
-        // has focus, keyboard or not) traps back navigation with no escape.
-        if (keyCode == android.view.KeyEvent.KEYCODE_BACK) {
-            if (event.action == android.view.KeyEvent.ACTION_DOWN) {
-                backDownSeen = event.eventTime
-                // Let DOWN propagate; we decide on UP once we know the IME ate it.
-                return false
-            }
-            if (event.action == android.view.KeyEvent.ACTION_UP && backDownSeen != 0L) {
-                backDownSeen = 0L
-                // If the IME was up, it consumed DOWN and this UP arrives with
-                // FLAG_CANCELED unset but the window still focused on us: hide
-                // the keyboard and consume. Otherwise let navigation proceed.
-                if (isKeyboardVisible()) {
-                    hideKeyboard()
-                    return true
-                }
-            }
+        // leaving the terminal screen. Consume only when WE showed the keyboard
+        // and haven't hidden it since — isAcceptingText is useless here (true
+        // whenever this always-editor view has focus, keyboard or not), and
+        // consuming unconditionally traps back navigation with no escape.
+        if (keyCode == android.view.KeyEvent.KEYCODE_BACK &&
+            event.action == android.view.KeyEvent.ACTION_DOWN &&
+            keyboardShownByUs
+        ) {
+            keyboardShownByUs = false
+            hideKeyboard()
+            return true
         }
         return super.onKeyPreIme(keyCode, event)
     }
 
-    private var backDownSeen: Long = 0L
-
-    private fun isKeyboardVisible(): Boolean {
-        val imm = context.getSystemService(Context.INPUT_METHOD_SERVICE)
-            as? InputMethodManager ?: return false
-        // isAcceptingText is true while an input connection is active; combined
-        // with window focus it approximates IME visibility without an API-30
-        // WindowInsets query (minSdk 26).
-        return imm.isAcceptingText && hasWindowFocus()
-    }
+    /** True between our showKeyboard() and the matching hide/timeout. */
+    @Volatile
+    private var keyboardShownByUs = false
 
     override fun onDraw(canvas: Canvas) {
         super.onDraw(canvas)
@@ -502,10 +487,12 @@ class HerdrTerminalView @JvmOverloads constructor(
         requestFocus()
         val imm = context.getSystemService(Context.INPUT_METHOD_SERVICE) as? InputMethodManager
             ?: return
+        keyboardShownByUs = true
         imm.showSoftInput(this, InputMethodManager.SHOW_IMPLICIT)
     }
 
     fun hideKeyboard() {
+        keyboardShownByUs = false
         val imm = context.getSystemService(Context.INPUT_METHOD_SERVICE) as? InputMethodManager
             ?: return
         imm.hideSoftInputFromWindow(windowToken, 0)

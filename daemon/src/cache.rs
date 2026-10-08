@@ -178,11 +178,17 @@ impl SessionCache {
         f(snapshot);
         let revision = self.revision.fetch_add(1, Ordering::SeqCst) + 1;
         snapshot.revision = revision;
-        // Advance the stored snapshot's seq to the global cursor: otherwise a
-        // fresh client bootstraps from a stale seq, sees stream.ready move past
-        // it, refetches the same stale seq, and gaps on every live event.
-        snapshot.seq = self.seq.load(Ordering::SeqCst);
         Some((revision, snapshot.clone()))
+    }
+
+    /// Bring the stored snapshot's seq up to the global cursor AFTER emitting
+    /// the events for a mutation. mutate() runs before emit() mints seqs, so
+    /// reading the cursor there always lags; call this once per mutation batch.
+    fn sync_snapshot_seq(&self) {
+        let mut inner = self.inner.write().expect("cache lock");
+        if let Some(snapshot) = inner.snapshot.as_mut() {
+            snapshot.seq = self.seq.load(Ordering::SeqCst);
+        }
     }
 
     fn emit(
@@ -303,6 +309,7 @@ impl SessionCache {
             None,
             message,
         ));
+        self.sync_snapshot_seq();
         out
     }
 

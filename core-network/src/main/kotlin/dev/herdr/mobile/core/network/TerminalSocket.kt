@@ -84,13 +84,6 @@ class TerminalSocket(
     )
     override val inbound: Flow<TerminalInbound> = _inbound.asSharedFlow()
 
-    /**
-     * Serializes suspend-emits under backpressure: without it, two concurrent
-     * overflows race and PTY bytes arrive out of order. Single permit, so the
-     * second waiter queues behind the first instead of interleaving.
-     */
-    private val emitMutex = kotlinx.coroutines.sync.Mutex()
-
     private val outbound = Channel<OutboundFrame>(capacity = 128)
 
     private val open = AtomicBoolean(false)
@@ -138,23 +131,27 @@ class TerminalSocket(
         }
     }
 
-    private fun emit(value: TerminalInbound) {
-        // Fast path first, mutex only on overflow: tryEmit is lock-free and
-        // wins in the common case. On overflow the suspend-emit runs under a
-        // mutex so concurrent overflows queue instead of interleaving —
-        // without it PTY bytes arrive out of order under burst.
-        if (_inbound.tryEmit(value)) return
+    /**
+     * Single ordered inbound lane: every frame (fast or slow path) goes through
+     * this channel in arrival order, and ONE collector forwards to _inbound.
+     * tryEmit-then-mutex lets a later fast-path frame overtake an earlier
+     * queued suspend-emit; only a single ordered queue preserves PTY order.
+     */
+    private val inboundLane = Channel<TerminalInbound>(capacity = Channel.UNLIMITED)
+
+    init {
         scope.launch {
-            // tryEmit may have failed spuriously under contention; emit()
-            // suspends correctly either way. Rethrow CancellationException so
-            // socket teardown actually stops parked emitters.
-            try {
-                emitMutex.withLock { _inbound.emit(value) }
-            } catch (e: kotlinx.coroutines.CancellationException) {
-                throw e
-            } catch (_: Exception) {
+            for (value in inboundLane) {
+                _inbound.emit(value)
             }
         }
+    }
+
+    private fun emit(value: TerminalInbound) {
+        // UNLIMITED channel never suspends the OkHttp callback thread; order
+        // is preserved by the single consumer above. Backpressure lives at
+        // the _inbound SharedFlow (SUSPEND), not here.
+        inboundLane.trySend(value)
     }
 
     override suspend fun send(data: ByteArray) {
