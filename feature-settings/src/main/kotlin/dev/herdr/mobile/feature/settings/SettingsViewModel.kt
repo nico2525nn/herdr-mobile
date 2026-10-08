@@ -96,19 +96,21 @@ class SettingsViewModel(
     fun newProfileId(): String = UUID.randomUUID().toString()
 
     /**
-     * Atomic dialog save: profile fields + optional password/token in ONE
-     * coroutine, ONE read-modify-write. The old path fired saveProfile +
-     * saveSshPassword + saveBearerToken as three concurrent launches, each
-     * reading stale state and overwriting the others' aliases.
+     * Atomic dialog save: profile fields + optional password/token/key in ONE
+     * coroutine, ONE read-modify-write. Separate launches race on stale reads
+     * and clobber each other's aliases.
      *
      * Password semantics: null = untouched (editing other fields never wipes
      * it), blank = explicitly cleared, non-blank = replaced. Token: null or
-     * blank = untouched, non-blank = replaced.
+     * blank = untouched, non-blank = replaced. Key PEM: null/blank = untouched,
+     * non-blank = imported under [keyLabel].
      */
     fun saveProfileWithSecrets(
         profile: HostProfile,
         password: String?,
         token: String?,
+        keyPem: String? = null,
+        keyLabel: String? = null,
     ) {
         viewModelScope.launch {
             runCatching {
@@ -124,9 +126,22 @@ class SettingsViewModel(
                     val alias = repository.storeBearerToken(base.bearerTokenAlias, token)
                     base = base.copy(bearerTokenAlias = alias)
                 }
+                if (!keyPem.isNullOrBlank()) {
+                    val alias = repository.storePrivateKey(
+                        base.privateKeyAlias,
+                        keyPem.trim(),
+                        keyLabel ?: profile.label,
+                    )
+                    base = base.copy(
+                        privateKeyAlias = alias,
+                        privateKeyLabel = keyLabel ?: profile.label,
+                    )
+                }
                 val merged = profile.copy(
                     passwordAlias = base.passwordAlias,
                     bearerTokenAlias = base.bearerTokenAlias,
+                    privateKeyAlias = base.privateKeyAlias,
+                    privateKeyLabel = base.privateKeyLabel,
                 )
                 if (repository.settings.value.hostProfiles.any { it.id == merged.id }) {
                     repository.updateProfile(merged)

@@ -337,10 +337,9 @@ fun SettingsScreen(
     editingProfile?.let { profile ->
         ProfileEditorDialog(
             profile = profile,
-            isNew = false,
             onDismiss = { editingProfile = null },
-            onSave = { updated, password, token ->
-                viewModel.saveProfileWithSecrets(updated, password, token)
+            onSave = { updated, password, token, keyPem, keyLabel ->
+                viewModel.saveProfileWithSecrets(updated, password, token, keyPem, keyLabel)
                 editingProfile = null
             },
         )
@@ -353,10 +352,9 @@ fun SettingsScreen(
                 host = "",
                 username = "",
             ),
-            isNew = true,
             onDismiss = { showAddProfile = false },
-            onSave = { created, password, token ->
-                viewModel.saveProfileWithSecrets(created, password, token)
+            onSave = { created, password, token, keyPem, keyLabel ->
+                viewModel.saveProfileWithSecrets(created, password, token, keyPem, keyLabel)
                 showAddProfile = false
             },
         )
@@ -474,10 +472,8 @@ private fun <T> EnumRow(
 @Composable
 private fun ProfileEditorDialog(
     profile: HostProfile,
-    /** True for the add-profile flow (no existing aliases to preserve). */
-    isNew: Boolean,
     onDismiss: () -> Unit,
-    onSave: (HostProfile, password: String?, token: String?) -> Unit,
+    onSave: (HostProfile, password: String?, token: String?, keyPem: String?, keyLabel: String?) -> Unit,
 ) {
     var label by remember { mutableStateOf(profile.label) }
     var host by remember { mutableStateOf(profile.host) }
@@ -488,6 +484,8 @@ private fun ProfileEditorDialog(
     var passwordTouched by remember { mutableStateOf(false) }
     val hasPassword = profile.passwordAlias != null
     var token by remember { mutableStateOf("") }
+    var keyPem by remember { mutableStateOf("") }
+    val hasKey = profile.privateKeyAlias != null
 
     AlertDialog(
         onDismissRequest = onDismiss,
@@ -536,6 +534,26 @@ private fun ProfileEditorDialog(
                         label = { Text("Daemon bearer token (optional)") },
                     )
                 }
+                item(key = "key") {
+                    // Key-only sshd accounts cannot be provisioned without this:
+                    // paste the PEM here, it lands in the keystore on save.
+                    // Untouched = keep the stored key (if any).
+                    OutlinedTextField(
+                        value = keyPem,
+                        onValueChange = { keyPem = it },
+                        label = { Text("SSH private key PEM (optional)") },
+                        placeholder = {
+                            Text(if (hasKey) "Key ${profile.privateKeyLabel ?: "saved"} — paste to replace" else "Paste PEM for key auth")
+                        },
+                        singleLine = false,
+                        maxLines = 3,
+                        visualTransformation = PasswordVisualTransformation(),
+                        keyboardOptions = KeyboardOptions(
+                            keyboardType = KeyboardType.Text,
+                            imeAction = ImeAction.Done,
+                        ),
+                    )
+                }
             }
         },
         confirmButton = {
@@ -544,6 +562,7 @@ private fun ProfileEditorDialog(
                 // Editing label/host/ports must never wipe it.
                 val pw = if (passwordTouched) password else null
                 val tok = token.ifBlank { null }
+                val pem = keyPem.ifBlank { null }
                 onSave(
                     profile.copy(
                         label = label.ifBlank { profile.label },
@@ -554,6 +573,8 @@ private fun ProfileEditorDialog(
                     ),
                     pw,
                     tok,
+                    pem,
+                    label.ifBlank { profile.label },
                 )
             }) {
                 Text("Save")

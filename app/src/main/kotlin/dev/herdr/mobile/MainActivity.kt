@@ -1,5 +1,6 @@
 package dev.herdr.mobile
 
+import android.content.Intent
 import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
@@ -15,6 +16,7 @@ import androidx.compose.material3.NavigationBarItem
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Modifier
@@ -35,6 +37,7 @@ import dev.herdr.mobile.feature.settings.SettingsViewModel
 import dev.herdr.mobile.feature.terminal.TerminalScreen
 import dev.herdr.mobile.feature.terminal.TerminalViewModel
 import dev.herdr.mobile.notifications.HerdrNotifications
+import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.serialization.Serializable
 
 @Serializable
@@ -48,37 +51,67 @@ private data class TerminalRoute(val workspaceId: String? = null, val tabId: Str
 
 class MainActivity : ComponentActivity() {
 
+    /**
+     * Deep-link target from a notification tap. Mutable so onNewIntent (app
+     * already alive, singleTask) can update it — onCreate-only reading drops
+     * every notification tapped while the app runs.
+     */
+    private val deepLinkTarget = MutableStateFlow<TerminalRoute?>(null)
+
+    private fun routeFromIntent(intent: Intent?): TerminalRoute? {
+        val workspace = intent?.getStringExtra(HerdrNotifications.EXTRA_WORKSPACE_ID) ?: return null
+        val tab = intent.getStringExtra(HerdrNotifications.EXTRA_TAB_ID)
+        return TerminalRoute(workspace, tab)
+    }
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
         val container = (application as HerdrApp).container
-        // Notification deep link: open the target terminal after a foreground refresh.
-        val targetWorkspace = intent.getStringExtra(HerdrNotifications.EXTRA_WORKSPACE_ID)
-        val targetTab = intent.getStringExtra(HerdrNotifications.EXTRA_TAB_ID)
+        deepLinkTarget.value = routeFromIntent(intent)
         setContent {
             val settings by container.settingsRepository.settings.collectAsStateWithLifecycle()
+            val deepLink by deepLinkTarget.collectAsStateWithLifecycle()
             HerdrMobileTheme(themeMode = settings.themeMode, dynamicColor = settings.dynamicColor) {
                 AppNav(
                     container = container,
-                    startTerminal = if (targetWorkspace != null) {
-                        TerminalRoute(targetWorkspace, targetTab) to true
-                    } else {
-                        null
-                    },
+                    startTerminal = deepLink,
+                    onDeepLinkConsumed = { deepLinkTarget.value = null },
                 )
             }
         }
+    }
+
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        setIntent(intent)
+        // Notification deep link: open the target terminal after a foreground refresh.
+        routeFromIntent(intent)?.let { deepLinkTarget.value = it }
     }
 }
 
 @Composable
 private fun AppNav(
     container: AppContainer,
-    startTerminal: Pair<TerminalRoute, Boolean>?,
+    startTerminal: TerminalRoute?,
+    onDeepLinkConsumed: () -> Unit,
 ) {
     val nav = rememberNavController()
     val backStack by nav.currentBackStackEntryAsState()
     val destination = backStack?.destination
+
+    // A deep link arriving while the app runs (notification tap on a live
+    // singleTask activity) navigates immediately; the start destination only
+    // covers cold starts.
+    LaunchedEffect(startTerminal) {
+        if (startTerminal != null) {
+            nav.navigate(startTerminal) {
+                popUpTo(HomeRoute) { inclusive = false }
+                launchSingleTop = true
+            }
+            onDeepLinkConsumed()
+        }
+    }
 
     // Terminal is a working context, not a permanent bottom-nav destination; the bar only
     // shows Home and Settings, and Terminal hides it to give the grid every pixel.
@@ -119,7 +152,7 @@ private fun AppNav(
     ) { padding ->
         NavHost(
             navController = nav,
-            startDestination = startTerminal?.first ?: HomeRoute,
+            startDestination = startTerminal ?: HomeRoute,
             modifier = Modifier.padding(padding),
         ) {
             composable<HomeRoute> {
