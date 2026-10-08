@@ -186,14 +186,13 @@ class TerminalViewModel(
     }
 
     /**
-     * Re-attach the current target after a failure/disconnect. Drops the dead
-     * backend first so the new attach starts clean — without this a Detached
-     * screen has no recovery path except leaving and re-entering.
+     * Re-attach the current target after a failure/disconnect. Hands the dead
+     * backend to openTarget (which releases it) — nulling backendFlow first
+     * would orphan the live controller, since openTarget releases whatever it
+     * finds in backendFlow.
      */
     fun retryAttach() {
         val target = targetFlow.value ?: return
-        // Clear synchronously so the placeholder shows immediately, then attach.
-        backendFlow.value = null
         openTarget(target)
     }
 

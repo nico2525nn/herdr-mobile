@@ -67,12 +67,17 @@ class TerminalBridge(
         pump = scope.launch {
             backend.bytes.collect { data ->
                 withContext(emulatorContext) {
+                    val before = emulator.revision
                     emulator.write(data)
                     if (emulator.bell) {
                         emulator.bell = false
                         _bell.update { it + 1 }
                     }
-                    publish()
+                    // Skip the full-grid copy when nothing renderable changed:
+                    // publish() deep-copies rows×cols cells per chunk.
+                    if (emulator.revision != before) {
+                        publish()
+                    }
                 }
             }
         }

@@ -1,10 +1,15 @@
 <?xml version="1.0" encoding="utf-8"?>
 <!--
-  Backup rules: herdr_secrets holds AES-GCM ciphertext whose key lives in the
-  device-bound AndroidKeyStore. Restoring the ciphertext to another device (or
-  after a keystore wipe) yields undecryptable blobs — the user would have to
-  re-import every key/token. Exclude it; settings (herdr_settings) restore fine.
+  herdr_secrets holds AES-GCM ciphertext whose key lives in the device-bound
+  AndroidKeyStore. Restoring the ciphertext to another device (or after a
+  keystore wipe) yields undecryptable blobs. Excluded from both legacy
+  full-backup and API 31+ data-extraction rules; settings restore fine.
 -->
-<full-backup-content>
-    <exclude domain="sharedpref" path="herdr_secrets.xml" />
-</full-backup-content>
+<data-extraction-rules>
+    <cloud-backup>
+        <exclude domain="sharedpref" path="herdr_secrets.xml" />
+    </cloud-backup>
+    <device-transfer>
+        <exclude domain="sharedpref" path="herdr_secrets.xml" />
+    </device-transfer>
+</data-extraction-rules>

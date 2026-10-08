@@ -91,6 +91,14 @@ class SettingsRepositoryImpl(
         scope.launch { load() }
     }
 
+    /**
+     * Raw profiles JSON when decode fails: the next update() must rewrite this
+     * verbatim instead of persisting the empty fallback, or one corrupt read
+     * wipes every host. Cleared once a successful decode or explicit edit lands.
+     */
+    @Volatile
+    private var preservedProfilesRaw: String? = null
+
     private suspend fun load() {
         val prefs = context.dataStore.data.first()
         _settings.value = AppSettings(
@@ -147,7 +155,7 @@ class SettingsRepositoryImpl(
         } else {
             prefs.remove(Keys.ACTIVE_PROFILE)
         }
-        prefs[Keys.PROFILES] = encodeProfiles(next.hostProfiles)
+        prefs[Keys.PROFILES] = preservedProfilesRaw ?: encodeProfiles(next.hostProfiles)
         prefs[Keys.EXTRA_KEYS] = next.extraKeysEnabled
         prefs[Keys.CJK_INPUT] = next.cjkInputEnabled
         prefs[Keys.SWIPE] = next.swipeBehavior.wire
@@ -164,7 +172,12 @@ class SettingsRepositoryImpl(
         return runCatching {
             storeJson.decodeFromString(ListSerializer(StoredProfile.serializer()), raw)
                 .map { it.toModel() }
-        }.getOrDefault(emptyList())
+        }.getOrElse {
+            // Corrupt JSON: show zero hosts but keep the raw bytes so the next
+            // update() rewrites them verbatim instead of wiping every host.
+            preservedProfilesRaw = raw
+            emptyList()
+        }
     }
 
     private fun encodeProfiles(profiles: List<HostProfile>): String =
@@ -226,10 +239,12 @@ class SettingsRepositoryImpl(
     }
 
     override suspend fun addProfile(profile: HostProfile) {
+        preservedProfilesRaw = null
         update { it.copy(hostProfiles = it.hostProfiles + profile) }
     }
 
     override suspend fun updateProfile(profile: HostProfile) {
+        preservedProfilesRaw = null
         update { s ->
             val profiles = s.hostProfiles.map { if (it.id == profile.id) profile else it }
             val withAdded = if (profiles.any { it.id == profile.id }) profiles else profiles + profile
