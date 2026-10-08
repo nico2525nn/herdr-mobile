@@ -48,9 +48,7 @@ class ConnectionTerminalBackend(
 
     override suspend fun resize(cols: Int, rows: Int) = inner.resize(cols, rows)
 
-    override suspend fun scrollUp(lines: Int) = inner.scrollUp(lines)
 
-    override suspend fun scrollDown(lines: Int) = inner.scrollDown(lines)
 
     override suspend fun mouse(action: String, button: String, column: Int, row: Int) =
         inner.mouse(action, button, column, row)

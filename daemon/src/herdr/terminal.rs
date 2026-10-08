@@ -94,11 +94,6 @@ impl TerminalChild {
         self.send_line(&json!({"type": "terminal.resize", "cols": cols, "rows": rows})).await
     }
 
-    pub async fn send_scroll(&mut self, direction: &str, lines: u32) -> Result<()> {
-        self.send_line(&json!({"type": "terminal.scroll", "direction": direction, "lines": lines}))
-            .await
-    }
-
     pub async fn send_mouse(&mut self, action: &str, button: &str, column: u32, row: u32) -> Result<()> {
         self.send_line(
             &json!({"type": "terminal.mouse", "action": action, "button": button, "column": column, "row": row}),

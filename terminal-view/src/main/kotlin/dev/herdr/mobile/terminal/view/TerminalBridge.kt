@@ -105,15 +105,17 @@ class TerminalBridge(
         scope.launch { runCatching { backend.resize(cols, rows) } }
     }
 
+    /**
+     * Local scrollback scroll ONLY. The Herdr-side `terminal.scroll` is deliberately not
+     * called: it produces no frames on plain shells (verified: zero bytes back), so
+     * calling it alongside the local offset double-scrolls / corrupts the remote view
+     * state for no visible effect. Alt-screen apps have no local scrollback (offset
+     * clamps to 0 against the empty ring), so scroll there is correctly a no-op.
+     */
     fun scrollBy(lines: Int) {
         scope.launch(emulatorContext) {
             emulator.scrollBy(lines)
             publish()
-        }
-        scope.launch {
-            runCatching {
-                if (lines > 0) backend.scrollDown(lines) else backend.scrollUp(-lines)
-            }
         }
     }
 

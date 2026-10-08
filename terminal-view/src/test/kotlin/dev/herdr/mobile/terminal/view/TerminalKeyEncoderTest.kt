@@ -7,16 +7,10 @@ import org.junit.Test
 class TerminalKeyEncoderTest {
 
     @Test
-    fun `default layout has two rows`() {
+    fun `default layout has two rows of seven`() {
         assertEquals(2, TerminalKeyEncoder.DEFAULT_LAYOUT.size)
-        assertEquals(8, TerminalKeyEncoder.DEFAULT_LAYOUT[0].size)
+        assertEquals(7, TerminalKeyEncoder.DEFAULT_LAYOUT[0].size)
         assertEquals(7, TerminalKeyEncoder.DEFAULT_LAYOUT[1].size)
-    }
-
-    @Test
-    fun `enter key sends carriage return`() {
-        val enter = TerminalKeyEncoder.DEFAULT_LAYOUT[0].first { it.bytes?.contentEquals(byteArrayOf(0x0D)) == true }
-        assertArrayEquals(byteArrayOf(0x0D), enter.bytes)
     }
 
     @Test

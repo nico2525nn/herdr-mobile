@@ -30,9 +30,10 @@ import androidx.compose.ui.unit.dp
  * committed (IME action or the send button), at which point the whole string goes to the
  * terminal as UTF-8. Composing text never trickles into the remote PTY mid-conversion.
  *
- * Commit appends a newline: without it the text lands on the remote prompt but never
- * executes, which reads as "Enter doesn't work". Multi-line pastes keep their internal
- * newlines; only the final terminator is added (skipped if already present).
+ * Commit sends text verbatim with NO appended newline: the field is single-line so the
+ * keyboard's action key fires commit (Enter = send), and a bare commit with empty text
+ * sends a lone newline (= pressing Enter on an empty prompt). Appending "\n" to every
+ * commit made Enter-after-typing insert a stray blank line — the reported bug.
  *
  * Paste comes from the IME/system long-press menu, not a dedicated button: a paste
  * button would either discard the in-progress composition or need merge semantics.
@@ -45,8 +46,9 @@ fun CjkInputPanel(
     var text by remember { mutableStateOf("") }
 
     fun commit() {
-        if (text.isEmpty()) return
-        onSend(if (text.endsWith("\n")) text else "$text\n")
+        // Empty commit = bare Enter (newline). Non-empty = verbatim text, no
+        // terminator: the user presses action again (or native Enter) to run it.
+        onSend(text.ifEmpty { "\n" })
         text = ""
         // Deliberately NOT clearing focus: continuous CJK input must keep the
         // keyboard up. The user dismisses it with system back when done.
@@ -62,8 +64,7 @@ fun CjkInputPanel(
             onValueChange = { text = it },
             modifier = Modifier.weight(1f),
             placeholder = { Text("Type, convert, then send") },
-            singleLine = false,
-            maxLines = 3,
+            singleLine = true,
             keyboardOptions = KeyboardOptions(
                 keyboardType = KeyboardType.Text,
                 imeAction = ImeAction.Send,
@@ -78,7 +79,7 @@ fun CjkInputPanel(
                 }
             },
         )
-        IconButton(onClick = { commit() }, enabled = text.isNotEmpty()) {
+        IconButton(onClick = { commit() }) {
             Icon(Icons.AutoMirrored.Filled.Send, contentDescription = "Send to terminal")
         }
     }

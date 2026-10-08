@@ -254,11 +254,13 @@ class TerminalEmulator(
     }
 
     /**
-     * Moves [scrollbackOffset], clamped to available history. Negative values scroll up into
-     * older history (so `scrollBy(-5)` shows five lines back), positive values scroll down.
+     * Moves [scrollbackOffset], clamped to available history. Positive values scroll up into
+     * older history (finger dragged up: `scrollBy(5)` shows five lines back), negative
+     * values scroll down toward live. Matches Android [GestureDetector] sign convention
+     * where finger-up yields positive distance/velocity.
      */
     fun scrollBy(lines: Int) {
-        val next = (scrollbackOffsetValue - lines).coerceIn(0, scrollback.size)
+        val next = (scrollbackOffsetValue + lines).coerceIn(0, scrollback.size)
         if (next != scrollbackOffsetValue) {
             scrollbackOffsetValue = next
             touchAndBump()
@@ -797,6 +799,11 @@ class TerminalEmulator(
         if (scrollbackLimitValue == 0) return
         scrollback.addLast(row.toList())
         while (scrollback.size > scrollbackLimitValue) scrollback.removeFirst()
+        // Follow the tail: new output snaps a scrolled-up viewport back to live.
+        // Without this the user sits in stale history forever with no indication.
+        // (Deliberately unconditional — mobile has no "scroll lock" affordance;
+        // re-scroll after the burst if you need to read back.)
+        scrollbackOffsetValue = 0
     }
 
     private fun setScrollRegion(topParam: Int?, bottomParam: Int?) {

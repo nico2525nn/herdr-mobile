@@ -38,8 +38,6 @@ interface TerminalConnection {
     suspend fun send(data: ByteArray)
     suspend fun sendText(text: String)
     suspend fun resize(cols: Int, rows: Int)
-    suspend fun scrollUp(lines: Int)
-    suspend fun scrollDown(lines: Int)
     suspend fun mouse(action: String, button: String, column: Int, row: Int)
     suspend fun release()
 
@@ -177,20 +175,6 @@ class TerminalSocket(
         val record = HerdrJson.encodeToString(
             TerminalProtocol.Resize.serializer(),
             TerminalProtocol.Resize(cols, rows),
-        )
-        outbound.send(OutboundFrame.Text(record))
-    }
-
-    override suspend fun scrollUp(lines: Int) =
-        scroll(TerminalProtocol.Scroll.UP, lines)
-
-    override suspend fun scrollDown(lines: Int) =
-        scroll(TerminalProtocol.Scroll.DOWN, lines)
-
-    private suspend fun scroll(direction: String, lines: Int) {
-        val record = HerdrJson.encodeToString(
-            TerminalProtocol.Scroll.serializer(),
-            TerminalProtocol.Scroll(direction, lines.coerceAtLeast(1)),
         )
         outbound.send(OutboundFrame.Text(record))
     }

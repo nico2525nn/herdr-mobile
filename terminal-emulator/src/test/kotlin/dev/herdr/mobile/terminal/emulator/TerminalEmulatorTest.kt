@@ -258,7 +258,7 @@ class TerminalEmulatorTest {
         e.write(esc("[?1049l"))
         // Exiting the alternate screen restores the main buffer, which kept no scrollback.
         assertFalse(e.usingAlternateScreen)
-        e.scrollBy(-5)
+        e.scrollBy(5)
         assertEquals(0, e.scrollbackOffset)
         for (r in 0 until 2) assertEquals("    ", rowText(e, r))
     }
@@ -405,15 +405,17 @@ class TerminalEmulatorTest {
         val e = emu(cols = 4, rows = 3)
         repeat(10) { i -> e.write("L$i\r\n") }
         assertEquals(0, e.scrollbackOffset)
-        e.scrollBy(-5)
+        e.scrollBy(5)
         assertEquals(5, e.scrollbackOffset)
         e.scrollToBottom()
         assertEquals(0, e.scrollbackOffset)
-        // Writing while scrolled back must not reset the offset.
-        e.scrollBy(-5)
+        // Plain writes (no new scrollback row) must not reset the offset.
+        e.scrollBy(5)
         e.write("zz")
         assertEquals(5, e.scrollbackOffset)
-        e.scrollToBottom()
+        // But a write that pushes a new scrollback row snaps back to live.
+        e.write("\r\n")
+        assertEquals(0, e.scrollbackOffset)
     }
 
     @Test fun scrollbackLimitHonoured() {

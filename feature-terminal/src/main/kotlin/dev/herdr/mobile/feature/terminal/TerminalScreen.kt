@@ -73,6 +73,10 @@ fun TerminalScreen(
     val state by viewModel.uiState.collectAsStateWithLifecycle()
     var tabMenu by remember { mutableStateOf<TabMenuTarget?>(null) }
     var renameTarget by remember { mutableStateOf<TabMenuTarget?>(null) }
+    // Incremented when the input panel wants the terminal surface to take IME
+    // focus back (leaving CJK page). Counter, not boolean: two consecutive
+    // requests must both fire even with no value change in between.
+    var terminalFocusRequest by remember { mutableStateOf(0) }
 
     // App backgrounded (Home button, task switch) does NOT dispose this screen,
     // so neither DisposableEffect nor onCleared runs. Release the controller or
@@ -140,6 +144,7 @@ fun TerminalScreen(
                     onSendBytes = { viewModel.sendBytes(it) },
                     onSendText = { viewModel.sendText(it) },
                     onRetry = { viewModel.retryAttach() },
+                    terminalFocusRequest = terminalFocusRequest,
                 )
             }
         }
@@ -149,6 +154,7 @@ fun TerminalScreen(
             onSendText = { viewModel.sendText(it) },
             onExtraKey = { viewModel.sendExtraKey(it) },
             onPageChange = { viewModel.setInputPage(it) },
+            onReturnFocusToTerminal = { terminalFocusRequest++ },
         )
     }
 
@@ -343,6 +349,7 @@ private fun TerminalSurface(
     onSendBytes: (ByteArray) -> Unit,
     onSendText: (String) -> Unit,
     onRetry: () -> Unit,
+    terminalFocusRequest: Int,
 ) {
     val backend = state.backend ?: return
     val backendState by backend.state.collectAsStateWithLifecycle(initialValue = BackendState.Idle)
@@ -375,6 +382,15 @@ private fun TerminalSurface(
     var viewRef by remember { mutableStateOf<HerdrTerminalView?>(null) }
     val density = LocalDensity.current
     val scope = rememberCoroutineScope()
+
+    // Panel asked for IME focus back (left CJK page): take it, keyboard and all.
+    // Guard 0 so composition doesn't steal focus on first mount.
+    LaunchedEffect(terminalFocusRequest) {
+        if (terminalFocusRequest > 0) {
+            viewRef?.requestFocus()
+            viewRef?.showKeyboard()
+        }
+    }
 
     val scheme = remember(state.settings.terminalColorScheme) { state.terminalScheme() }
 
@@ -547,6 +563,7 @@ private fun BottomInputPanel(
     onSendText: (String) -> Unit,
     onExtraKey: (dev.herdr.mobile.terminal.view.TerminalKeyEncoder.Key) -> Unit,
     onPageChange: (InputPanelPage) -> Unit,
+    onReturnFocusToTerminal: () -> Unit,
 ) {
     val settings = state.settings
     val pages = buildList {
@@ -570,6 +587,18 @@ private fun BottomInputPanel(
     }
     LaunchedEffect(pagerState.currentPage, pages.size) {
         pages.getOrNull(pagerState.currentPage)?.let { onPageChange(it) }
+    }
+    // Leaving the CJK page returns input focus to the terminal surface: the CJK
+    // field held the IME target, and without this the keyboard stays bound to a
+    // hidden field — native Enter/typing goes nowhere until the user re-taps.
+    var previousPage by remember { mutableStateOf(pagerState.currentPage) }
+    LaunchedEffect(pagerState.currentPage) {
+        val prev = pages.getOrNull(previousPage)
+        val cur = pages.getOrNull(pagerState.currentPage)
+        previousPage = pagerState.currentPage
+        if (prev == InputPanelPage.CJK_INPUT && cur == InputPanelPage.EXTRA_KEYS) {
+            onReturnFocusToTerminal()
+        }
     }
     Surface(
         tonalElevation = 3.dp,

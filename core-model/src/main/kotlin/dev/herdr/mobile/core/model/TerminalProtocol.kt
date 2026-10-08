@@ -61,23 +61,6 @@ object TerminalProtocol {
     }
 
     @Serializable
-    data class Scroll(
-        val direction: String,
-        val lines: Int,
-        @EncodeDefault val type: String = TYPE,
-    ) {
-        init {
-            require(lines > 0) { "lines must be greater than 0" }
-        }
-
-        companion object {
-            const val TYPE = "scroll"
-            const val UP = "up"
-            const val DOWN = "down"
-        }
-    }
-
-    @Serializable
     data class Mouse(
         val action: String,
         val button: String,

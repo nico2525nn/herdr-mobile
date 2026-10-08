@@ -26,10 +26,6 @@ interface TerminalBackend {
 
     suspend fun resize(cols: Int, rows: Int)
 
-    suspend fun scrollUp(lines: Int)
-
-    suspend fun scrollDown(lines: Int)
-
     /** Mouse event for mouse-mode apps (vim, less, tmux mouse). */
     suspend fun mouse(action: String, button: String, column: Int, row: Int)
 

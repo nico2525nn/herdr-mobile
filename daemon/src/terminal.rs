@@ -61,7 +61,6 @@ enum SessionCommand {
     /// UTF-8 text → child stdin as `terminal.input` text.
     Text(String),
     Resize(u32, u32),
-    Scroll(String, u32),
     Mouse(String, String, u32, u32),
     Release,
 }
@@ -304,9 +303,6 @@ async fn run_session(
                                 flush_at = Some(last_resize + std::time::Duration::from_millis(120));
                             }
                         }
-                    }
-                    SessionCommand::Scroll(direction, lines) => {
-                        if child.send_scroll(&direction, lines).await.is_err() { break; }
                     }
                     SessionCommand::Mouse(action, button, column, row) => {
                         if child.send_mouse(&action, &button, column, row).await.is_err() { break; }
@@ -620,16 +616,6 @@ async fn handle_client_text(text: &str, input_tx: &mpsc::Sender<SessionCommand>)
             send(SessionCommand::Resize(cols, rows)).await;
             true
         }
-        "scroll" => {
-            let direction = value
-                .get("direction")
-                .and_then(|d| d.as_str())
-                .unwrap_or("down")
-                .to_string();
-            let lines = value.get("lines").and_then(|l| l.as_u64()).unwrap_or(5) as u32;
-            send(SessionCommand::Scroll(direction, lines.max(1))).await;
-            true
-        }
         "mouse" => {
             let action = value.get("action").and_then(|a| a.as_str()).unwrap_or("down").to_string();
             let button = value.get("button").and_then(|b| b.as_str()).unwrap_or("left").to_string();
@@ -656,7 +642,6 @@ mod tests {
         assert!(handle_client_text(r#"{"type":"input.bytes","bytes":"AQI="}"#, &tx).await);
         assert!(handle_client_text(r#"{"type":"input.bytes","bytes":"!!!"}"#, &tx).await);
         assert!(handle_client_text(r#"{"type":"resize","cols":100,"rows":30}"#, &tx).await);
-        assert!(handle_client_text(r#"{"type":"scroll","direction":"up","lines":5}"#, &tx).await);
         assert!(handle_client_text(
             r#"{"type":"mouse","action":"down","button":"left","column":3,"row":4}"#,
             &tx
@@ -671,12 +656,11 @@ mod tests {
         while let Ok(cmd) = rx.try_recv() {
             got.push(cmd);
         }
-        assert_eq!(got.len(), 5);
+        assert_eq!(got.len(), 4);
         assert!(matches!(&got[0], SessionCommand::Text(t) if t == "echo hi\r"));
         assert!(matches!(&got[1], SessionCommand::Input(b) if b == &[1, 2]));
         assert!(matches!(got[2], SessionCommand::Resize(100, 30)));
-        assert!(matches!(&got[3], SessionCommand::Scroll(d, 5) if d == "up"));
-        assert!(matches!(&got[4], SessionCommand::Mouse(a, b, 3, 4) if a == "down" && b == "left"));
+        assert!(matches!(&got[3], SessionCommand::Mouse(a, b, 3, 4) if a == "down" && b == "left"));
     }
 
     /// The production BridgeGuard owns exactly-once teardown: dropping it
