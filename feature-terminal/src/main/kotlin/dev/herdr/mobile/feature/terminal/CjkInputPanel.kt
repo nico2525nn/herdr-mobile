@@ -30,6 +30,10 @@ import androidx.compose.ui.unit.dp
  * committed (IME action or the send button), at which point the whole string goes to the
  * terminal as UTF-8. Composing text never trickles into the remote PTY mid-conversion.
  *
+ * Commit appends a newline: without it the text lands on the remote prompt but never
+ * executes, which reads as "Enter doesn't work". Multi-line pastes keep their internal
+ * newlines; only the final terminator is added (skipped if already present).
+ *
  * Paste comes from the IME/system long-press menu, not a dedicated button: a paste
  * button would either discard the in-progress composition or need merge semantics.
  */
@@ -42,7 +46,7 @@ fun CjkInputPanel(
 
     fun commit() {
         if (text.isEmpty()) return
-        onSend(text)
+        onSend(if (text.endsWith("\n")) text else "$text\n")
         text = ""
         // Deliberately NOT clearing focus: continuous CJK input must keep the
         // keyboard up. The user dismisses it with system back when done.

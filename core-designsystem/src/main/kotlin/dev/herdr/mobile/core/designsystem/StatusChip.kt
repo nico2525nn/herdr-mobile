@@ -101,7 +101,8 @@ fun StatusChip(
 
 /**
  * The Home variant: every tab is a peer, so there is no selected state at all. The only
- * differentiator is the dot.
+ * differentiator is the dot. Optional [subtitle] (harness names) renders after the label
+ * in a quieter tone — "1 · codex".
  */
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
@@ -110,10 +111,11 @@ fun PeerTabChip(
     status: AgentStatus,
     onClick: () -> Unit,
     modifier: Modifier = Modifier,
+    subtitle: String? = null,
     onLongClick: (() -> Unit)? = null,
 ) {
     StatusChip(
-        label = label,
+        label = if (subtitle != null) "$label · $subtitle" else label,
         status = status,
         selected = false,
         onClick = onClick,

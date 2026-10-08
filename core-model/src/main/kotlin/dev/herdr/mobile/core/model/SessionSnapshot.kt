@@ -46,6 +46,13 @@ data class Tab(
     val displayLabel: String
         get() = label.takeIf { it.isNotBlank() } ?: "#$number"
 
+    /**
+     * Distinct harness names across panes (codex, omp, …), for the "label ·
+     * harness" chip subtitle. Empty when no pane has a detected agent.
+     */
+    val harnessNames: List<String>
+        get() = panes.mapNotNull { it.agent?.takeIf { a -> a.isNotBlank() } }.distinct()
+
     /** The pane that should receive keystrokes when this tab is opened. */
     val activePane: Pane?
         get() = panes.firstOrNull { it.focused } ?: panes.firstOrNull()

@@ -31,10 +31,11 @@ object TerminalKeyEncoder {
 
     private fun esc(seq: String): ByteArray = byteArrayOf(ESC) + seq.toByteArray(Charsets.US_ASCII)
 
-    /** The Termux default layout, two rows of seven. */
+    /** The Termux default layout, two rows (8 + 7). */
     val DEFAULT_LAYOUT: List<List<Key>> = listOf(
         listOf(
             Key("ESC", bytes = byteArrayOf(ESC)),
+            Key("⏎", bytes = byteArrayOf(0x0D)),
             Key("/", bytes = "/".toByteArray()),
             Key("-", bytes = "-".toByteArray()),
             Key("HOME", bytes = esc("[H")),

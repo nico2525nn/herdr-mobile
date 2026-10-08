@@ -371,6 +371,7 @@ private fun WorkspaceCard(
                     workspace.tabs.forEach { tab ->
                         PeerTabChip(
                             label = tab.displayLabel,
+                            subtitle = tab.harnessNames.joinToString(",").takeIf { it.isNotEmpty() },
                             status = tab.status,
                             onClick = { onOpenTab(tab) },
                             onLongClick = { onTabLongPress(tab) },

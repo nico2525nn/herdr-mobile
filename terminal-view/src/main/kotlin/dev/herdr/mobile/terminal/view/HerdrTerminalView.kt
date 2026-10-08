@@ -554,8 +554,18 @@ class HerdrTerminalView @JvmOverloads constructor(
             }
 
             override fun performEditorAction(editorAction: Int): Boolean {
+                // Every IME action is Enter on a terminal: DONE, GO, SEND, SEARCH,
+                // NEXT, PREVIOUS, UNSPECIFIED — Gboard/fleet IME variants send
+                // different ones depending on language, layout, and fullscreen
+                // state. Restricting to DONE/GO strands Enter on some devices.
                 if (editorAction == EditorInfo.IME_ACTION_DONE ||
-                    editorAction == EditorInfo.IME_ACTION_GO
+                    editorAction == EditorInfo.IME_ACTION_GO ||
+                    editorAction == EditorInfo.IME_ACTION_SEND ||
+                    editorAction == EditorInfo.IME_ACTION_SEARCH ||
+                    editorAction == EditorInfo.IME_ACTION_NEXT ||
+                    editorAction == EditorInfo.IME_ACTION_PREVIOUS ||
+                    editorAction == EditorInfo.IME_ACTION_UNSPECIFIED ||
+                    editorAction == EditorInfo.IME_ACTION_NONE
                 ) {
                     onDirectInput?.invoke("\r")
                     return true

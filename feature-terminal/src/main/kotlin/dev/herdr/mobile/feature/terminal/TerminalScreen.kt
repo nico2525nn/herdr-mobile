@@ -284,8 +284,9 @@ private fun TabRail(
         verticalAlignment = Alignment.CenterVertically,
     ) {
         workspace.tabs.forEach { tab ->
+            val harness = tab.harnessNames.joinToString(",").takeIf { it.isNotEmpty() }
             StatusChip(
-                label = tab.displayLabel,
+                label = if (harness != null) "${tab.displayLabel} · $harness" else tab.displayLabel,
                 status = tab.status,
                 selected = tab.id == state.target?.tabId,
                 onClick = { onSelectTab(workspace.id, tab.id) },

@@ -292,7 +292,10 @@ impl EventSubscription {
 
 #[derive(Clone, Debug)]
 pub struct HerdrEvent {
-    /// e.g. `pane_updated`, `workspace_renamed`.
+    /// e.g. `pane_updated`, `workspace_renamed`. Always underscore form: Herdr
+    /// sends structural events (`tab_created`) and status events
+    /// (`pane.agent_status_changed`) in inconsistent forms, so dots are
+    /// normalized here — every match arm below uses underscores.
     pub name: String,
     pub data: Value,
 }
@@ -303,7 +306,7 @@ impl HerdrEvent {
             .get("event")
             .and_then(|e| e.as_str())
             .context("herdr event has no event name")?
-            .to_string();
+            .replace('.', "_");
         if let Some(error) = value.get("error") {
             let code = error.get("code").and_then(|c| c.as_str()).unwrap_or("event_error");
             let message = error.get("message").and_then(|m| m.as_str()).unwrap_or("event error");

@@ -135,7 +135,7 @@ impl SessionCache {
     pub async fn apply_herdr_event(&self, event: &HerdrEvent) -> Result<Vec<SemanticEvent>> {
         let name = event.name.as_str();
         match name {
-            "pane_agent_status_changed" => Ok(self.apply_status_change(event)),
+            "pane_agent_status_changed" | "pane_agent_detected" => Ok(self.apply_status_change(event)),
             "tab_renamed" => Ok(self.apply_tab_rename(event)),
             "workspace_renamed" => Ok(self.apply_workspace_rename(event)),
             "pane_created" | "pane_closed" | "tab_created" | "tab_closed" | "workspace_created"
@@ -225,7 +225,20 @@ impl SessionCache {
             .get("workspace_id")
             .and_then(|v| v.as_str())
             .unwrap_or("");
-        let status = AgentStatus::from_wire(event.data.get("agent_status").and_then(|v| v.as_str()));
+        // Detection carries `final_status` instead of `agent_status`, plus the
+        // harness name — without this, agent registration (None -> codex) never
+        // reaches the cache and tab chips can never show harness names.
+        let is_detection = event.name == "pane_agent_detected";
+        let status = if is_detection {
+            AgentStatus::from_wire(event.data.get("final_status").and_then(|v| v.as_str()))
+        } else {
+            AgentStatus::from_wire(event.data.get("agent_status").and_then(|v| v.as_str()))
+        };
+        let detected_agent = if is_detection {
+            event.data.get("agent").and_then(|v| v.as_str()).map(str::to_string)
+        } else {
+            None
+        };
         // Failure detail: Herdr reports failures as blocked-typed status changes
         // with a reason; the client classifies notifyFailed off message text.
         // Without this, message stays None and the failed branch is dead.
@@ -247,6 +260,9 @@ impl SessionCache {
                     for pane in &mut tab.panes {
                         if pane.id == pane_id {
                             pane.status = status;
+                            if let Some(agent) = detected_agent.clone() {
+                                pane.agent = Some(agent);
+                            }
                             touched = true;
                         }
                     }
@@ -525,7 +541,6 @@ fn is_passive(name: &str) -> bool {
             | "pane_moved"
             | "pane_output_changed"
             | "pane_exited"
-            | "pane_agent_detected"
             | "tab_focused"
             | "tab_moved"
             | "workspace_updated"
@@ -552,6 +567,9 @@ fn all_subscriptions(pane_ids: &[String]) -> Vec<serde_json::Value> {
         "pane.created",
         "pane.closed",
         "pane.exited",
+        // Global (pane-scoped form kills the connection): agent registration
+        // carries the harness name + final status, otherwise unreachable.
+        "pane.agent_detected",
     ]
     .iter()
     .map(|t| serde_json::json!({"type": t}))
