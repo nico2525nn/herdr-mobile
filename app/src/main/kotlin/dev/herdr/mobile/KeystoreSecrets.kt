@@ -60,6 +60,13 @@ class KeystoreSecrets(context: Context) {
         }
     }
 
+    /**
+     * Returns the secret, null when no entry exists, and THROWS
+     * [KeystoreCorruptException] when an entry exists but cannot be decrypted
+     * (tamper, restore-mismatch, keystore lockup). Callers must fail closed on
+     * corrupt — silently treating it as "no secret" would downgrade host-key
+     * verification (yes→ask) or misreport auth state.
+     */
     fun get(alias: String): String? {
         val iv = prefs.getString("$alias.iv", null) ?: return null
         val data = prefs.getString("$alias.data", null) ?: return null
@@ -71,8 +78,8 @@ class KeystoreSecrets(context: Context) {
                 GCMParameterSpec(128, Base64.decode(iv, Base64.NO_WRAP)),
             )
             String(cipher.doFinal(Base64.decode(data, Base64.NO_WRAP)), Charsets.UTF_8)
-        } catch (_: Exception) {
-            null
+        } catch (e: Exception) {
+            throw KeystoreCorruptException(alias, e)
         }
     }
 
@@ -83,3 +90,7 @@ class KeystoreSecrets(context: Context) {
         }
     }
 }
+
+/** A keystore entry exists but cannot be decrypted. Always fail closed. */
+class KeystoreCorruptException(val alias: String, cause: Throwable) :
+    Exception("Keystore entry $alias is unreadable", cause)

@@ -170,6 +170,16 @@ class TerminalEmulator(
         val nc = cols.coerceIn(1, MAX_DIM)
         val nr = rows.coerceIn(1, MAX_DIM)
         if (nc == colsValue && nr == rowsValue) return
+        // Shrinking rows must not discard history: push the clipped bottom rows
+        // into scrollback first (main screen only; alt screen has no scrollback).
+        if (nr < rowsValue && !usingAlternateScreen) {
+            val clipped = rowsValue - nr
+            repeat(clipped.coerceAtMost(mainLines.size)) {
+                if (mainLines.isNotEmpty()) {
+                    pushScrollback(adjustRowWidth(mainLines.removeAt(mainLines.size - 1), nc))
+                }
+            }
+        }
         colsValue = nc
         rowsValue = nr
         for (i in scrollback.indices) scrollback[i] = adjustRowWidth(scrollback[i], nc)

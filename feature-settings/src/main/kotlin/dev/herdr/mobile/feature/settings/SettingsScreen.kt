@@ -33,6 +33,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
@@ -475,16 +476,16 @@ private fun ProfileEditorDialog(
     onDismiss: () -> Unit,
     onSave: (HostProfile, password: String?, token: String?, keyPem: String?, keyLabel: String?) -> Unit,
 ) {
-    var label by remember { mutableStateOf(profile.label) }
-    var host by remember { mutableStateOf(profile.host) }
-    var port by remember { mutableStateOf(profile.port.toString()) }
-    var username by remember { mutableStateOf(profile.username) }
-    var daemonPort by remember { mutableStateOf(profile.daemonPort.toString()) }
-    var password by remember { mutableStateOf("") }
-    var passwordTouched by remember { mutableStateOf(false) }
+    var label by rememberSaveable { mutableStateOf(profile.label) }
+    var host by rememberSaveable { mutableStateOf(profile.host) }
+    var port by rememberSaveable { mutableStateOf(profile.port.toString()) }
+    var username by rememberSaveable { mutableStateOf(profile.username) }
+    var daemonPort by rememberSaveable { mutableStateOf(profile.daemonPort.toString()) }
+    var password by rememberSaveable { mutableStateOf("") }
+    var passwordTouched by rememberSaveable { mutableStateOf(false) }
     val hasPassword = profile.passwordAlias != null
-    var token by remember { mutableStateOf("") }
-    var keyPem by remember { mutableStateOf("") }
+    var token by rememberSaveable { mutableStateOf("") }
+    var keyPem by rememberSaveable { mutableStateOf("") }
     val hasKey = profile.privateKeyAlias != null
 
     AlertDialog(
