@@ -174,7 +174,9 @@ class TerminalViewModel(
                 return@launch
             }
             messageFlow.value = null
-            backendFlow.value = ConnectionTerminalBackend(connection, viewModelScope)
+            val backend = ConnectionTerminalBackend(connection, viewModelScope)
+            backendFlow.value = backend
+            flushPending(backend)
         }
     }
 
@@ -238,14 +240,50 @@ class TerminalViewModel(
         openTarget(target)
     }
 
+    /**
+     * Input typed while no backend is attached (attaching window): queued and
+     * flushed on the next backend, instead of silently dropped (the CJK panel
+     * already cleared its field, so a drop loses user text with no trace).
+     * Bounded at 64 entries; failures surface as a status message.
+     */
+    private val pendingInput = ArrayDeque<suspend (ConnectionTerminalBackend) -> Unit>(64)
+
+    private fun enqueueOrSend(op: suspend (ConnectionTerminalBackend) -> Unit) {
+        val backend = backendFlow.value
+        if (backend != null) {
+            viewModelScope.launch {
+                runCatching { op(backend) }
+                    .onFailure { messageFlow.value = "Send failed: ${it.message}" }
+            }
+            return
+        }
+        synchronized(pendingInput) {
+            if (pendingInput.size >= 64) pendingInput.removeFirst()
+            pendingInput.addLast(op)
+        }
+    }
+
+    private fun flushPending(backend: ConnectionTerminalBackend) {
+        val ops = synchronized(pendingInput) {
+            val list = pendingInput.toList()
+            pendingInput.clear()
+            list
+        }
+        if (ops.isEmpty()) return
+        viewModelScope.launch {
+            for (op in ops) {
+                runCatching { op(backend) }
+                    .onFailure { messageFlow.value = "Send failed: ${it.message}" }
+            }
+        }
+    }
+
     fun sendText(text: String) {
-        val backend = backendFlow.value ?: return
-        viewModelScope.launch { runCatching { backend.sendText(text) } }
+        enqueueOrSend({ backend -> backend.sendText(text) })
     }
 
     fun sendBytes(data: ByteArray) {
-        val backend = backendFlow.value ?: return
-        viewModelScope.launch { runCatching { backend.send(data) } }
+        enqueueOrSend({ backend -> backend.send(data) })
     }
 
     fun interrupt() {
@@ -265,7 +303,18 @@ class TerminalViewModel(
     fun createTab(workspaceId: String, label: String?) {
         viewModelScope.launch {
             runCatching { client.createTab(workspaceId, label) }
-                .onSuccess { tabId -> openTab(workspaceId, tabId) }
+                .onSuccess { tabId ->
+                    // The snapshot lacks the new tab until the structural event
+                    // (or refetch) lands: wait for it, or openTab's lookup
+                    // silently returns and the new tab never opens.
+                    client.refresh()
+                    val deadline = System.currentTimeMillis() + 5_000
+                    while (System.currentTimeMillis() < deadline) {
+                        if (client.state.value.snapshot?.tab(tabId) != null) break
+                        kotlinx.coroutines.delay(150)
+                    }
+                    openTab(workspaceId, tabId)
+                }
                 .onFailure { messageFlow.value = "Cannot create tab: ${it.message}" }
         }
     }

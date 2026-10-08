@@ -436,6 +436,12 @@ pub async fn run_resync_loop(cache: Arc<SessionCache>, bus: Arc<EventBus>) {
                 continue;
             }
         };
+        #[derive(PartialEq)]
+        enum BreakReason {
+            StructuralResubscribe,
+            StreamBroken,
+        }
+        let mut break_reason = BreakReason::StreamBroken;
         loop {
             match sub.next_event().await {
                 Ok(Some(event)) => {
@@ -469,6 +475,7 @@ pub async fn run_resync_loop(cache: Arc<SessionCache>, bus: Arc<EventBus>) {
                                 // break to resubscribe with the fresh pane set, or
                                 // panes born after subscribe never report status.
                                 debug!("structural event; resubscribing with fresh pane set");
+                                break_reason = BreakReason::StructuralResubscribe;
                                 break;
                             }
                         }
@@ -494,11 +501,19 @@ pub async fn run_resync_loop(cache: Arc<SessionCache>, bus: Arc<EventBus>) {
                 }
             }
         }
-        // Tell subscribers the cache may have holes before we rebuild it.
-        bus.broadcast_snapshot_required(&cache);
-        cache.mark_herdr_down("event stream disconnected".to_string());
-        tokio::time::sleep(backoff).await;
-        backoff = (backoff * 2).min(MAX_BACKOFF);
+        // Tell subscribers the cache may have holes before we rebuild it —
+        // UNLESS this break was a clean structural resubscribe (cache was just
+        // rebuilt authoritatively by apply_structural). Invalidating + marking
+        // Herdr down + backing off on every pane/tab open/close forces a second
+        // client refetch, flaps /v1/health, and delays the fresh-pane subscribe.
+        if break_reason != BreakReason::StructuralResubscribe {
+            bus.broadcast_snapshot_required(&cache);
+            cache.mark_herdr_down("event stream disconnected".to_string());
+            tokio::time::sleep(backoff).await;
+            backoff = (backoff * 2).min(MAX_BACKOFF);
+        } else {
+            backoff = std::time::Duration::from_millis(500);
+        }
     }
 }
 

@@ -14,6 +14,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancelAndJoin
+import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -90,7 +91,49 @@ class HerdrClient(
     val state: StateFlow<HerdrClientState> = _state.asStateFlow()
 
     private var loop: Job? = null
-    private var kickSignal: Job? = null
+
+    /**
+     * Single kick actor: start/stop/kick funnel through here so overlapping
+     * calls serialize instead of spawning duplicate reconnect loops.
+     */
+    private sealed interface LoopCommand {
+        data object Restart : LoopCommand
+        data object Stop : LoopCommand
+    }
+
+    private val kickQueue = kotlinx.coroutines.channels.Channel<LoopCommand>(capacity = Channel.CONFLATED)
+
+    init {
+        scope.launch {
+            for (cmd in kickQueue) {
+                when (cmd) {
+                    LoopCommand.Restart -> {
+                        loop?.cancelAndJoin()
+                        loop = scope.launch { run() }
+                    }
+                    LoopCommand.Stop -> {
+                        loop?.cancelAndJoin()
+                        loop = null
+                        try {
+                            endpointProvider.close()
+                        } catch (_: Exception) {
+                        }
+                        endpoint = null
+                        _state.update {
+                            if (it.connection == ConnectionState.CONNECTED ||
+                                it.connection == ConnectionState.RECONNECTING ||
+                                it.connection == ConnectionState.STALE
+                            ) {
+                                it.copy(connection = ConnectionState.IDLE, stale = it.snapshot != null)
+                            } else {
+                                it
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
 
     @Volatile
     private var endpoint: DaemonEndpoint? = null
@@ -102,40 +145,17 @@ class HerdrClient(
 
     /** Start (or restart) the link. Safe to call repeatedly; replaces any running loop. */
     fun start() {
-        if (loop?.isActive == true) return
-        loop = scope.launch { run() }
+        kickQueue.trySend(LoopCommand.Restart)
     }
 
     /** Stop retrying and close the transport. State keeps the last snapshot for offline reading. */
     fun stop() {
-        loop?.cancel()
-        loop = null
-        scope.launch {
-            try {
-                endpointProvider.close()
-            } catch (_: Exception) {
-            }
-        }
-        endpoint = null
-        _state.update {
-            if (it.connection == ConnectionState.CONNECTED ||
-                it.connection == ConnectionState.RECONNECTING ||
-                it.connection == ConnectionState.STALE
-            ) {
-                it.copy(connection = ConnectionState.IDLE, stale = it.snapshot != null)
-            } else {
-                it
-            }
-        }
+        kickQueue.trySend(LoopCommand.Stop)
     }
 
     /** Retry now instead of waiting out the backoff (network regained, user pulled to refresh). */
     fun kick() {
-        kickSignal?.cancel()
-        kickSignal = scope.launch {
-            loop?.cancelAndJoin()
-            loop = scope.launch { run() }
-        }
+        kickQueue.trySend(LoopCommand.Restart)
     }
 
     /** Force an authoritative refetch, folding nothing. */

@@ -113,6 +113,10 @@ class SshTunnelProvider(
                     if (secret != null) "password,publickey" else "publickey",
                 )
                 setProperty("ConnectTimeout", "10000")
+                // Detect half-open TCP (sleep/NAT death): without keepalive,
+                // isConnected stays true forever and open() reuses a dead tunnel.
+                setProperty("ServerAliveInterval", "15000")
+                setProperty("ServerAliveCountMax", "3")
             },
         )
         session.setUserInfo(AcceptHostKeyUserInfo(profile.host, onUnknownHostKey))

@@ -92,6 +92,13 @@ class SettingsRepositoryImpl(
     }
 
     /**
+     * Completes when the initial DataStore load lands. update() waits on it:
+     * without the gate, a startup write persists default empty hostProfiles
+     * over the stored values.
+     */
+    private val loaded = kotlinx.coroutines.CompletableDeferred<Unit>()
+
+    /**
      * Raw profiles JSON when decode fails: the next update() must rewrite this
      * verbatim instead of persisting the empty fallback, or one corrupt read
      * wipes every host. Cleared once a successful decode or explicit edit lands.
@@ -124,9 +131,11 @@ class SettingsRepositoryImpl(
             notifyBlocked = prefs[Keys.NOTIFY_BLOCKED] ?: true,
             notifyFailed = prefs[Keys.NOTIFY_FAILED] ?: true,
         )
+        loaded.complete(Unit)
     }
 
     override suspend fun update(transform: (AppSettings) -> AppSettings) {
+        loaded.await()
         updateMutex.withLock {
             val next = transform(_settings.value)
             _settings.value = next

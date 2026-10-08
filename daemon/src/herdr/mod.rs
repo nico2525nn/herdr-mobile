@@ -128,11 +128,14 @@ impl HerdrClient {
         writer.flush().await?;
         let mut lines = BufReader::new(reader).lines();
         loop {
-            let line = lines
-                .next_line()
-                .await
-                .context("herdr closed the subscription before acknowledging")?
-                .context("herdr closed the subscription before acknowledging")?;
+            let line = tokio::time::timeout(
+                std::time::Duration::from_secs(15),
+                lines.next_line(),
+            )
+            .await
+            .context("herdr subscribe timed out waiting for acknowledgement")?
+            .context("herdr closed the subscription before acknowledging")?
+            .context("herdr closed the subscription before acknowledging")?;
             let value: Value = serde_json::from_str(&line)
                 .with_context(|| format!("herdr sent invalid JSON: {line:.200}"))?;
             if value.get("id").and_then(|v| v.as_str()) != Some(id.as_str()) {

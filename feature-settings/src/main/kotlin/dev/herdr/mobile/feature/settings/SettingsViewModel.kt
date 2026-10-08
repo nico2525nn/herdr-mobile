@@ -218,6 +218,9 @@ class SettingsViewModel(
                     _ui.value = _ui.value.copy(testing = false, testResult = result, pendingHostKey = pending)
                 }
                 .onFailure {
+                    // A cancelled (superseded) test must not report: it would
+                    // clobber the new run's testing=true with a phantom error.
+                    if (it is kotlinx.coroutines.CancellationException) throw it
                     _ui.value = _ui.value.copy(
                         testing = false,
                         error = it.message,
