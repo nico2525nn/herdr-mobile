@@ -147,6 +147,7 @@ fun TerminalScreen(
             state = state,
             onSendBytes = { viewModel.sendBytes(it) },
             onSendText = { viewModel.sendText(it) },
+            onExtraKey = { viewModel.sendExtraKey(it) },
             onPageChange = { viewModel.setInputPage(it) },
         )
     }
@@ -543,6 +544,7 @@ private fun BottomInputPanel(
     state: TerminalUiState,
     onSendBytes: (ByteArray) -> Unit,
     onSendText: (String) -> Unit,
+    onExtraKey: (dev.herdr.mobile.terminal.view.TerminalKeyEncoder.Key) -> Unit,
     onPageChange: (InputPanelPage) -> Unit,
 ) {
     val settings = state.settings
@@ -580,7 +582,8 @@ private fun BottomInputPanel(
                 HorizontalPager(state = pagerState, modifier = Modifier.fillMaxWidth()) { index ->
                     when (pages[index]) {
                         InputPanelPage.EXTRA_KEYS -> ExtraKeysPanel(
-                            onSend = onSendBytes,
+                            onKey = onExtraKey,
+                            armed = state.stickyModifiers,
                             haptic = settings.hapticFeedback,
                         )
 
@@ -608,7 +611,8 @@ private fun BottomInputPanel(
             } else {
                 when (pages.first()) {
                     InputPanelPage.EXTRA_KEYS -> ExtraKeysPanel(
-                        onSend = onSendBytes,
+                        onKey = onExtraKey,
+                        armed = state.stickyModifiers,
                         haptic = settings.hapticFeedback,
                     )
 

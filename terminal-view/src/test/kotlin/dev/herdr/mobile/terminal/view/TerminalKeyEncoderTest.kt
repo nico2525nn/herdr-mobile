@@ -42,4 +42,40 @@ class TerminalKeyEncoderTest {
     fun `interrupt is ctrl-c byte`() {
         assertArrayEquals(byteArrayOf(0x03), TerminalKeyEncoder.interrupt())
     }
+
+    @Test
+    fun `withModifiers maps single char to ctrl chord`() {
+        assertArrayEquals(
+            byteArrayOf(0x03),
+            TerminalKeyEncoder.withModifiers(setOf(TerminalKeyEncoder.Modifier.CTRL), "c"),
+        )
+    }
+
+    @Test
+    fun `withModifiers stacks ctrl and alt`() {
+        assertArrayEquals(
+            byteArrayOf(0x1B, 0x03),
+            TerminalKeyEncoder.withModifiers(
+                setOf(TerminalKeyEncoder.Modifier.CTRL, TerminalKeyEncoder.Modifier.ALT),
+                "c",
+            ),
+        )
+    }
+
+    @Test
+    fun `withModifiers rejects paste and non-ascii`() {
+        val ctrl = setOf(TerminalKeyEncoder.Modifier.CTRL)
+        assertEquals(null, TerminalKeyEncoder.withModifiers(ctrl, "ab"))
+        assertEquals(null, TerminalKeyEncoder.withModifiers(ctrl, "あ"))
+        assertEquals(null, TerminalKeyEncoder.withModifiers(emptySet(), "c"))
+    }
+
+    @Test
+    fun `withModifiers rejects meaningless ctrl combo`() {
+        // CTRL+TAB has no control byte: null keeps the latch armed.
+        assertEquals(
+            null,
+            TerminalKeyEncoder.withModifiers(setOf(TerminalKeyEncoder.Modifier.CTRL), "\t"),
+        )
+    }
 }

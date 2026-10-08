@@ -13,6 +13,7 @@ import dev.herdr.mobile.core.model.TerminalColorScheme
 import dev.herdr.mobile.core.model.Workspace
 import dev.herdr.mobile.core.network.HerdrClient
 import dev.herdr.mobile.terminal.emulator.TerminalThemes
+import dev.herdr.mobile.terminal.view.TerminalKeyEncoder
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -25,6 +26,7 @@ import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
@@ -47,6 +49,8 @@ data class TerminalUiState(
     val settings: AppSettings = AppSettings(),
     val inputPage: InputPanelPage = InputPanelPage.EXTRA_KEYS,
     val statusMessage: String? = null,
+    /** Sticky CTRL/ALT from Extra Keys: applies to the next extra key AND the next soft-keyboard char. */
+    val stickyModifiers: Set<TerminalKeyEncoder.Modifier> = emptySet(),
 ) {
     val workspace: Workspace? get() = snapshot?.workspace(target?.workspaceId)
     val tab: Tab? get() = snapshot?.tab(target?.tabId)
@@ -77,6 +81,8 @@ class TerminalViewModel(
     private val backendFlow = MutableStateFlow<ConnectionTerminalBackend?>(null)
     private val pageFlow = MutableStateFlow(InputPanelPage.EXTRA_KEYS)
     private val messageFlow = MutableStateFlow<String?>(null)
+    private val stickyFlow =
+        MutableStateFlow<Set<TerminalKeyEncoder.Modifier>>(emptySet())
 
     // Declared BEFORE init: viewModelScope.launch on the main thread starts
     // undispatched, so the first StateFlow emit can reach flushPending while
@@ -92,6 +98,7 @@ class TerminalViewModel(
         settingsFlow,
         pageFlow,
         messageFlow,
+        stickyFlow,
     ) { flows: Array<Any?> ->
         @Suppress("UNCHECKED_CAST")
         val clientState = flows[0] as dev.herdr.mobile.core.network.HerdrClientState
@@ -100,6 +107,7 @@ class TerminalViewModel(
         val settings = flows[3] as AppSettings
         val page = flows[4] as InputPanelPage
         val message = flows[5] as String?
+        val sticky = flows[6] as Set<TerminalKeyEncoder.Modifier>
         TerminalUiState(
             snapshot = clientState.snapshot,
             connection = clientState.connection,
@@ -108,6 +116,7 @@ class TerminalViewModel(
             settings = settings,
             inputPage = page,
             statusMessage = message,
+            stickyModifiers = sticky,
         )
     }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), TerminalUiState())
 
@@ -170,8 +179,31 @@ class TerminalViewModel(
             val connection = try {
                 client.openTerminal(target.paneId, cols = 90, rows = 30)
             } catch (e: Exception) {
-                messageFlow.value = "Cannot attach: ${e.message}"
-                return@launch
+                // "no endpoint is open" = transient link gap (backgrounded tunnel,
+                // reconnect beat): kick the client, wait for CONNECTED once, and
+                // retry a single time. Genuine failures still surface below.
+                val retry = e is dev.herdr.mobile.core.network.DaemonException &&
+                    e.code == "not_connected"
+                if (!retry) {
+                    messageFlow.value = "Cannot attach: ${e.message}"
+                    return@launch
+                }
+                client.kick()
+                try {
+                    withTimeout(30_000) {
+                        client.state.first { it.connection == ConnectionState.CONNECTED }
+                    }
+                } catch (_: Exception) {
+                    messageFlow.value = "Reconnect timed out — tap Retry"
+                    return@launch
+                }
+                ensureActive()
+                try {
+                    client.openTerminal(target.paneId, cols = 90, rows = 30)
+                } catch (e2: Exception) {
+                    messageFlow.value = "Cannot attach: ${e2.message}"
+                    return@launch
+                }
             }
             // Cancelled between openTerminal (non-suspending: creates+connects)
             // and publish: release the orphan or its controller + resize lock
@@ -242,12 +274,35 @@ class TerminalViewModel(
      * Called on ON_START after [releaseForBackground]. Re-attaches the kept target:
      * without this the screen sits on "Attaching…" forever after returning from
      * background. No-op when nothing was released or no target exists.
+     *
+     * Waits for the client link first: after minutes in background the tunnel is
+     * dead and endpoint=null, so an immediate openTerminal throws "no endpoint
+     * is open". Waiting for CONNECTED (kick → first snapshot) makes resume
+     * self-healing instead of an error the user must clear via Home.
      */
     fun resumeAfterBackground() {
         val target = targetFlow.value
         val hasBackend = backendFlow.value != null
         if (target == null || hasBackend) return
-        openTarget(target)
+        attachJob?.cancel()
+        messageFlow.value = null
+        attachJob = viewModelScope.launch {
+            client.kick()
+            val connected = try {
+                withTimeout(30_000) {
+                    client.state.first { it.connection == ConnectionState.CONNECTED }
+                }
+                true
+            } catch (_: Exception) {
+                false
+            }
+            ensureActive()
+            if (!connected) {
+                messageFlow.value = "Reconnect timed out — tap Retry"
+                return@launch
+            }
+            openTarget(target)
+        }
     }
 
     /**
@@ -287,11 +342,63 @@ class TerminalViewModel(
     }
 
     fun sendText(text: String) {
-        enqueueOrSend({ backend -> backend.sendText(text) })
+        // Sticky CTRL/ALT from Extra Keys applies here too: one soft-keyboard
+        // char becomes the chord (Ctrl+C from keyboard, no letter row needed).
+        // Unencodable text (paste, CJK, multi-char) goes verbatim and the
+        // latch survives — half-modifying an atomic paste corrupts user data.
+        val sticky = stickyFlow.value
+        val chord = if (sticky.isEmpty()) {
+            null
+        } else {
+            TerminalKeyEncoder.withModifiers(sticky, text)
+        }
+        if (chord != null) {
+            stickyFlow.value = emptySet()
+            enqueueOrSend({ backend -> backend.send(chord) })
+        } else {
+            enqueueOrSend({ backend -> backend.sendText(text) })
+        }
     }
 
     fun sendBytes(data: ByteArray) {
         enqueueOrSend({ backend -> backend.send(data) })
+    }
+
+    /**
+     * Extra-key tap with sticky modifiers applied: modifier keys toggle the
+     * latch (multi-select), any other key consumes it. Single-char keys stack
+     * both modifiers; escape sequences ignore them (same rule as the encoder:
+     * raw sequences are sent as-is, latch still consumed).
+     */
+    fun sendExtraKey(key: TerminalKeyEncoder.Key) {
+        val modifier = key.modifier
+        if (modifier != null) {
+            val current = stickyFlow.value
+            stickyFlow.value = if (modifier in current) current - modifier else current + modifier
+            return
+        }
+        val sticky = stickyFlow.value
+        val raw = key.bytes
+        val bytes = if (sticky.isEmpty()) {
+            raw
+        } else if (raw != null && raw.size == 1) {
+            var out: ByteArray? = raw
+            if (TerminalKeyEncoder.Modifier.CTRL in sticky) {
+                out = TerminalKeyEncoder.withModifier(
+                    TerminalKeyEncoder.Modifier.CTRL,
+                    TerminalKeyEncoder.Key("", bytes = out),
+                ) ?: return // meaningless combo: latch survives, user picks another key
+            }
+            if (TerminalKeyEncoder.Modifier.ALT in sticky) {
+                out = byteArrayOf(TerminalKeyEncoder.ESC, out!![0])
+            }
+            out
+        } else {
+            raw
+        }
+        if (bytes == null) return // herdrKeys-only path: no consumer yet
+        stickyFlow.value = emptySet()
+        enqueueOrSend({ backend -> backend.send(bytes) })
     }
 
     fun interrupt() {

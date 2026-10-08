@@ -98,6 +98,30 @@ object TerminalKeyEncoder {
         }
     }
 
+    /**
+     * Apply [modifiers] to one committed [text] chunk from the soft keyboard.
+     * Single ASCII char: CTRL maps to 0x00–0x1F, ALT prefixes ESC (both stack:
+     * Ctrl+Alt+X → ESC 0x18). Multi-char or non-ASCII text returns null — an
+     * atomic paste must never be half-modified; the caller sends it verbatim
+     * and keeps the latch armed.
+     */
+    fun withModifiers(modifiers: Set<Modifier>, text: String): ByteArray? {
+        if (modifiers.isEmpty() || text.length != 1) return null
+        val byte = text[0].code
+        if (byte !in 0x20..0x7E) return null
+        var out = byteArrayOf(byte.toByte())
+        if (Modifier.CTRL in modifiers) {
+            out = withModifier(Modifier.CTRL, Key("", bytes = out)) ?: return null
+        }
+        // ALT stacks over whatever CTRL produced (still 1 byte): ESC-prefix it
+        // directly — withModifier(ALT) on a control byte is the same operation,
+        // but spelling it out keeps the stacking order explicit.
+        if (Modifier.ALT in modifiers) {
+            out = byteArrayOf(ESC, out[0])
+        }
+        return out
+    }
+
     /** CTRL-C / interrupt as raw byte, the fastest path that needs no round trip. */
     fun interrupt(): ByteArray = byteArrayOf(0x03)
 }
