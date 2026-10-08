@@ -107,7 +107,17 @@ class SettingsRepositoryImpl(
     private var preservedProfilesRaw: String? = null
 
     private suspend fun load() {
-        val prefs = context.dataStore.data.first()
+        val prefs = try {
+            context.dataStore.data.first()
+        } catch (e: Exception) {
+            // Corrupt/unreadable prefs: keep defaults but still complete the
+            // gate — otherwise every update() hangs on await() forever and the
+            // app is bricked until reinstall. Defaults are safe; the next
+            // successful edit rewrites clean prefs.
+            android.util.Log.w("Settings", "DataStore load failed, using defaults: " + e.message)
+            loaded.complete(Unit)
+            return
+        }
         _settings.value = AppSettings(
             themeMode = ThemeMode.fromWire(prefs[Keys.THEME_MODE]),
             dynamicColor = prefs[Keys.DYNAMIC_COLOR] ?: true,

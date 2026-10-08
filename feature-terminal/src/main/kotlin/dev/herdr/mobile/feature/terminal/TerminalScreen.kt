@@ -347,6 +347,11 @@ private fun TerminalSurface(
     val clipboard = LocalClipboardManager.current
     // Attach failure / disconnect must never render as a blank terminal: show the
     // reason with a retry instead, and stop feeding a dead backend to the view.
+    // lagged_resync is transient (daemon dropped burst frames): retry at once.
+    val detached = backendState as? BackendState.Detached
+    if (detached?.reason == "lagged_resync") {
+        LaunchedEffect(backend) { onRetry() }
+    }
     when (val bs = backendState) {
         is BackendState.Failed -> {
             TerminalErrorBody("Attach failed (${bs.code}): ${bs.message}", onRetry)
@@ -360,6 +365,11 @@ private fun TerminalSurface(
     }
     val settings = state.settings
     var bridge by remember(backend) { mutableStateOf<TerminalBridge?>(null) }
+    // DisposableEffect(backend) re-runs on backend change — but by onDispose
+    // time, remember(backend) has ALREADY reset `bridge` to null, so reading
+    // it there releases nothing (leak) or the wrong bridge. Capture the live
+    // bridge in a ref that survives the reset.
+    val bridgeRef = remember { mutableStateOf<TerminalBridge?>(null) }
     var viewRef by remember { mutableStateOf<HerdrTerminalView?>(null) }
     val density = LocalDensity.current
     val scope = rememberCoroutineScope()
@@ -385,6 +395,7 @@ private fun TerminalSurface(
                 scrollbackLimit = settings.scrollbackLimit,
             )
             bridge = created
+            bridgeRef.value = created
             created.start(cols, rows)
             // Backend-scoped, not composition-scoped: when the backend
             // changes, DisposableEffect releases the old bridge AND this
@@ -489,9 +500,10 @@ private fun TerminalSurface(
         onDispose {
             // The bridge release suspends until the release frame reaches the
             // backend; run it on a fresh scope with a timeout, never on a scope
-            // that is being torn down with us.
-            val toRelease = bridge
-            bridge = null
+            // that is being torn down with us. Read from bridgeRef, NOT bridge:
+            // remember(backend) has already reset by onDispose time.
+            val toRelease = bridgeRef.value
+            bridgeRef.value = null
             if (toRelease != null) {
                 val releaser = CoroutineScope(SupervisorJob() + Dispatchers.Default)
                 releaser.launch {

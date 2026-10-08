@@ -51,7 +51,7 @@ private data object HomeRoute
 private data object SettingsRoute
 
 @Serializable
-private data class TerminalRoute(val workspaceId: String? = null, val tabId: String? = null)
+private data class TerminalRoute(val workspaceId: String? = null, val tabId: String? = null, val paneId: String? = null)
 
 class MainActivity : ComponentActivity() {
 
@@ -70,7 +70,8 @@ class MainActivity : ComponentActivity() {
     private fun routeFromIntent(intent: Intent?): TerminalRoute? {
         val workspace = intent?.getStringExtra(HerdrNotifications.EXTRA_WORKSPACE_ID) ?: return null
         val tab = intent.getStringExtra(HerdrNotifications.EXTRA_TAB_ID)
-        return TerminalRoute(workspace, tab)
+        val pane = intent.getStringExtra(HerdrNotifications.EXTRA_PANE_ID)
+        return TerminalRoute(workspace, tab, pane)
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -196,14 +197,15 @@ private fun AppNav(
             composable<TerminalRoute> { entry ->
                 val route = entry.toRoute<TerminalRoute>()
                 // Key the ViewModel on the target so switching panes gets a fresh attachment.
-                val key = "${route.workspaceId}/${route.tabId}"
+                val key = "${route.workspaceId}/${route.tabId}/${route.paneId}"
                 val vm: TerminalViewModel = viewModel(
                     key = key,
-                    factory = remember(route.workspaceId, route.tabId) {
+                    factory = remember(route.workspaceId, route.tabId, route.paneId) {
                         TerminalViewModel.Factory(
                             container.client,
                             route.workspaceId,
                             route.tabId,
+                            route.paneId,
                             container.settingsRepository.settings,
                         )
                     },

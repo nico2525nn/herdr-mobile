@@ -69,6 +69,7 @@ class TerminalViewModel(
     private val client: HerdrClient,
     initialWorkspaceId: String?,
     initialTabId: String?,
+    initialPaneId: String? = null,
     private val settingsFlow: StateFlow<AppSettings>,
 ) : ViewModel() {
 
@@ -111,7 +112,7 @@ class TerminalViewModel(
             client.state.collect { s ->
                 val snapshot = s.snapshot ?: return@collect
                 if (targetFlow.value == null) {
-                    val target = resolveTarget(snapshot, initialWorkspaceId, initialTabId)
+                    val target = resolveTarget(snapshot, initialWorkspaceId, initialTabId, initialPaneId)
                     if (target != null) {
                         openTarget(target)
                     }
@@ -124,6 +125,7 @@ class TerminalViewModel(
         snapshot: SessionSnapshot,
         workspaceId: String?,
         tabId: String?,
+        paneId: String? = null,
     ): TerminalTarget? {
         val workspace = snapshot.workspace(workspaceId)
             ?: snapshot.workspaces.firstOrNull()
@@ -132,7 +134,10 @@ class TerminalViewModel(
             ?: workspace.tabs.firstOrNull { it.id == workspace.activeTabId }
             ?: workspace.tabs.firstOrNull()
             ?: return null
-        val pane = tab.activePane ?: return null
+        // Deep link carries the alerting pane: prefer it over the tab's active
+        // pane, or a notification tap opens (and inputs into) the wrong agent.
+        val pane = paneId?.let { id -> tab.panes.firstOrNull { it.id == id } }
+            ?: tab.activePane ?: return null
         return TerminalTarget(workspace.id, tab.id, pane.id)
     }
 
@@ -367,10 +372,11 @@ class TerminalViewModel(
         private val client: HerdrClient,
         private val workspaceId: String?,
         private val tabId: String?,
+        private val paneId: String? = null,
         private val settings: StateFlow<AppSettings>,
     ) : ViewModelProvider.Factory {
         @Suppress("UNCHECKED_CAST")
         override fun <T : ViewModel> create(modelClass: Class<T>): T =
-            TerminalViewModel(client, workspaceId, tabId, settings) as T
+            TerminalViewModel(client, workspaceId, tabId, paneId, settings) as T
     }
 }

@@ -525,8 +525,15 @@ async fn run_bridge_inner(
                             }
                         }
                         Err(broadcast::error::RecvError::Lagged(n)) => {
-                            debug!("terminal bridge for {pane_id} lagged {n} frames; continuing with live bytes");
-                            continue;
+                            // Dropped PTY bytes desync the emulator with no recovery:
+                            // send a resync marker so the client re-attaches clean
+                            // instead of rendering corrupt frames forever.
+                            warn!("terminal bridge for {pane_id} lagged {n} frames; forcing resync");
+                            let resync = serde_json::json!({
+                                "type": "closed", "reason": "lagged_resync",
+                            });
+                            let _ = sink.send(Message::Text(resync.to_string().into())).await;
+                            break;
                         }
                         Err(broadcast::error::RecvError::Closed) => break,
                     }
