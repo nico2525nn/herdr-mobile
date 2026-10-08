@@ -27,7 +27,23 @@ class DirectProvider(
         } catch (e: Exception) {
             throw IllegalArgumentException("Invalid daemon URL: $baseUrl", e)
         }
-        return DaemonEndpoint(httpBase = url, token = bearerToken(), description = "direct $label")
+        val token = bearerToken()
+        // Never send a bearer over cleartext off-device: without TLS anyone on
+        // the path reads it. Emulator loopback and https are fine. Tailnet
+        // 100.x addresses are NOT exempt: the daemon has no TLS yet, so Direct
+        // over tailnet must go through the SSH tunnel instead.
+        if (token != null && url.scheme == "http" && !isLoopback(url.host)) {
+            throw IllegalArgumentException(
+                "Refusing cleartext bearer to ${url.host}: use the SSH tunnel " +
+                    "or an https daemon URL",
+            )
+        }
+        return DaemonEndpoint(httpBase = url, token = token, description = "direct $label")
+    }
+
+    private fun isLoopback(host: String): Boolean {
+        return host == "localhost" || host == "127.0.0.1" || host == "::1" ||
+            host == "10.0.2.2"
     }
 
     override suspend fun close() {

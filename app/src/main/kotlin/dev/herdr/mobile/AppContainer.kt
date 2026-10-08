@@ -35,13 +35,13 @@ class AppContainer(context: Context) {
 
     init {
         HerdrNotifications.ensureChannels(appContext)
-        val initial = settingsRepository.settings.value
-        val first = settingsRepository.providerFor(initial)
-        providerFlow.value = first
         client = HerdrClient(
             endpointProvider = SwitchingProvider(providerFlow),
             externalScope = scope,
         )
+        // The first provider is built by the settings collector below once the
+        // DataStore load lands — never synchronously here. Reading .value in
+        // init races load() and builds from default AppSettings (zero profiles).
         // Rebuild the provider whenever transport-relevant settings change; the client
         // picks the new one up on its next (re)connect. The key covers transport
         // mode + direct URL + full active-profile content: the provider id alone

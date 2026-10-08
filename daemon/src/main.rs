@@ -54,6 +54,13 @@ async fn main() -> Result<()> {
              the daemon speaks plain HTTP and must stay behind an SSH tunnel or tailnet"
         );
     }
+    if !is_loopback(&bind) && config.token.is_none() {
+        bail!(
+            "refusing to bind non-loopback address {bind} without a bearer token; \
+             set --token or HERDR_MOBILE_TOKEN, or the snapshot/pane/terminal APIs \
+             are open to anyone on the network"
+        );
+    }
     if !is_loopback(&bind) {
         warn!("binding non-loopback address {bind}; ensure the network path is trusted (tailnet/VPN)");
     }

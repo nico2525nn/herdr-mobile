@@ -154,15 +154,21 @@ impl SessionCache {
     }
 
     /// Reserve sequence numbers consumed outside `emit` (the `snapshot.required` path).
+    /// Loop on CAS failure: a single compare_exchange lets two racers mint the
+    /// same seq (client drops the duplicate as history and loses a change).
     pub fn next_seq_for_broadcast(&self, at_least: i64) {
-        let current = self.seq.load(Ordering::SeqCst);
-        if at_least > current {
-            let _ = self.seq.compare_exchange(
-                current,
-                at_least,
-                Ordering::SeqCst,
-                Ordering::SeqCst,
-            );
+        loop {
+            let current = self.seq.load(Ordering::SeqCst);
+            if at_least <= current {
+                return;
+            }
+            if self
+                .seq
+                .compare_exchange(current, at_least, Ordering::SeqCst, Ordering::SeqCst)
+                .is_ok()
+            {
+                return;
+            }
         }
     }
 
@@ -172,6 +178,10 @@ impl SessionCache {
         f(snapshot);
         let revision = self.revision.fetch_add(1, Ordering::SeqCst) + 1;
         snapshot.revision = revision;
+        // Advance the stored snapshot's seq to the global cursor: otherwise a
+        // fresh client bootstraps from a stale seq, sees stream.ready move past
+        // it, refetches the same stale seq, and gaps on every live event.
+        snapshot.seq = self.seq.load(Ordering::SeqCst);
         Some((revision, snapshot.clone()))
     }
 
@@ -185,6 +195,7 @@ impl SessionCache {
         label: Option<String>,
         revision: i64,
         detail: Option<serde_json::Value>,
+        message: Option<String>,
     ) -> SemanticEvent {
         SemanticEvent {
             seq: self.next_seq(),
@@ -195,7 +206,7 @@ impl SessionCache {
             pane_id,
             status,
             label,
-            message: None,
+            message,
             revision: Some(revision),
             detail,
         }
@@ -209,6 +220,16 @@ impl SessionCache {
             .and_then(|v| v.as_str())
             .unwrap_or("");
         let status = AgentStatus::from_wire(event.data.get("agent_status").and_then(|v| v.as_str()));
+        // Failure detail: Herdr reports failures as blocked-typed status changes
+        // with a reason; the client classifies notifyFailed off message text.
+        // Without this, message stays None and the failed branch is dead.
+        let message = event
+            .data
+            .get("message")
+            .or_else(|| event.data.get("reason"))
+            .or_else(|| event.data.get("detail"))
+            .and_then(|v| v.as_str())
+            .map(str::to_string);
         let mut out = vec![];
         let Some((revision, snapshot)) = self.mutate(|snapshot| {
             for workspace in &mut snapshot.workspaces {
@@ -258,6 +279,7 @@ impl SessionCache {
             None,
             revision,
             None,
+            message.clone(),
         ));
         out.push(self.emit(
             "tab.status_changed",
@@ -268,6 +290,7 @@ impl SessionCache {
             None,
             revision,
             None,
+            message.clone(),
         ));
         out.push(self.emit(
             "workspace.status_changed",
@@ -278,6 +301,7 @@ impl SessionCache {
             None,
             revision,
             None,
+            message,
         ));
         out
     }
@@ -309,6 +333,7 @@ impl SessionCache {
             Some(label),
             revision,
             None,
+            None,
         )]
     }
 
@@ -332,6 +357,7 @@ impl SessionCache {
             None,
             Some(label),
             revision,
+            None,
             None,
         )]
     }
@@ -359,6 +385,7 @@ impl SessionCache {
             None,
             summary.revision,
             Some(event.data.clone()),
+            None,
         )])
     }
 }

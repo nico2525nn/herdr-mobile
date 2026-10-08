@@ -127,6 +127,13 @@ impl TerminalChild {
                 Ok(Some(record)) => return Ok(Some(record)),
                 Ok(None) => continue,
                 Err(e) => {
+                    // Herdr {"error":{...}} records (busy/missing pane) are REAL
+                    // failures, not ignorable lines: surface them so the caller
+                    // can fail the attach instead of hanging on a dead child.
+                    let msg = format!("{e:#}");
+                    if msg.contains("terminal child error") {
+                        return Err(e);
+                    }
                     debug!("skipping invalid terminal child line: {e}");
                     continue;
                 }

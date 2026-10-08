@@ -33,6 +33,7 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeout
 import kotlinx.serialization.builtins.ListSerializer
@@ -79,6 +80,13 @@ class SettingsRepositoryImpl(
     private val _settings = MutableStateFlow(AppSettings())
     override val settings: StateFlow<AppSettings> = _settings.asStateFlow()
 
+    /**
+     * Serializes update(): two concurrent read-modify-writes interleave on a
+     * stale in-memory read and the second clobbers the first, in memory and
+     * in DataStore.
+     */
+    private val updateMutex = kotlinx.coroutines.sync.Mutex()
+
     init {
         scope.launch { load() }
     }
@@ -111,36 +119,44 @@ class SettingsRepositoryImpl(
     }
 
     override suspend fun update(transform: (AppSettings) -> AppSettings) {
-        val next = transform(_settings.value)
-        _settings.value = next
-        context.dataStore.edit { prefs ->
-            prefs[Keys.THEME_MODE] = next.themeMode.wire
-            prefs[Keys.DYNAMIC_COLOR] = next.dynamicColor
-            prefs[Keys.TERMINAL_SCHEME] = next.terminalColorScheme.wire
-            prefs[Keys.TERMINAL_FONT] = next.terminalFont.wire
-            prefs[Keys.FONT_SIZE] = next.terminalFontSizeSp
-            prefs[Keys.LINE_HEIGHT] = next.terminalLineHeight
-            prefs[Keys.CURSOR_STYLE] = next.cursorStyle.wire
-            prefs[Keys.BOLD_BRIGHT] = next.boldIsBright
-            prefs[Keys.TRANSPORT_MODE] = next.transportMode.wire
-            prefs[Keys.DIRECT_URL] = next.directUrl
-            val activeProfileId = next.activeProfileId
-            if (activeProfileId != null) {
-                prefs[Keys.ACTIVE_PROFILE] = activeProfileId
-            } else {
-                prefs.remove(Keys.ACTIVE_PROFILE)
-            }
-            prefs[Keys.PROFILES] = encodeProfiles(next.hostProfiles)
-            prefs[Keys.EXTRA_KEYS] = next.extraKeysEnabled
-            prefs[Keys.CJK_INPUT] = next.cjkInputEnabled
-            prefs[Keys.SWIPE] = next.swipeBehavior.wire
-            prefs[Keys.HAPTIC] = next.hapticFeedback
-            prefs[Keys.BELL] = next.bellVibration
-            prefs[Keys.SCROLLBACK] = next.scrollbackLimit
-            prefs[Keys.NOTIFY_DONE] = next.notifyDone
-            prefs[Keys.NOTIFY_BLOCKED] = next.notifyBlocked
-            prefs[Keys.NOTIFY_FAILED] = next.notifyFailed
+        updateMutex.withLock {
+            val next = transform(_settings.value)
+            _settings.value = next
+            persist(next)
         }
+    }
+
+    private suspend fun persist(next: AppSettings) {
+        context.dataStore.edit { prefs -> writePrefs(prefs, next) }
+    }
+
+    private fun writePrefs(prefs: androidx.datastore.preferences.core.MutablePreferences, next: AppSettings) {
+        prefs[Keys.THEME_MODE] = next.themeMode.wire
+        prefs[Keys.DYNAMIC_COLOR] = next.dynamicColor
+        prefs[Keys.TERMINAL_SCHEME] = next.terminalColorScheme.wire
+        prefs[Keys.TERMINAL_FONT] = next.terminalFont.wire
+        prefs[Keys.FONT_SIZE] = next.terminalFontSizeSp
+        prefs[Keys.LINE_HEIGHT] = next.terminalLineHeight
+        prefs[Keys.CURSOR_STYLE] = next.cursorStyle.wire
+        prefs[Keys.BOLD_BRIGHT] = next.boldIsBright
+        prefs[Keys.TRANSPORT_MODE] = next.transportMode.wire
+        prefs[Keys.DIRECT_URL] = next.directUrl
+        val activeProfileId = next.activeProfileId
+        if (activeProfileId != null) {
+            prefs[Keys.ACTIVE_PROFILE] = activeProfileId
+        } else {
+            prefs.remove(Keys.ACTIVE_PROFILE)
+        }
+        prefs[Keys.PROFILES] = encodeProfiles(next.hostProfiles)
+        prefs[Keys.EXTRA_KEYS] = next.extraKeysEnabled
+        prefs[Keys.CJK_INPUT] = next.cjkInputEnabled
+        prefs[Keys.SWIPE] = next.swipeBehavior.wire
+        prefs[Keys.HAPTIC] = next.hapticFeedback
+        prefs[Keys.BELL] = next.bellVibration
+        prefs[Keys.SCROLLBACK] = next.scrollbackLimit
+        prefs[Keys.NOTIFY_DONE] = next.notifyDone
+        prefs[Keys.NOTIFY_BLOCKED] = next.notifyBlocked
+        prefs[Keys.NOTIFY_FAILED] = next.notifyFailed
     }
 
     private fun decodeProfiles(raw: String?): List<HostProfile> {

@@ -408,11 +408,13 @@ async fn serve_events(socket: WebSocket, bus: Arc<EventBus>, cache: Arc<SessionC
     }
     let mut rx: broadcast::Receiver<SemanticEvent> = bus.subscribe();
     info!("events subscriber connected");
+    let mut last_seq: i64 = ready.seq;
     loop {
         tokio::select! {
             event = rx.recv() => {
                 match event {
                     Ok(event) => {
+                        last_seq = last_seq.max(event.seq);
                         let text = match serde_json::to_string(&event) {
                             Ok(text) => text,
                             Err(e) => {
@@ -426,9 +428,12 @@ async fn serve_events(socket: WebSocket, bus: Arc<EventBus>, cache: Arc<SessionC
                     }
                     Err(broadcast::error::RecvError::Lagged(n)) => {
                         // We dropped events this subscriber never saw: force a refetch.
+                        // Per-connection seq (last seen + 1), NOT the global cursor:
+                        // minting globally makes healthy subscribers see a skip and
+                        // refetch too — one slow phone storms everyone.
                         warn!("events subscriber lagged {n}; forcing snapshot refetch");
                         let required = SemanticEvent {
-                            seq: cache.seq() + 1,
+                            seq: last_seq + 1,
                             kind: "snapshot.required".to_string(),
                             at: crate::cache::now_rfc3339(),
                             workspace_id: None, tab_id: None, pane_id: None,
@@ -436,7 +441,6 @@ async fn serve_events(socket: WebSocket, bus: Arc<EventBus>, cache: Arc<SessionC
                             revision: Some(cache.revision()),
                             detail: None,
                         };
-                        cache.next_seq_for_broadcast(required.seq);
                         if sink.send(Message::Text(serde_json::to_string(&required).unwrap().into())).await.is_err() {
                             break;
                         }

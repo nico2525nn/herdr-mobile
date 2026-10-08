@@ -11,6 +11,7 @@ import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asSharedFlow
+import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
 import kotlinx.serialization.json.jsonObject
@@ -83,6 +84,13 @@ class TerminalSocket(
     )
     override val inbound: Flow<TerminalInbound> = _inbound.asSharedFlow()
 
+    /**
+     * Serializes suspend-emits under backpressure: without it, two concurrent
+     * overflows race and PTY bytes arrive out of order. Single permit, so the
+     * second waiter queues behind the first instead of interleaving.
+     */
+    private val emitMutex = kotlinx.coroutines.sync.Mutex()
+
     private val outbound = Channel<OutboundFrame>(capacity = 128)
 
     private val open = AtomicBoolean(false)
@@ -133,10 +141,12 @@ class TerminalSocket(
     private fun emit(value: TerminalInbound) {
         // tryEmit with SUSPEND overflow never drops: it returns false only
         // when no collector is ready AND the buffer is full, in which case we
-        // suspend-emit on the scope so bursts apply backpressure instead of
-        // silently desyncing the emulator.
+        // suspend-emit under a mutex so bursts stay ordered instead of
+        // interleaving. The launch is scoped to this socket's lifecycle.
         if (!_inbound.tryEmit(value)) {
-            scope.launch { _inbound.emit(value) }
+            scope.launch {
+                emitMutex.withLock { _inbound.emit(value) }
+            }
         }
     }
 
