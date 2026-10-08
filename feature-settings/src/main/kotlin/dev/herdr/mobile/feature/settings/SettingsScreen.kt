@@ -482,7 +482,7 @@ private fun ProfileEditorDialog(
     var username by rememberSaveable { mutableStateOf(profile.username) }
     var daemonPort by rememberSaveable { mutableStateOf(profile.daemonPort.toString()) }
     var password by remember { mutableStateOf("") }
-    var passwordTouched by rememberSaveable { mutableStateOf(false) }
+    var passwordTouched by remember { mutableStateOf(false) }
     val hasPassword = profile.passwordAlias != null
     var token by remember { mutableStateOf("") }
     var keyPem by remember { mutableStateOf("") }
@@ -533,6 +533,12 @@ private fun ProfileEditorDialog(
                         value = token,
                         onValueChange = { token = it },
                         label = { Text("Daemon bearer token (optional)") },
+                        visualTransformation = PasswordVisualTransformation(),
+                        keyboardOptions = KeyboardOptions(
+                            keyboardType = KeyboardType.Password,
+                            imeAction = ImeAction.Done,
+                        ),
+                        singleLine = true,
                     )
                 }
                 item(key = "key") {
