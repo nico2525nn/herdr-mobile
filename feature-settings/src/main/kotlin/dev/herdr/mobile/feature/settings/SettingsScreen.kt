@@ -337,13 +337,12 @@ fun SettingsScreen(
     editingProfile?.let { profile ->
         ProfileEditorDialog(
             profile = profile,
+            isNew = false,
             onDismiss = { editingProfile = null },
-            onSave = {
-                viewModel.saveProfile(it)
+            onSave = { updated, password, token ->
+                viewModel.saveProfileWithSecrets(updated, password, token)
                 editingProfile = null
             },
-            onSavePassword = { password -> viewModel.saveSshPassword(profile.id, password) },
-            onSaveToken = { token -> viewModel.saveBearerToken(profile.id, token) },
         )
     }
     if (showAddProfile) {
@@ -354,13 +353,12 @@ fun SettingsScreen(
                 host = "",
                 username = "",
             ),
+            isNew = true,
             onDismiss = { showAddProfile = false },
-            onSave = {
-                viewModel.saveProfile(it)
+            onSave = { created, password, token ->
+                viewModel.saveProfileWithSecrets(created, password, token)
                 showAddProfile = false
             },
-            onSavePassword = { },
-            onSaveToken = { },
         )
     }
     ui.pendingHostKey?.let { pending ->
@@ -476,10 +474,10 @@ private fun <T> EnumRow(
 @Composable
 private fun ProfileEditorDialog(
     profile: HostProfile,
+    /** True for the add-profile flow (no existing aliases to preserve). */
+    isNew: Boolean,
     onDismiss: () -> Unit,
-    onSave: (HostProfile) -> Unit,
-    onSavePassword: (password: String) -> Unit,
-    onSaveToken: (token: String) -> Unit,
+    onSave: (HostProfile, password: String?, token: String?) -> Unit,
 ) {
     var label by remember { mutableStateOf(profile.label) }
     var host by remember { mutableStateOf(profile.host) }
@@ -487,6 +485,7 @@ private fun ProfileEditorDialog(
     var username by remember { mutableStateOf(profile.username) }
     var daemonPort by remember { mutableStateOf(profile.daemonPort.toString()) }
     var password by remember { mutableStateOf("") }
+    var passwordTouched by remember { mutableStateOf(false) }
     val hasPassword = profile.passwordAlias != null
     var token by remember { mutableStateOf("") }
 
@@ -517,10 +516,10 @@ private fun ProfileEditorDialog(
                 item(key = "password") {
                     OutlinedTextField(
                         value = password,
-                        onValueChange = { password = it },
+                        onValueChange = { password = it; passwordTouched = true },
                         label = { Text("SSH password") },
                         placeholder = {
-                            Text(if (hasPassword) "Saved — blank clears it" else "Required for password auth")
+                            Text(if (hasPassword) "Saved — type to replace" else "Required for password auth")
                         },
                         visualTransformation = PasswordVisualTransformation(),
                         keyboardOptions = KeyboardOptions(
@@ -541,8 +540,10 @@ private fun ProfileEditorDialog(
         },
         confirmButton = {
             TextButton(onClick = {
-                onSavePassword(password)
-                if (token.isNotBlank()) onSaveToken(token)
+                // Untouched password field = leave the stored secret alone.
+                // Editing label/host/ports must never wipe it.
+                val pw = if (passwordTouched) password else null
+                val tok = token.ifBlank { null }
                 onSave(
                     profile.copy(
                         label = label.ifBlank { profile.label },
@@ -551,6 +552,8 @@ private fun ProfileEditorDialog(
                         username = username.trim(),
                         daemonPort = daemonPort.toIntOrNull() ?: 8765,
                     ),
+                    pw,
+                    tok,
                 )
             }) {
                 Text("Save")

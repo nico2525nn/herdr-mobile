@@ -95,6 +95,48 @@ class SettingsViewModel(
 
     fun newProfileId(): String = UUID.randomUUID().toString()
 
+    /**
+     * Atomic dialog save: profile fields + optional password/token in ONE
+     * coroutine, ONE read-modify-write. The old path fired saveProfile +
+     * saveSshPassword + saveBearerToken as three concurrent launches, each
+     * reading stale state and overwriting the others' aliases.
+     *
+     * Password semantics: null = untouched (editing other fields never wipes
+     * it), blank = explicitly cleared, non-blank = replaced. Token: null or
+     * blank = untouched, non-blank = replaced.
+     */
+    fun saveProfileWithSecrets(
+        profile: HostProfile,
+        password: String?,
+        token: String?,
+    ) {
+        viewModelScope.launch {
+            runCatching {
+                var base = repository.settings.value.hostProfiles
+                    .firstOrNull { it.id == profile.id }
+                    ?: profile
+                // Secrets first (need current aliases), then ONE profile write.
+                if (password != null) {
+                    val alias = repository.storeSshPassword(base.passwordAlias, password)
+                    base = base.copy(passwordAlias = alias)
+                }
+                if (!token.isNullOrBlank()) {
+                    val alias = repository.storeBearerToken(base.bearerTokenAlias, token)
+                    base = base.copy(bearerTokenAlias = alias)
+                }
+                val merged = profile.copy(
+                    passwordAlias = base.passwordAlias,
+                    bearerTokenAlias = base.bearerTokenAlias,
+                )
+                if (repository.settings.value.hostProfiles.any { it.id == merged.id }) {
+                    repository.updateProfile(merged)
+                } else {
+                    repository.addProfile(merged)
+                }
+            }.onFailure { _ui.value = _ui.value.copy(error = it.message) }
+        }
+    }
+
     fun importPrivateKey(profileId: String, pem: String, label: String) {
         viewModelScope.launch {
             runCatching {
