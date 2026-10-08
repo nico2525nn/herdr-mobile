@@ -48,6 +48,24 @@ class TerminalEmulator(
     /** 0 = pinned to the live bottom; > 0 = viewing history. */
     val scrollbackOffset: Int get() = scrollbackOffsetValue
 
+    /**
+     * False when the last write contained ED2/ED3 (screen erased: overlap
+     * against pre-erase content is meaningless) — merge skips once, then
+     * re-arms. Also disarmed across alt-screen spans.
+     */
+    private var mergeArmed = true
+
+    /** Set when a full-height main-screen scroll banks rows this write (merge skips then). */
+    private var scrolledThisWrite = false
+
+    /**
+     * Writes remaining in the post-grow merge holiday (see resize): Herdr's
+     * grow repaint arrives late and shows older-than-tail history; merging it
+     * would append older rows after newer ones. Direct pushes are unaffected.
+     */
+    private var mergeGraceValue = 0
+
+
     // ------------------------------------------------------------------- cursor ----
 
     private var cursorRowValue = 0
@@ -170,21 +188,46 @@ class TerminalEmulator(
         val nc = cols.coerceIn(1, MAX_DIM)
         val nr = rows.coerceIn(1, MAX_DIM)
         if (nc == colsValue && nr == rowsValue) return
-        // Shrinking rows must not discard history: push the clipped bottom rows
-        // into scrollback first (main screen only; alt screen has no scrollback).
-        // Collect top-down, then push in order — pushing while removing from the
-        // tail would reverse the history. All-blank rows are skipped: resizing
-        // an empty grid (or the initial 80x24 -> NxM setup resize) must not
-        // fabricate scrollback out of nothing.
-        if (nr < rowsValue && !usingAlternateScreen) {
+        if (nc != colsValue) {
+            // Width change reflows the PTY: old rows (different wrap) no longer
+            // match the grid, and Herdr repaints the viewport — keeping them
+            // would interleave duplicates. History rebuilds at the new width.
+            scrollback.clear()
+            scrollbackOffsetValue = 0
+        } else if (nr < rowsValue && !usingAlternateScreen) {
+            // Height shrink keeps the BOTTOM (live) rows visible; the TOP rows
+            // that vanish from view are older than everything on screen, so
+            // they append to history in order. (Pushing bottom rows instead —
+            // the old behavior — duplicated visible content into history on
+            // every keyboard show/hide.) Blank rows are skipped: the initial
+            // 80x24 -> NxM setup resize must not fabricate history.
             val clipped = rowsValue - nr
             val take = clipped.coerceAtMost(mainLines.size)
-            val start = mainLines.size - take
-            val rows = (start until mainLines.size)
-                .map { adjustRowWidth(mainLines[it], nc) }
+            val rows = (0 until take)
+                .map { mainLines[it].toList() }
                 .filter { row -> row.any { !it.isBlank } }
-            repeat(take) { mainLines.removeAt(mainLines.size - 1) }
             rows.forEach { pushScrollback(it) }
+            // adjustGrid below removes from the TAIL — remove the head instead.
+            repeat(take) { mainLines.removeAt(0) }
+        }
+        if (nc == colsValue && nr > rowsValue && !usingAlternateScreen) {
+            // Height grow pulls the youngest tail rows back to the screen head:
+            // the grown viewport shows them again (Herdr's repaint paints the
+            // same rows), so keeping them banked too would duplicate. The pull
+            // also keeps the window timeline-continuous. mergeGrace covers the
+            // repaint itself, which arrives as a later write.
+            val grown = nr - rowsValue
+            val take = grown.coerceAtMost(scrollback.size)
+            val rows = (0 until take).map { scrollback.removeLast() }.reversed()
+            repeat(take) { mainLines.add(0, blankRowOf(nc)) }
+            rows.forEachIndexed { i, row -> mainLines[i] = ArrayList(adjustRowWidth(row, nc)) }
+            scrollbackOffsetValue = scrollbackOffsetValue.coerceIn(0, scrollback.size)
+            // Herdr's grow repaint (older history + live) arrives as a later
+            // write; merging it would bank older-than-tail rows (time
+            // reversal). Skip merge for the next few writes — direct pushes
+            // (natural scrolls) are unaffected, and CUP-only repaints never
+            // scroll, so nothing legitimate is lost.
+            mergeGraceValue = MERGE_GRACE_WRITES
         }
         colsValue = nc
         rowsValue = nr
@@ -206,6 +249,12 @@ class TerminalEmulator(
     fun write(bytes: ByteArray) {
         writeCountValue++
         dirty = false
+        // Viewport-follow snapshot (see mergeViewportScroll): Herdr streams
+        // output as cursor-addressed repaints (measured: 70 lines, zero LFs),
+        // so repaint-only writes would bank no history without the merge.
+        val preRows = if (!isAltValue) mainLines.map { it.toList() } else null
+        mergeArmed = mergeArmed && !isAltValue
+        scrolledThisWrite = false
         try {
             for (raw in bytes) {
                 val b = raw.toInt() and 0xFF
@@ -229,6 +278,15 @@ class TerminalEmulator(
             state = State.GROUND
             utf8Remaining = 0
         }
+        // Merge ONLY when no natural scroll happened: natural scrolls bank
+        // directly in scrollRegionUp; merging as well would double-bank. Pure
+        // repaint writes (CUP-only, no scroll) take the merge path instead.
+        if (mergeGraceValue > 0) {
+            mergeGraceValue--
+        } else if (preRows != null && mergeArmed && !isAltValue && !scrolledThisWrite) {
+            mergeViewportScroll(preRows)
+        }
+        mergeArmed = !isAltValue
         if (dirty) revisionValue++
     }
 
@@ -662,13 +720,17 @@ class TerminalEmulator(
                 for (r in regionTopValue until cursorRowValue) eraseRow(r)
                 eraseRowRange(cursorRowValue, 0, cursorColValue)
             }
-            2 -> for (r in 0 until rowsValue) eraseRow(r)
+            2 -> {
+                for (r in 0 until rowsValue) eraseRow(r)
+                mergeArmed = false
+            }
             3 -> {
                 for (r in 0 until rowsValue) eraseRow(r)
                 if (scrollback.isNotEmpty()) {
                     scrollback.clear()
                     scrollbackOffsetValue = 0
                 }
+                mergeArmed = false
             }
             else -> Unit
         }
@@ -776,10 +838,73 @@ class TerminalEmulator(
         val fullHeight = regionTopValue == 0 && regionBottomValue == rowsValue - 1
         repeat(k) {
             val removed = grid.removeAt(regionTopValue)
-            if (fullHeight && !isAltValue) pushScrollback(removed)
+            if (fullHeight && !isAltValue) {
+                pushScrollback(removed)
+                scrolledThisWrite = true
+            }
             grid.add(regionBottomValue, blankRowOf())
         }
         touch()
+    }
+
+    /**
+     * Viewport-follow history: Herdr streams output as cursor-addressed
+     * viewport repaints (measured: 70 lines arrive with zero linefeeds), so
+     * classic scroll-push never fires. Instead, overlap [preRows] (screen
+     * before this write) with the current screen: the largest shift k whose
+     * window matches means k rows scrolled off the top — bank them.
+     *
+     * Guards: skipped after ED2/ED3 (content erased, not scrolled), on alt
+     * screen, and for full turnovers (k >= rows: repaint of unrelated content,
+     * not a scroll). Blank rows never bank. Smallest matching k wins so
+     * uniform content converges instead of over-banking.
+     */
+    private fun mergeViewportScroll(preRows: List<List<TerminalCell>>) {
+        val rows = rowsValue
+        if (rows <= 0 || mainLines.size != rows || preRows.size != rows) return
+        if (preRows == mainLines) return // untouched
+        var changedRows = 0
+        for (i in 0 until rows) {
+            if (!rowEquals(mainLines[i], preRows[i])) changedRows++
+        }
+        for (k in 1 until rows) {
+            var match = true
+            for (i in 0 until rows - k) {
+                if (!rowEquals(mainLines[i], preRows[i + k])) {
+                    match = false
+                    break
+                }
+            }
+            if (match) {
+                for (i in 0 until k) {
+                    val row = preRows[i]
+                    if (row.any { !it.isBlank }) pushScrollback(row)
+                }
+                return
+            }
+        }
+        // No overlap shift. Two cases: (a) in-place rewrite (prompt edit,
+        // progress bar — few rows changed): bank nothing. (b) full turnover
+        // (fast output coalesced into one viewport repaint — every row is new):
+        // every pre-row scrolled off, so bank them all. Herdr provably sends
+        // only the final viewport for bursts (measured: 70 lines, 652 bytes),
+        // so without this fast output leaves zero history.
+        if (changedRows * 2 >= rows) {
+
+            for (row in preRows) {
+                if (row.any { !it.isBlank }) pushScrollback(row)
+            }
+        }
+    }
+
+    private fun rowEquals(a: List<TerminalCell>, b: List<TerminalCell>): Boolean {
+        if (a.size != b.size) return false
+        for (i in a.indices) {
+            // Compare glyphs only: repainted rows may carry different SGR runs
+            // for identical text (herdr normalizes attrs on redraw).
+            if (a[i].codepoint != b[i].codepoint || a[i].wideContinuation != b[i].wideContinuation) return false
+        }
+        return true
     }
 
     private fun scrollRegionDown(n: Int) {
@@ -797,6 +922,15 @@ class TerminalEmulator(
 
     private fun pushScrollback(row: List<TerminalCell>) {
         if (scrollbackLimitValue == 0) return
+        // Membership filter: Herdr repaints coalesced viewports, so the same
+        // row can legitimately reappear on screen (grow repaint, repaint
+        // storm). Banking it again would duplicate history out of order, so
+        // rows already present are skipped. Cost: identical REPEATED output
+        // (yes-command, `seq` twice) banks once — order is never violated,
+        // which is what scrolling correctness needs. Scan is tail-capped.
+        for (i in scrollback.size - 1 downTo maxOf(0, scrollback.size - HISTORY_MATCH_WINDOW)) {
+            if (rowEquals(scrollback[i], row)) return
+        }
         scrollback.addLast(row.toList())
         while (scrollback.size > scrollbackLimitValue) scrollback.removeFirst()
         // Follow the tail: new output snaps a scrolled-up viewport back to live.
@@ -1294,6 +1428,12 @@ class TerminalEmulator(
         private const val DEFAULT_COLS = 80
         private const val DEFAULT_ROWS = 24
         private const val DEFAULT_SCROLLBACK_LINES = 1000
+        // Membership-filter scan cap: recent history covers every realistic
+        // repaint cycle; full scans would tax every banked row.
+        private const val HISTORY_MATCH_WINDOW = 500
+        // Post-grow merge holiday: covers the repaint round-trip (local socket,
+        // ~ms) plus typical burst interleaving.
+        private const val MERGE_GRACE_WRITES = 5
         private const val MAX_DIM = 512
         private const val MAX_CSI_BYTES = 256
         private const val MAX_PARAMS = 32

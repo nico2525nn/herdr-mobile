@@ -424,7 +424,11 @@ class HerdrTerminalView @JvmOverloads constructor(
                 col += widthCells
             }
         }
+        // Hidden while scrolled into history: the live cursor isn't in the
+        // viewport, and drawing it at live coords on scrolled content puts a
+        // block in the middle of unrelated text.
         if (snapshot.cursorVisible && showCursor &&
+            snapshot.scrollbackOffset == 0 &&
             snapshot.cursorRow in 0 until snapshot.rowCount &&
             snapshot.cursorCol in 0 until snapshot.cols &&
             selectAnchor == null
