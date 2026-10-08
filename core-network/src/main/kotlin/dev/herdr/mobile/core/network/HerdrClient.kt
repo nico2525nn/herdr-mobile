@@ -62,7 +62,7 @@ class HerdrClient(
     private val externalScope: CoroutineScope,
     http: OkHttpClient? = null,
 ) {
-    private val scope = CoroutineScope(externalScope.coroutineContext + SupervisorJob())
+    private val scope = CoroutineScope(externalScope.coroutineContext)
 
     private val http: OkHttpClient = http ?: OkHttpClient.Builder()
         .connectTimeout(10, TimeUnit.SECONDS)
@@ -208,6 +208,14 @@ class HerdrClient(
                 throw DaemonException("stream_closed", "Event stream closed")
             } catch (e: DaemonException) {
                 if (coroutineContext.isActive) {
+                    // Transport failure (not auth/protocol): invalidate the tunnel
+                    // so the next retry dials fresh. JSch isConnected stays true
+                    // on half-open TCP (keepalive needs up to 45s), and reusing
+                    // the dead session would loop forever without this close.
+                    if (e.code != "unauthorized" && e.code != "protocol_mismatch") {
+                        runCatching { endpointProvider.close() }
+                        endpoint = null
+                    }
                     _state.update {
                         it.copy(
                             connection = if (e.code == "unauthorized" || e.code == "protocol_mismatch") {
@@ -227,6 +235,9 @@ class HerdrClient(
                 }
             } catch (e: Exception) {
                 if (coroutineContext.isActive) {
+                    // Same invalidation for non-daemon transport errors.
+                    runCatching { endpointProvider.close() }
+                    endpoint = null
                     _state.update {
                         it.copy(
                             connection = if (it.snapshot != null) {
