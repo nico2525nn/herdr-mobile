@@ -78,6 +78,11 @@ class TerminalViewModel(
     private val pageFlow = MutableStateFlow(InputPanelPage.EXTRA_KEYS)
     private val messageFlow = MutableStateFlow<String?>(null)
 
+    // Declared BEFORE init: viewModelScope.launch on the main thread starts
+    // undispatched, so the first StateFlow emit can reach flushPending while
+    // the constructor is still running. A later declaration NPEs on monitor-enter.
+    private val pendingInput = ArrayDeque<suspend (ConnectionTerminalBackend) -> Unit>(64)
+
     private var attachJob: Job? = null
 
     val uiState: StateFlow<TerminalUiState> = combine(
@@ -251,8 +256,6 @@ class TerminalViewModel(
      * already cleared its field, so a drop loses user text with no trace).
      * Bounded at 64 entries; failures surface as a status message.
      */
-    private val pendingInput = ArrayDeque<suspend (ConnectionTerminalBackend) -> Unit>(64)
-
     private fun enqueueOrSend(op: suspend (ConnectionTerminalBackend) -> Unit) {
         val backend = backendFlow.value
         if (backend != null) {
