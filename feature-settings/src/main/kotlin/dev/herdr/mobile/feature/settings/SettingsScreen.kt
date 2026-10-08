@@ -481,11 +481,11 @@ private fun ProfileEditorDialog(
     var port by rememberSaveable { mutableStateOf(profile.port.toString()) }
     var username by rememberSaveable { mutableStateOf(profile.username) }
     var daemonPort by rememberSaveable { mutableStateOf(profile.daemonPort.toString()) }
-    var password by rememberSaveable { mutableStateOf("") }
+    var password by remember { mutableStateOf("") }
     var passwordTouched by rememberSaveable { mutableStateOf(false) }
     val hasPassword = profile.passwordAlias != null
-    var token by rememberSaveable { mutableStateOf("") }
-    var keyPem by rememberSaveable { mutableStateOf("") }
+    var token by remember { mutableStateOf("") }
+    var keyPem by remember { mutableStateOf("") }
     val hasKey = profile.privateKeyAlias != null
 
     AlertDialog(

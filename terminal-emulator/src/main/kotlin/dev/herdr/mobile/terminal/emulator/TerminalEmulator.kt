@@ -172,13 +172,19 @@ class TerminalEmulator(
         if (nc == colsValue && nr == rowsValue) return
         // Shrinking rows must not discard history: push the clipped bottom rows
         // into scrollback first (main screen only; alt screen has no scrollback).
+        // Collect top-down, then push in order — pushing while removing from the
+        // tail would reverse the history. All-blank rows are skipped: resizing
+        // an empty grid (or the initial 80x24 -> NxM setup resize) must not
+        // fabricate scrollback out of nothing.
         if (nr < rowsValue && !usingAlternateScreen) {
             val clipped = rowsValue - nr
-            repeat(clipped.coerceAtMost(mainLines.size)) {
-                if (mainLines.isNotEmpty()) {
-                    pushScrollback(adjustRowWidth(mainLines.removeAt(mainLines.size - 1), nc))
-                }
-            }
+            val take = clipped.coerceAtMost(mainLines.size)
+            val start = mainLines.size - take
+            val rows = (start until mainLines.size)
+                .map { adjustRowWidth(mainLines[it], nc) }
+                .filter { row -> row.any { !it.isBlank } }
+            repeat(take) { mainLines.removeAt(mainLines.size - 1) }
+            rows.forEach { pushScrollback(it) }
         }
         colsValue = nc
         rowsValue = nr
