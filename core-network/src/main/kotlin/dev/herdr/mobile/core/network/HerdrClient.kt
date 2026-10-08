@@ -71,6 +71,21 @@ class HerdrClient(
         .retryOnConnectionFailure(true)
         .build()
 
+    /**
+     * REST calls (health/snapshot/refetch) must never share the WebSocket
+     * client's infinite readTimeout: a stalled daemon would hang them forever
+     * with no recovery. Bounded client for one-shot calls only.
+     */
+    private val restHttp: OkHttpClient = http?.newBuilder()
+        ?.readTimeout(15, TimeUnit.SECONDS)
+        ?.build()
+        ?: OkHttpClient.Builder()
+            .connectTimeout(10, TimeUnit.SECONDS)
+            .readTimeout(15, TimeUnit.SECONDS)
+            .writeTimeout(10, TimeUnit.SECONDS)
+            .retryOnConnectionFailure(true)
+            .build()
+
     private val _state = MutableStateFlow(HerdrClientState())
     val state: StateFlow<HerdrClientState> = _state.asStateFlow()
 
@@ -82,7 +97,7 @@ class HerdrClient(
 
     private fun api(): DaemonApi {
         val ep = endpoint ?: throw DaemonException("not_connected", "No endpoint is open")
-        return DaemonApi(http, ep)
+        return DaemonApi(restHttp, ep)
     }
 
     /** Start (or restart) the link. Safe to call repeatedly; replaces any running loop. */
@@ -226,8 +241,14 @@ class HerdrClient(
         socket.stream().collect { signal ->
             when (signal) {
                 is EventSocket.Signal.Ready -> {
-                    // Cursor noted; the snapshot we hold was taken after it, so any event with
-                    // seq <= snapshot.seq is history we already have.
+                    // The daemon announces its cursor with no replay: events that
+                    // landed between our snapshot GET and this subscribe are
+                    // already gone. If the cursor moved past our snapshot, refetch
+                    // before consuming, or the gap is silently lost.
+                    val held = _state.value.snapshot?.seq ?: -1
+                    if (signal.seq > held) {
+                        refetch("cursor moved ${held} -> ${signal.seq} during subscribe")
+                    }
                 }
 
                 is EventSocket.Signal.Event -> applyEvent(signal.event)
@@ -353,7 +374,7 @@ class HerdrClient(
             return ConnectionTestResult.Failure(classify(e), userMessage(e))
         }
         return try {
-            val api = DaemonApi(http, ep)
+            val api = DaemonApi(restHttp, ep)
             val health = api.health()
             if (health.protocol != HealthReport.PROTOCOL) {
                 return ConnectionTestResult.Failure(

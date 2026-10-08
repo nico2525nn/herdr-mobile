@@ -184,7 +184,7 @@ class TerminalEmulator(
         decSaved = decSaved?.coerced(nc, nr)
         mainSaved = mainSaved?.coerced(nc, nr)
         scrollbackOffsetValue = scrollbackOffsetValue.coerceIn(0, scrollback.size)
-        touch()
+        touchAndBump()
     }
 
     fun write(bytes: ByteArray) {

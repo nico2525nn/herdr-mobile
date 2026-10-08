@@ -1,10 +1,14 @@
 package dev.herdr.mobile
 
+import android.Manifest
 import android.content.Intent
+import android.content.pm.PackageManager
+import android.os.Build
 import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.padding
 import androidx.compose.material.icons.Icons
@@ -58,6 +62,11 @@ class MainActivity : ComponentActivity() {
      */
     private val deepLinkTarget = MutableStateFlow<TerminalRoute?>(null)
 
+    private val notificationPermission =
+        registerForActivityResult(ActivityResultContracts.RequestPermission()) { _ ->
+            // Granted or not, the relay no-ops safely; no retry nag here.
+        }
+
     private fun routeFromIntent(intent: Intent?): TerminalRoute? {
         val workspace = intent?.getStringExtra(HerdrNotifications.EXTRA_WORKSPACE_ID) ?: return null
         val tab = intent.getStringExtra(HerdrNotifications.EXTRA_TAB_ID)
@@ -67,6 +76,15 @@ class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
+        // POST_NOTIFICATIONS defaults to denied on API 33+; without this every
+        // relay notification is silently dropped while the user believes done /
+        // blocked / failed alerts are enabled. Ask once per install.
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
+            checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) !=
+                PackageManager.PERMISSION_GRANTED
+        ) {
+            notificationPermission.launch(Manifest.permission.POST_NOTIFICATIONS)
+        }
         val container = (application as HerdrApp).container
         deepLinkTarget.value = routeFromIntent(intent)
         setContent {

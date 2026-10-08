@@ -45,7 +45,9 @@ Prerequisites: Android SDK, KVM, an API 36+ AVD. From the project root:
 
 The daemon runs on the host; from the emulator it is `http://10.0.2.2:8765`
 (Settings → Transport → Direct (tailnet), debug builds allow cleartext).
-Release builds require the SSH tunnel or TLS transports.
+Release builds use the SSH tunnel (loopback forward); the daemon speaks plain
+HTTP by design and there is no TLS terminator yet, so Direct-over-https is
+not currently available.
 
 ```bash
 adb devices

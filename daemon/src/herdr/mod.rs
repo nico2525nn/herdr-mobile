@@ -267,7 +267,7 @@ impl EventSubscription {
             if line.trim().is_empty() {
                 continue;
             }
-            tracing::debug!("herdr event line: {}", &line[..line.len().min(160)]);
+            tracing::debug!("herdr event line: {}", line.chars().take(160).collect::<String>());
             let value: Value = match serde_json::from_str(&line) {
                 Ok(value) => value,
                 Err(e) => {

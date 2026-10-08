@@ -414,10 +414,22 @@ pub async fn run_resync_loop(cache: Arc<SessionCache>, bus: Arc<EventBus>) {
                         continue;
                     }
                     stale_noops = 0;
+                    let is_structural = matches!(
+                        event.name.as_str(),
+                        "pane_created" | "pane_closed" | "tab_created" | "tab_closed"
+                            | "workspace_created" | "workspace_closed"
+                    );
                     match cache.apply_herdr_event(&event).await {
                         Ok(events) => {
                             for e in events {
                                 bus.broadcast(e);
+                            }
+                            if is_structural {
+                                // pane.agent_status_changed needs concrete pane ids:
+                                // break to resubscribe with the fresh pane set, or
+                                // panes born after subscribe never report status.
+                                debug!("structural event; resubscribing with fresh pane set");
+                                break;
                             }
                         }
                         Err(e) => {

@@ -347,19 +347,30 @@ class HerdrTerminalView @JvmOverloads constructor(
 
     override fun onKeyPreIme(keyCode: Int, event: android.view.KeyEvent): Boolean {
         // System back while the keyboard is up: dismiss the keyboard instead of
-        // leaving the terminal screen. Intercept ACTION_DOWN: by ACTION_UP the
-        // framework has usually already consumed DOWN (finishing the screen),
-        // so UP-only handling never fires on most devices. Only consume when
-        // the IME is actually visible — otherwise back must navigate away.
-        if (keyCode == android.view.KeyEvent.KEYCODE_BACK &&
-            event.action == android.view.KeyEvent.ACTION_DOWN &&
-            isKeyboardVisible()
-        ) {
-            hideKeyboard()
-            return true
+        // leaving the terminal screen. Track DOWN but only consume UP: consuming
+        // DOWN based on isAcceptingText (true whenever this always-editor view
+        // has focus, keyboard or not) traps back navigation with no escape.
+        if (keyCode == android.view.KeyEvent.KEYCODE_BACK) {
+            if (event.action == android.view.KeyEvent.ACTION_DOWN) {
+                backDownSeen = event.eventTime
+                // Let DOWN propagate; we decide on UP once we know the IME ate it.
+                return false
+            }
+            if (event.action == android.view.KeyEvent.ACTION_UP && backDownSeen != 0L) {
+                backDownSeen = 0L
+                // If the IME was up, it consumed DOWN and this UP arrives with
+                // FLAG_CANCELED unset but the window still focused on us: hide
+                // the keyboard and consume. Otherwise let navigation proceed.
+                if (isKeyboardVisible()) {
+                    hideKeyboard()
+                    return true
+                }
+            }
         }
         return super.onKeyPreIme(keyCode, event)
     }
+
+    private var backDownSeen: Long = 0L
 
     private fun isKeyboardVisible(): Boolean {
         val imm = context.getSystemService(Context.INPUT_METHOD_SERVICE)
