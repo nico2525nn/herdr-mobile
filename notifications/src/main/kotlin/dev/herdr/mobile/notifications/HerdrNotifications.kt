@@ -38,8 +38,8 @@ object HerdrNotifications {
 
     /**
      * Returns true when [event] passes both the type filter and the user's toggles.
-     * `done`/`blocked` have toggles; `failed` arrives as a blocked-typed event whose message
-     * mentions failure, and has its own toggle.
+     * Failed is a first-class status from the daemon (not message sniffing):
+     * BLOCKED-with-"fail"-text is kept as a legacy fallback for old daemons.
      */
     fun shouldNotify(
         event: SemanticEvent,
@@ -50,6 +50,7 @@ object HerdrNotifications {
         if (!event.isAlertWorthy) return false
         return when (event.status) {
             AgentStatus.DONE -> notifyDone
+            AgentStatus.FAILED -> notifyFailed
             AgentStatus.BLOCKED ->
                 if (event.message?.contains("fail", ignoreCase = true) == true) {
                     notifyFailed
@@ -70,6 +71,7 @@ object HerdrNotifications {
         val status = event.status ?: return
         val title = when (status) {
             AgentStatus.DONE -> "Done${workspaceLabel?.let { " · $it" } ?: ""}"
+            AgentStatus.FAILED -> "Failed${workspaceLabel?.let { " · $it" } ?: ""}"
             AgentStatus.BLOCKED -> "Blocked${workspaceLabel?.let { " · $it" } ?: ""}"
             else -> return
         }

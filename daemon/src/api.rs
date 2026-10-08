@@ -51,8 +51,14 @@ fn bearer(headers: &HeaderMap) -> Option<String> {
 }
 
 fn check_auth(state: &AppState, headers: &HeaderMap) -> Result<(), Response> {
+    // Token is REQUIRED even on loopback: without it any local UID reaches
+    // pane-input/terminal/tab control (= command execution as the daemon user).
     let Some(configured) = state.config.token.as_deref() else {
-        return Ok(());
+        return Err(api_error(
+            StatusCode::UNAUTHORIZED,
+            "unauthorized",
+            "daemon has no bearer token configured; set --token or HERDR_MOBILE_TOKEN",
+        ));
     };
     match bearer(headers) {
         Some(presented) if auth::tokens_equal(configured, &presented) => Ok(()),

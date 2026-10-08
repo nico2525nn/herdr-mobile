@@ -394,6 +394,11 @@ private fun TerminalSurface(
             launch {
                 try {
                     created.frame.collect { snapshot -> viewRef?.render(snapshot) }
+                } catch (e: kotlinx.coroutines.CancellationException) {
+                    // onRelease cancels this collector: must propagate, or the
+                    // cancel never completes and the old collector keeps rendering
+                    // stale snapshots over the new bridge's output.
+                    throw e
                 } catch (_: Exception) {
                 }
             }.also { collector ->

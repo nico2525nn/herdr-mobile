@@ -25,6 +25,9 @@ enum class AgentStatus(val wire: String, val priority: Int) {
     @SerialName("idle")
     IDLE("idle", 200),
 
+    @SerialName("failed")
+    FAILED("failed", 600),
+
     @SerialName("unknown")
     UNKNOWN("unknown", 100);
 

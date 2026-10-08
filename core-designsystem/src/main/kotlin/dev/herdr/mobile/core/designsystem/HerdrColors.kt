@@ -20,6 +20,7 @@ data class HerdrColors(
     val working: Color,
     val done: Color,
     val idle: Color,
+    val failed: Color,
     val unknown: Color,
 ) {
     fun forStatus(status: AgentStatus): Color = when (status) {
@@ -27,6 +28,7 @@ data class HerdrColors(
         AgentStatus.WORKING -> working
         AgentStatus.DONE -> done
         AgentStatus.IDLE -> idle
+        AgentStatus.FAILED -> failed
         AgentStatus.UNKNOWN -> unknown
     }
 }
@@ -36,6 +38,7 @@ internal val HerdrColorsDark = HerdrColors(
     working = Color(0xFFF9E2AF),
     done = Color(0xFF94E2D5),
     idle = Color(0xFFA6E3A1),
+    failed = Color(0xFFEB4765),
     unknown = Color(0xFF6C7086),
 )
 
@@ -44,6 +47,7 @@ internal val HerdrColorsLight = HerdrColors(
     working = Color(0xFFDF8E1D),
     done = Color(0xFF179299),
     idle = Color(0xFF40A02B),
+    failed = Color(0xFFC4433E),
     unknown = Color(0xFF9CA0B0),
 )
 
@@ -61,6 +65,7 @@ fun AgentStatus.contentDescription(): String = when (this) {
     AgentStatus.WORKING -> "Working"
     AgentStatus.DONE -> "Done, new results"
     AgentStatus.IDLE -> "Idle"
+    AgentStatus.FAILED -> "Failed"
     AgentStatus.UNKNOWN -> "Status unknown"
 }
 
@@ -70,5 +75,6 @@ fun AgentStatus.shortLabel(): String = when (this) {
     AgentStatus.WORKING -> "working"
     AgentStatus.DONE -> "done"
     AgentStatus.IDLE -> "idle"
+    AgentStatus.FAILED -> "failed"
     AgentStatus.UNKNOWN -> "unknown"
 }

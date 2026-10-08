@@ -37,7 +37,7 @@ class ConnectionTerminalBackend(
                 is TerminalAttachmentState.Failed -> BackendState.Failed(s.code, s.message)
             }
         }
-        .stateIn(scope, SharingStarted.Eagerly, BackendState.Idle)
+        .stateIn(scope, SharingStarted.WhileSubscribed(5_000), BackendState.Idle)
 
     override val bytes: Flow<ByteArray> =
         inner.inbound.filterIsInstance<TerminalInbound.Bytes>().map { it.data }

@@ -7,6 +7,8 @@ import dev.herdr.mobile.core.model.Pane
 import dev.herdr.mobile.core.model.ResizeRequest
 import dev.herdr.mobile.core.model.SessionSnapshot
 import dev.herdr.mobile.core.model.Workspace
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 import kotlinx.serialization.builtins.ListSerializer
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonObject
@@ -50,13 +52,13 @@ class DaemonApi(
         return builder.build()
     }
 
-    private fun execute(request: Request): String {
+    private suspend fun execute(request: Request): String = withContext(Dispatchers.IO) {
         http.newCall(request).execute().use { response ->
             val text = response.body?.string().orEmpty()
             if (!response.isSuccessful) {
                 throw mapError(response.code, text)
             }
-            return text
+            text
         }
     }
 
@@ -73,18 +75,18 @@ class DaemonApi(
         }
     }
 
-    private fun post(path: String, body: String): JsonObject {
+    private suspend fun post(path: String, body: String): JsonObject {
         val text = execute(request("POST", path, body))
         return HerdrJson.parseToJsonElement(text).jsonObject
     }
 
     private inline fun <reified T> decode(text: String): T = HerdrJson.decodeFromString(text)
 
-    fun health(): HealthReport = decode(execute(request("GET", "v1/health")))
+    suspend fun health(): HealthReport = decode(execute(request("GET", "v1/health")))
 
-    fun snapshot(): SessionSnapshot = decode(execute(request("GET", "v1/snapshot")))
+    suspend fun snapshot(): SessionSnapshot = decode(execute(request("GET", "v1/snapshot")))
 
-    fun workspaces(): WorkspacesResponse {
+    suspend fun workspaces(): WorkspacesResponse {
         val text = execute(request("GET", "v1/workspaces"))
         val obj = HerdrJson.parseToJsonElement(text).jsonObject
         return WorkspacesResponse(
@@ -97,7 +99,7 @@ class DaemonApi(
         )
     }
 
-    fun panes(): PanesResponse {
+    suspend fun panes(): PanesResponse {
         val text = execute(request("GET", "v1/panes"))
         val obj = HerdrJson.parseToJsonElement(text).jsonObject
         return PanesResponse(
@@ -110,7 +112,7 @@ class DaemonApi(
         )
     }
 
-    fun sendInput(paneId: String, text: String, base64: Boolean = false) {
+    suspend fun sendInput(paneId: String, text: String, base64: Boolean = false) {
         val body = HerdrJson.encodeToString(
             InputRequest.serializer(),
             InputRequest(encoding = if (base64) "base64" else "utf-8", text = text),
@@ -118,20 +120,20 @@ class DaemonApi(
         post("v1/pane/${paneId.url()}/input", body)
     }
 
-    fun interrupt(paneId: String) {
+    suspend fun interrupt(paneId: String) {
         post("v1/pane/${paneId.url()}/interrupt", "{}")
     }
 
-    fun resizePane(paneId: String, cols: Int, rows: Int) {
+    suspend fun resizePane(paneId: String, cols: Int, rows: Int) {
         val body = HerdrJson.encodeToString(ResizeRequest.serializer(), ResizeRequest(cols, rows))
         post("v1/pane/${paneId.url()}/resize", body)
     }
 
-    fun reportAgent(report: AgentReport) {
+    suspend fun reportAgent(report: AgentReport) {
         post("v1/agent/report", HerdrJson.encodeToString(AgentReport.serializer(), report))
     }
 
-    fun createTab(workspaceId: String, label: String?): String {
+    suspend fun createTab(workspaceId: String, label: String?): String {
         val body = buildJsonObject {
             put("workspaceId", workspaceId)
             if (label != null) put("label", label)
@@ -141,11 +143,11 @@ class DaemonApi(
             ?: throw DaemonException("bad_response", "tab.create returned no tabId")
     }
 
-    fun closeTab(tabId: String) {
+    suspend fun closeTab(tabId: String) {
         post("v1/tab/${tabId.url()}/close", "{}")
     }
 
-    fun renameTab(tabId: String, label: String) {
+    suspend fun renameTab(tabId: String, label: String) {
         val body = buildJsonObject { put("label", label) }.toString()
         post("v1/tab/${tabId.url()}/rename", body)
     }

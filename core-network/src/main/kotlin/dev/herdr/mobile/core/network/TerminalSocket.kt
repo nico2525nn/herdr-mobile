@@ -139,13 +139,20 @@ class TerminalSocket(
     }
 
     private fun emit(value: TerminalInbound) {
-        // tryEmit with SUSPEND overflow never drops: it returns false only
-        // when no collector is ready AND the buffer is full, in which case we
-        // suspend-emit under a mutex so bursts stay ordered instead of
-        // interleaving. The launch is scoped to this socket's lifecycle.
-        if (!_inbound.tryEmit(value)) {
-            scope.launch {
+        // Fast path first, mutex only on overflow: tryEmit is lock-free and
+        // wins in the common case. On overflow the suspend-emit runs under a
+        // mutex so concurrent overflows queue instead of interleaving —
+        // without it PTY bytes arrive out of order under burst.
+        if (_inbound.tryEmit(value)) return
+        scope.launch {
+            // tryEmit may have failed spuriously under contention; emit()
+            // suspends correctly either way. Rethrow CancellationException so
+            // socket teardown actually stops parked emitters.
+            try {
                 emitMutex.withLock { _inbound.emit(value) }
+            } catch (e: kotlinx.coroutines.CancellationException) {
+                throw e
+            } catch (_: Exception) {
             }
         }
     }
@@ -208,7 +215,12 @@ class TerminalSocket(
             // queued-but-unsent release leaks the direct-attach resize lock.
             val ws = socket
             if (ws != null) {
-                ws.send(record)
+                // ws.send returns false when the socket is already closing: fall
+                // back to the pump channel so the frame still goes out if the
+                // socket recovers, instead of silently dropping the release.
+                if (!ws.send(record)) {
+                    runCatching { outbound.send(OutboundFrame.Text(record)) }
+                }
                 // Give OkHttp one flush cycle before the close frame.
                 kotlinx.coroutines.delay(150)
             } else {

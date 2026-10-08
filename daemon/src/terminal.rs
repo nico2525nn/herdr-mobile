@@ -396,8 +396,14 @@ impl BridgeGuard {
 }
 impl Drop for BridgeGuard {
     fn drop(&mut self) {
+        // Never expect() in Drop: panicking during unwind aborts the process.
+        // A poisoned mutex still yields its inner value — recover and proceed.
         let last = {
-            let mut st = self.session.bridges.lock().expect("bridges poisoned");
+            let mut st = self
+                .session
+                .bridges
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
             st.count = st.count.saturating_sub(1);
             if st.count == 0 {
                 // Mark teardown before waking: a re-attach racing with the

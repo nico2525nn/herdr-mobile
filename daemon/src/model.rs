@@ -16,6 +16,7 @@ pub enum AgentStatus {
     Working,
     Done,
     Idle,
+    Failed,
     #[default]
     Unknown,
 }
@@ -23,6 +24,7 @@ pub enum AgentStatus {
 impl AgentStatus {
     pub fn priority(self) -> u32 {
         match self {
+            AgentStatus::Failed => 600,
             AgentStatus::Blocked => 500,
             AgentStatus::Working => 400,
             AgentStatus::Done => 300,
@@ -37,6 +39,7 @@ impl AgentStatus {
             Some("working") => AgentStatus::Working,
             Some("done") => AgentStatus::Done,
             Some("idle") => AgentStatus::Idle,
+            Some("failed") => AgentStatus::Failed,
             _ => AgentStatus::Unknown,
         }
     }
@@ -47,6 +50,7 @@ impl AgentStatus {
             AgentStatus::Working => "working",
             AgentStatus::Done => "done",
             AgentStatus::Idle => "idle",
+            AgentStatus::Failed => "failed",
             AgentStatus::Unknown => "unknown",
         }
     }
@@ -285,12 +289,12 @@ mod tests {
             ("working", AgentStatus::Working),
             ("done", AgentStatus::Done),
             ("idle", AgentStatus::Idle),
+            ("failed", AgentStatus::Failed),
             ("unknown", AgentStatus::Unknown),
         ] {
             assert_eq!(AgentStatus::from_wire(Some(wire)), status);
             assert_eq!(status.as_wire(), wire);
         }
-        assert_eq!(AgentStatus::from_wire(Some("failed")), AgentStatus::Unknown);
         assert_eq!(AgentStatus::from_wire(None), AgentStatus::Unknown);
     }
 
