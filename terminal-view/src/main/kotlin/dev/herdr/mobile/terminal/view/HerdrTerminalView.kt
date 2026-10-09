@@ -41,6 +41,31 @@ class HerdrTerminalView @JvmOverloads constructor(
     defStyleAttr: Int = 0,
 ) : View(context, attrs, defStyleAttr) {
 
+    /** Alt-screen scroll: lines>0 finger-up (live-ward), lines<0 older. Host forwards. */
+    var onRemoteScroll: ((lines: Int) -> Unit)? = null
+    /**
+     * Host part of remote-scroll routing: true when the pane runs an agent
+     * (main-screen TUIs like codex whose transcript lives in HOST scrollback,
+     * not local history). Alt-screen is OR-ed live from the frame (it flips
+     * mid-session without recomposition). Entering remote snaps local home:
+     * mixed offsets would double-scroll.
+     */
+    var remoteScrollHost: Boolean = false
+        set(value) {
+            if (field == value) return
+            field = value
+            if (value) {
+                stopFling()
+                setTopRow(0)
+            }
+        }
+
+    /** Effective routing: host (agent) OR live alt-screen flag. */
+    private val remoteEffective: Boolean
+        get() = remoteScrollHost || frame.usingAlternateScreen
+    /** Diagnostic: remote scroll requests sent (alt/agent mode). */
+    var remoteScrolls: Long = 0
+        private set
     var onTapCell: ((col: Int, row: Int) -> Unit)? = null
     var onZoomFont: ((deltaSp: Float) -> Unit)? = null
     var onSelection: ((text: String) -> Unit)? = null
@@ -71,6 +96,17 @@ class HerdrTerminalView @JvmOverloads constructor(
     // the live bottom, negative = scrolled up N rows. Owned entirely by the
     // view: the emulator never sees it, so drags never leave the UI thread.
     private var topRow = 0
+    /** Diagnostic counters (no content): gesture callbacks and applied rows. */
+    var scrollEvents: Long = 0
+        private set
+    var scrolledRows: Long = 0
+        private set
+    /** Current viewport offset for diagnostics (0 = live). */
+    val currentTopRow: Int get() = topRow
+    /** History rows in the latest snapshot (0 when unknown). */
+    val snapshotHistorySize: Int get() = frame.history.size
+    /** Alt-screen flag of the latest snapshot. */
+    val snapshotUsingAlt: Boolean get() = frame.usingAlternateScreen
     // Fractional drag pixels carried across onScroll calls (termux
     // mScrollRemainder): without this, sub-row drags round to zero per event
     // and slow drags never move at all.
@@ -79,7 +115,24 @@ class HerdrTerminalView @JvmOverloads constructor(
     private var flingTick: Runnable? = null
 
     private val gestures = GestureDetector(context, object : GestureDetector.SimpleOnGestureListener() {
+        override fun onDown(e: MotionEvent): Boolean {
+            // A fresh touch wins over everything: kill the fling so a
+            // catching tap doesn't fight the animation. Must return true:
+            // all gestures begin here and false risks the rest being dropped.
+            stopFling()
+            return true
+        }
+
         override fun onSingleTapUp(e: MotionEvent): Boolean {
+            // A tap with an active selection clears it (termux behavior) and
+            // does nothing else: without this a longpress captures every
+            // future drag into the selection branch and scrolling dies.
+            if (selectAnchor != null) {
+                selectAnchor = null
+                selectActive = null
+                invalidate()
+                return true
+            }
             // Mouse-reporting apps address the LIVE screen (0-based): convert
             // buffer coords back by the history size.
             cellAt(e.x, e.y)?.let { (col, bufRow) ->
@@ -119,10 +172,22 @@ class HerdrTerminalView @JvmOverloads constructor(
             // until the last fling is taken care of — a fresh touch wins).
             stopFling()
             if (cellHeight > 0) {
+                scrollEvents++
                 val total = distanceY + scrollRemainder
                 val lines = (total / cellHeight).toInt()
                 scrollRemainder = total - lines * cellHeight
-                if (lines != 0) scrollRows(lines)
+                if (lines != 0) {
+                    if (remoteEffective) {
+                        // TUI/alt: no local history applies — forward to Herdr,
+                        // which routes per context (host scrollback / app
+                        // arrows / mouse wheel). Repaint frames arrive as
+                        // normal bytes; local offset stays pinned at live.
+                        remoteScrolls++
+                        onRemoteScroll?.invoke(lines)
+                    } else {
+                        scrollRows(lines)
+                    }
+                }
             }
             return true
         }
@@ -135,8 +200,23 @@ class HerdrTerminalView @JvmOverloads constructor(
         ): Boolean {
             if (cellHeight <= 0 || selectAnchor != null) return true
             if (!scroller.isFinished) return true
-            // Finger-up fling (velocityY < 0) scrolls toward older history:
-            // negate into row space, clamp to available history.
+            // Remote-mode fling: one aggregated remote jump (per-tick
+            // messages would spam RTTs on bad networks; a single jump lands
+            // the same). Sign matches scrollRows: finger-up (velocityY<0) is
+            // live-ward (lines>0), finger-down is older-ward.
+            if (remoteEffective) {
+                val lines = (velocityY / -cellHeight / 4).toInt().coerceIn(-40, 40)
+                if (lines != 0) {
+                    remoteScrolls++
+                    onRemoteScroll?.invoke(lines)
+                }
+                return true
+            }
+            // Finger-up fling (velocityY < 0): content keeps flying up toward
+            // LIVE (termux convention, same formula as TermuxView:
+            // -(velocityY * SCALE) is positive here). Clamped to history.
+            // NOTE: an earlier audit claimed this sign was reversed — it is
+            // not; inverting it would break consistency with onScroll above.
             val maxUp = frame.history.size
             scroller.fling(0, topRow, 0, (velocityY / -cellHeight / 4).toInt(), 0, 0, -maxUp, 0)
             val tick = object : Runnable {
@@ -210,13 +290,14 @@ class HerdrTerminalView @JvmOverloads constructor(
     }
 
     /**
-     * Scroll by whole rows: positive = finger dragged up = toward older
-     * history (topRow goes negative, termux convention). Synchronous:
-     * offset change + invalidate on the UI thread, zero copies.
+     * Scroll by whole rows, termux convention: positive [lines] (finger
+     * dragged up, content follows finger) moves toward LIVE (topRow toward
+     * 0); negative moves toward older history (topRow more negative).
+     * Synchronous: offset change + invalidate on the UI thread, zero copies.
      */
     fun scrollRows(lines: Int) {
         if (lines == 0) return
-        setTopRow(topRow - lines)
+        setTopRow(topRow + lines)
     }
 
     /** Pin back to the live bottom (input sent, user back at the prompt). */
@@ -232,10 +313,11 @@ class HerdrTerminalView @JvmOverloads constructor(
     }
 
     private fun setTopRow(row: Int) {
-        // Alt screen has no history: any offset request clamps to live.
-        val maxUp = if (frame.usingAlternateScreen) 0 else frame.history.size
+        // Remote mode (alt/agent) pins local live: any offset request clamps.
+        val maxUp = if (remoteEffective) 0 else frame.history.size
         val next = row.coerceIn(-maxUp, 0)
         if (next == topRow) return
+        scrolledRows += kotlin.math.abs(next - topRow)
         topRow = next
         if (topRow == 0) {
             selectAnchor = null
@@ -260,10 +342,28 @@ class HerdrTerminalView @JvmOverloads constructor(
         }
     }
 
+    private var lastHistorySize = 0
+
     /** Called on the UI thread with the newest snapshot. */
     fun render(snapshot: FrameSnapshot) {
         if (snapshot.revision == frame.revision && snapshot.revision >= 0) return
         frame = snapshot
+        // Alt-screen engaged live (no host round-trip): snap local home so a
+        // stale shell offset never double-shifts the remote viewport.
+        if (snapshot.usingAlternateScreen && topRow != 0) {
+            topRow = 0
+            selectAnchor = null
+            selectActive = null
+        }
+        // Content anchor: while scrolled (topRow<0), history growth shifts the
+        // offset WITH the content so the same rows stay visible (otherwise the
+        // view drifts newer with every banked row). At live (topRow=0) nothing
+        // to do. Shrinks (trim/limit/resize) just clamp.
+        val growth = snapshot.history.size - lastHistorySize
+        lastHistorySize = snapshot.history.size
+        if (topRow < 0 && growth > 0) {
+            topRow -= growth
+        }
         // New content never moves the viewport (stable view while reading
         // history); just clamp into the new buffer. Input snaps via snapToBottom.
         val maxUp = if (snapshot.usingAlternateScreen) 0 else snapshot.history.size

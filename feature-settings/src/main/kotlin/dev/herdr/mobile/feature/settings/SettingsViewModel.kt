@@ -199,6 +199,7 @@ class SettingsViewModel(
 
     fun setNotifyDone(enabled: Boolean) = edit { it.copy(notifyDone = enabled) }
     fun setNotifyBlocked(enabled: Boolean) = edit { it.copy(notifyBlocked = enabled) }
+    fun setShowScrollDiagnostics(enabled: Boolean) = edit { it.copy(showScrollDiagnostics = enabled) }
 
     fun testConnection() {
         testJob?.cancel()

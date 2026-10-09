@@ -134,6 +134,8 @@ data class AppSettings(
 
     val notifyDone: Boolean = true,
     val notifyBlocked: Boolean = true,
+    /** Debug-only scroll diagnostics overlay (hist/alt/offset/gestures). Never content. */
+    val showScrollDiagnostics: Boolean = false,
 ) {
     companion object {
         const val DEFAULT_EXTRA_KEYS_LAYOUT = "termux_default"

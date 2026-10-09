@@ -60,6 +60,29 @@ object TerminalProtocol {
         }
     }
 
+    /**
+     * Client to daemon: scroll the REMOTE (Herdr) viewport. Used ONLY for
+     * alt-screen TUIs (no local history exists there); Herdr routes per
+     * context (host scrollback / app arrows / mouse wheel report). Shells
+     * scroll local prelude history with zero RTT instead.
+     */
+    @Serializable
+    data class Scroll(
+        val direction: String,
+        val lines: Int,
+        @EncodeDefault val type: String = TYPE,
+    ) {
+        init {
+            require(lines > 0) { "lines must be greater than 0" }
+        }
+
+        companion object {
+            const val TYPE = "scroll"
+            const val UP = "up"
+            const val DOWN = "down"
+        }
+    }
+
     @Serializable
     data class Mouse(
         val action: String,
@@ -81,6 +104,10 @@ object TerminalProtocol {
         val rows: Int,
         val encoding: String = "ansi",
         val resumed: Boolean = false,
+        val historyRows: Int = 0,
+        val historyTruncated: Boolean = false,
+        val historyError: String? = null,
+        val visibleOk: Boolean = true,
         @EncodeDefault val type: String = TYPE,
     ) {
         companion object {
@@ -122,6 +149,11 @@ sealed interface TerminalAttachmentState {
         val rows: Int,
         /** True when the daemon replayed a full repaint after a reconnect. */
         val resumed: Boolean,
+        /** Prelude history rows banked (0 + error = silent-loss visible). */
+        val historyRows: Int = 0,
+        val historyTruncated: Boolean = false,
+        val historyError: String? = null,
+        val visibleOk: Boolean = true,
     ) : TerminalAttachmentState
 
     data class Detached(val reason: String) : TerminalAttachmentState

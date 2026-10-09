@@ -16,6 +16,7 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
+import kotlinx.serialization.json.contentOrNull
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import okhttp3.Response
@@ -38,6 +39,7 @@ interface TerminalConnection {
     suspend fun send(data: ByteArray)
     suspend fun sendText(text: String)
     suspend fun resize(cols: Int, rows: Int)
+    suspend fun scrollRemote(lines: Int)
     suspend fun mouse(action: String, button: String, column: Int, row: Int)
     suspend fun release()
 
@@ -45,7 +47,16 @@ interface TerminalConnection {
 }
 
 sealed interface TerminalInbound {
-    data class Ready(val paneId: String, val cols: Int, val rows: Int, val resumed: Boolean) : TerminalInbound
+    data class Ready(
+        val paneId: String,
+        val cols: Int,
+        val rows: Int,
+        val resumed: Boolean,
+        val historyRows: Int = 0,
+        val historyTruncated: Boolean = false,
+        val historyError: String? = null,
+        val visibleOk: Boolean = true,
+    ) : TerminalInbound
     data class Bytes(val data: ByteArray) : TerminalInbound
     data class Closed(val reason: String) : TerminalInbound
     data class Failed(val code: String, val message: String) : TerminalInbound
@@ -187,6 +198,20 @@ class TerminalSocket(
         outbound.send(OutboundFrame.Text(record))
     }
 
+    override suspend fun scrollRemote(lines: Int) {
+        if (lines == 0) return
+        // Sign matches view scrollRows: positive = finger up = toward live =
+        // direction down; negative = toward older = direction up.
+        val record = HerdrJson.encodeToString(
+            TerminalProtocol.Scroll.serializer(),
+            TerminalProtocol.Scroll(
+                direction = if (lines > 0) TerminalProtocol.Scroll.DOWN else TerminalProtocol.Scroll.UP,
+                lines = kotlin.math.abs(lines),
+            ),
+        )
+        outbound.send(OutboundFrame.Text(record))
+    }
+
     override suspend fun mouse(action: String, button: String, column: Int, row: Int) {
         val record = HerdrJson.encodeToString(
             TerminalProtocol.Mouse.serializer(),
@@ -261,17 +286,46 @@ class TerminalSocket(
                     }
                     fun int(key: String): Int =
                         obj[key]?.jsonPrimitive?.content?.toIntOrNull() ?: 0
+                    fun bool(key: String): Boolean =
+                        obj[key]?.jsonPrimitive?.content == "true"
+                    fun optStr(key: String): String? =
+                        obj[key]?.jsonPrimitive?.contentOrNull
+                    // The daemon sends Ready twice: prelude Ready (history
+                    // info, cols=0) then geometry Ready (cols/rows, no history
+                    // keys). Absent keys must NOT clobber: carry previous.
+                    val prev = _state.value as? TerminalAttachmentState.Attached
+                    val hasHistory = obj.containsKey("historyRows")
                     val ready = TerminalInbound.Ready(
                         paneId = obj["paneId"]?.jsonPrimitive?.content ?: paneId,
                         cols = int("cols"),
                         rows = int("rows"),
-                        resumed = obj["resumed"]?.jsonPrimitive?.content == "true",
+                        resumed = bool("resumed"),
+                        historyRows = if (hasHistory) int("historyRows") else prev?.historyRows ?: 0,
+                        historyTruncated = if (hasHistory) {
+                            bool("historyTruncated")
+                        } else {
+                            prev?.historyTruncated ?: false
+                        },
+                        historyError = if (obj.containsKey("historyError")) {
+                            optStr("historyError")
+                        } else {
+                            prev?.historyError
+                        },
+                        visibleOk = if (obj.containsKey("visibleOk")) {
+                            obj["visibleOk"]?.jsonPrimitive?.content != "false"
+                        } else {
+                            prev?.visibleOk ?: true
+                        },
                     )
                     _state.value = TerminalAttachmentState.Attached(
                         paneId = ready.paneId,
                         cols = ready.cols,
                         rows = ready.rows,
                         resumed = ready.resumed,
+                        historyRows = ready.historyRows,
+                        historyTruncated = ready.historyTruncated,
+                        historyError = ready.historyError,
+                        visibleOk = ready.visibleOk,
                     )
                     emit(ready)
                 }

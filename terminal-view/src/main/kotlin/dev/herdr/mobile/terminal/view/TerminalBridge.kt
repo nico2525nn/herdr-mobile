@@ -117,6 +117,16 @@ class TerminalBridge(
         backend.mouse(action, button, column, row)
 
     /**
+     * Forward a scroll gesture to Herdr (alt-screen TUIs only: shells scroll
+     * local history). Fire-and-forget: repaint frames arrive as normal bytes
+     * and paint the alt grid; the local offset stays pinned at live.
+     */
+    fun scrollRemote(lines: Int) {
+        if (lines == 0) return
+        scope.launch { runCatching { backend.scrollRemote(lines) } }
+    }
+
+    /**
      * Release the backend connection. Suspends until the release frame has been
      * handed to the backend — never fire-and-forget on a scope that dies with us,
      * or the release never reaches Herdr and the direct-attach resize lock leaks.

@@ -475,6 +475,9 @@ private fun TerminalSurface(
                         clipboard.setText(AnnotatedString(text))
                     }
                 }
+                view.onRemoteScroll = { lines ->
+                    bridgeRef.value?.scrollRemote(lines)
+                }
                 view.onZoomFont = { delta ->
                     // Font zoom is applied through settings; the host clamps it.
                 }
@@ -505,6 +508,14 @@ private fun TerminalSurface(
                     clipboard.setText(AnnotatedString(text))
                 }
             }
+            view.onRemoteScroll = { lines ->
+                bridgeRef.value?.scrollRemote(lines)
+            }
+            // Remote scroll routing (host part): agent panes (main-screen
+            // TUIs like codex whose transcript lives in HOST scrollback, not
+            // local history). Alt-screen is OR-ed live inside the view.
+            // Plain shells keep instant local scroll.
+            view.remoteScrollHost = state.pane?.agent?.isNotBlank() == true
             view.onZoomFont = { _ -> }
         },
         modifier = Modifier
@@ -516,6 +527,52 @@ private fun TerminalSurface(
                 bridge?.resize(cols, rows)
             },
     )
+
+    // Scroll diagnostics overlay (debug toggle; state only, never content).
+    // Ticks on every frame + scroll so the numbers stay live while dragging.
+    if (state.settings.showScrollDiagnostics) {
+        var diagTick by remember { mutableStateOf(0) }
+        LaunchedEffect(bridge, backendState) {
+            // Recompose the overlay whenever frames flow: poll the view at
+            // 4Hz while visible (cheap getters, no allocation).
+            while (true) {
+                kotlinx.coroutines.delay(250)
+                diagTick++
+            }
+        }
+        @Suppress("UNUSED_EXPRESSION")
+        diagTick
+        val attached = backendState as? BackendState.Attached
+        val diagText = remember(diagTick, backendState, viewRef) {
+            val v = viewRef
+            buildString {
+                append("hist=")
+                append(v?.snapshotHistorySize ?: -1)
+                append(" alt=")
+                append(v?.snapshotUsingAlt ?: false)
+                append(" top=")
+                append(v?.currentTopRow ?: 0)
+                append(" ev=")
+                append(v?.scrollEvents ?: 0)
+                append(" rows=")
+                append(v?.scrolledRows ?: 0)
+                append(" rem=")
+                append(v?.remoteScrolls ?: 0)
+                if (v?.remoteScrollHost == true) append("(R)")
+                if (attached != null) {
+                    append(" pre=")
+                    append(attached.historyRows)
+                    if (attached.historyTruncated) append("+")
+                    attached.historyError?.let { append(" ERR:").append(it.take(24)) }
+                } else {
+                    append(" pre=?")
+                }
+            }
+        }
+        Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.TopStart) {
+            ScrollDiagnosticsOverlay(text = diagText, visible = true)
+        }
+    }
 
     DisposableEffect(backend) {
         onDispose {

@@ -26,6 +26,13 @@ interface TerminalBackend {
 
     suspend fun resize(cols: Int, rows: Int)
 
+    /**
+     * Scroll the remote viewport (alt-screen TUIs only; shells scroll local
+     * history). Positive [lines] = finger dragged up = toward live
+     * (direction down); negative = toward older (direction up).
+     */
+    suspend fun scrollRemote(lines: Int)
+
     /** Mouse event for mouse-mode apps (vim, less, tmux mouse). */
     suspend fun mouse(action: String, button: String, column: Int, row: Int)
 
@@ -35,7 +42,14 @@ interface TerminalBackend {
 sealed interface BackendState {
     data object Idle : BackendState
     data class Attaching(val paneId: String) : BackendState
-    data class Attached(val paneId: String, val cols: Int, val rows: Int) : BackendState
+    data class Attached(
+        val paneId: String,
+        val cols: Int,
+        val rows: Int,
+        val historyRows: Int = 0,
+        val historyTruncated: Boolean = false,
+        val historyError: String? = null,
+    ) : BackendState
     data class Detached(val reason: String) : BackendState
     data class Failed(val code: String, val message: String) : BackendState
 }

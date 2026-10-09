@@ -285,11 +285,22 @@ fun SettingsScreen(
                 SettingsRow(
                     headline = "Bell vibration",
                     supporting = "Vibrate on terminal bell",
-                    showDivider = false,
+                    showDivider = true,
                     trailing = {
                         Switch(
                             checked = settings.bellVibration,
                             onCheckedChange = { viewModel.setBellVibration(it) },
+                        )
+                    },
+                )
+                SettingsRow(
+                    headline = "Scroll diagnostics",
+                    supporting = "Overlay scroll state (debug, no content)",
+                    showDivider = false,
+                    trailing = {
+                        Switch(
+                            checked = settings.showScrollDiagnostics,
+                            onCheckedChange = { viewModel.setShowScrollDiagnostics(it) },
                         )
                     },
                 )

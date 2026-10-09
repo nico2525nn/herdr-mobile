@@ -31,7 +31,10 @@ class ConnectionTerminalBackend(
                 is TerminalAttachmentState.Idle -> BackendState.Idle
                 is TerminalAttachmentState.Attaching -> BackendState.Attaching(s.paneId)
                 is TerminalAttachmentState.Attached ->
-                    BackendState.Attached(s.paneId, s.cols, s.rows)
+                    BackendState.Attached(
+                        s.paneId, s.cols, s.rows,
+                        s.historyRows, s.historyTruncated, s.historyError,
+                    )
 
                 is TerminalAttachmentState.Detached -> BackendState.Detached(s.reason)
                 is TerminalAttachmentState.Failed -> BackendState.Failed(s.code, s.message)
@@ -47,6 +50,7 @@ class ConnectionTerminalBackend(
     override suspend fun sendText(text: String) = inner.sendText(text)
 
     override suspend fun resize(cols: Int, rows: Int) = inner.resize(cols, rows)
+    override suspend fun scrollRemote(lines: Int) = inner.scrollRemote(lines)
 
 
 

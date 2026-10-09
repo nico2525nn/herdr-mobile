@@ -88,6 +88,18 @@ impl TerminalChild {
         self.send_line(&json!({"type": "terminal.input", "bytes": encoded})).await
     }
 
+    pub async fn send_scroll(&mut self, direction: &str, lines: u32) -> Result<()> {
+        // source=page_key (not the wheel default): main-screen TUIs like codex
+        // keep no host scrollback (ghostty max_offset=0) — wheel would no-op.
+        // page_key sends PGUP/PGDN bytes when the app handles scrolling
+        // itself, else falls back to host offset. Plain shells never reach
+        // here (they scroll instant local history with zero RTT).
+        self.send_line(
+            &json!({"type": "terminal.scroll", "direction": direction, "lines": lines, "source": "page_key"}),
+        )
+        .await
+    }
+
     pub async fn send_resize(&mut self, cols: u32, rows: u32) -> Result<()> {
         self.cols = cols;
         self.rows = rows;

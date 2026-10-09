@@ -61,6 +61,11 @@ enum SessionCommand {
     /// UTF-8 text → child stdin as `terminal.input` text.
     Text(String),
     Resize(u32, u32),
+    /// Alt-screen remote scroll (TUI has no local history): forwarded to
+    /// `terminal.scroll` (source=wheel); Herdr routes per context (host
+    /// scrollback / app arrows / mouse report). Shells never use this (they
+    /// scroll local prelude history instantly, no RTT).
+    Scroll(String, u32),
     Mouse(String, String, u32, u32),
     Release,
 }
@@ -304,6 +309,9 @@ async fn run_session(
                             }
                         }
                     }
+                    SessionCommand::Scroll(direction, lines) => {
+                        if child.send_scroll(&direction, lines).await.is_err() { break; }
+                    }
                     SessionCommand::Mouse(action, button, column, row) => {
                         if child.send_mouse(&action, &button, column, row).await.is_err() { break; }
                     }
@@ -444,17 +452,12 @@ async fn run_bridge_inner(
     // Overlap (history tail == visible head) is trimmed by line content so no
     // row appears twice; when trimming fails conservatively the client shows
     // a few duplicated rows rather than losing history.
-    let prelude = match build_history_prelude(&registry.herdr, &pane_id).await {
-        Ok(bytes) => bytes,
-        Err(e) => {
-            debug!("history prelude failed for {pane_id} ({e:#}); starting from frames only");
-            vec![]
-        }
-    };
+    let prelude = build_history_prelude(&registry.herdr, &pane_id).await;
 
     let (mut sink, mut stream) = socket.split();
 
     // Replay the latest known geometry first so the client never sizes blind.
+    // history_* report the prelude outcome (audit P1: silent history loss).
     let ready = serde_json::json!({
         "type": "ready",
         "paneId": pane_id,
@@ -462,12 +465,16 @@ async fn run_bridge_inner(
         "rows": 0,
         "encoding": "ansi",
         "resumed": false,
+        "historyRows": prelude.history_rows,
+        "historyTruncated": prelude.history_truncated,
+        "historyError": prelude.history_error,
+        "visibleOk": prelude.visible_ok,
     });
     sink.send(Message::Text(ready.to_string().into()))
         .await
         .context("terminal socket broke before ready")?;
-    if !prelude.is_empty() {
-        if sink.send(Message::Binary(prelude.into())).await.is_err() {
+    if !prelude.bytes.is_empty() {
+        if sink.send(Message::Binary(prelude.bytes.into())).await.is_err() {
             return Ok(());
         }
     }
@@ -594,13 +601,78 @@ fn base64_decode(text: &str) -> anyhow::Result<Vec<u8>> {
 /// MARKER is a private-use OSC sequence no terminal output can contain.
 const HISTORY_MARKER: &str = "\x1b]314159;herdr-history-end\x07";
 
+/// Outcome of the split prelude fetch. `history_*` describe the recent
+/// block; `visible_ok` the live screen. Each fetched independently: a recent
+/// failure must not cancel the visible screen (audit P1).
+struct PreludeOutcome {
+    bytes: Vec<u8>,
+    history_rows: usize,
+    history_truncated: bool,
+    history_error: Option<String>,
+    visible_ok: bool,
+}
+
 async fn build_history_prelude(
     herdr: &crate::herdr::HerdrClient,
     pane_id: &str,
-) -> anyhow::Result<Vec<u8>> {
-    let recent = herdr.pane_read_recent(pane_id, 1000).await?;
-    let visible = herdr.pane_read_visible(pane_id).await?;
-    Ok(build_history_prelude_from_texts(&recent, &visible).into_bytes())
+) -> PreludeOutcome {
+    let recent = match herdr.pane_read_recent(pane_id, 1000).await {
+        Ok(text) => Some(text),
+        Err(e) => {
+            // Visible is fetched independently below; history degrades to empty
+            // instead of killing the whole prelude (and the error is reported
+            // in Ready, not just debug-logged).
+            tracing::warn!("history prelude recent failed for {pane_id} ({e:#}); continuing visible-only");
+            None
+        }
+    };
+    let visible = match herdr.pane_read_visible(pane_id).await {
+        Ok(text) => Some(text),
+        Err(e) => {
+            tracing::warn!("history prelude visible failed for {pane_id} ({e:#})");
+            None
+        }
+    };
+    match (recent, visible) {
+        (Some(recent), Some(visible)) => {
+            let text = build_history_prelude_from_texts(&recent, &visible);
+            let history_rows = text
+                .split(HISTORY_MARKER)
+                .next()
+                .map(|h| h.matches('\n').count())
+                .unwrap_or(0);
+            PreludeOutcome {
+                bytes: text.into_bytes(),
+                history_rows,
+                history_truncated: recent.lines().count() >= 1000,
+                history_error: None,
+                visible_ok: true,
+            }
+        }
+        (None, Some(visible)) => PreludeOutcome {
+            bytes: format!("\x1b[2J\x1b[H{visible}").into_bytes(),
+            history_rows: 0,
+            history_truncated: false,
+            history_error: Some("recent fetch failed".to_string()),
+            visible_ok: true,
+        },
+        (Some(recent), None) => PreludeOutcome {
+            // Degenerate but orderly: history with no live screen. The client
+            // shows history until live frames repaint (better than a stall).
+            bytes: format!("\x1b[2J\x1b[H{recent}\n{HISTORY_MARKER}\n\x1b[H").into_bytes(),
+            history_rows: recent.lines().count(),
+            history_truncated: recent.lines().count() >= 1000,
+            history_error: None,
+            visible_ok: false,
+        },
+        (None, None) => PreludeOutcome {
+            bytes: vec![],
+            history_rows: 0,
+            history_truncated: false,
+            history_error: Some("recent and visible fetch failed".to_string()),
+            visible_ok: false,
+        },
+    }
 }
 
 /// Pure part of [build_history_prelude]: trims the history/visible overlap by
@@ -714,6 +786,16 @@ async fn handle_client_text(text: &str, input_tx: &mpsc::Sender<SessionCommand>)
             send(SessionCommand::Resize(cols, rows)).await;
             true
         }
+        "scroll" => {
+            let direction = value
+                .get("direction")
+                .and_then(|d| d.as_str())
+                .unwrap_or("down")
+                .to_string();
+            let lines = value.get("lines").and_then(|l| l.as_u64()).unwrap_or(5) as u32;
+            send(SessionCommand::Scroll(direction, lines.max(1))).await;
+            true
+        }
         "mouse" => {
             let action = value.get("action").and_then(|a| a.as_str()).unwrap_or("down").to_string();
             let button = value.get("button").and_then(|b| b.as_str()).unwrap_or("left").to_string();
@@ -782,6 +864,7 @@ mod tests {
         assert!(handle_client_text(r#"{"type":"input.bytes","bytes":"AQI="}"#, &tx).await);
         assert!(handle_client_text(r#"{"type":"input.bytes","bytes":"!!!"}"#, &tx).await);
         assert!(handle_client_text(r#"{"type":"resize","cols":100,"rows":30}"#, &tx).await);
+        assert!(handle_client_text(r#"{"type":"scroll","direction":"up","lines":5}"#, &tx).await);
         assert!(handle_client_text(
             r#"{"type":"mouse","action":"down","button":"left","column":3,"row":4}"#,
             &tx
@@ -796,11 +879,12 @@ mod tests {
         while let Ok(cmd) = rx.try_recv() {
             got.push(cmd);
         }
-        assert_eq!(got.len(), 4);
+        assert_eq!(got.len(), 5);
         assert!(matches!(&got[0], SessionCommand::Text(t) if t == "echo hi\r"));
         assert!(matches!(&got[1], SessionCommand::Input(b) if b == &[1, 2]));
         assert!(matches!(got[2], SessionCommand::Resize(100, 30)));
-        assert!(matches!(&got[3], SessionCommand::Mouse(a, b, 3, 4) if a == "down" && b == "left"));
+        assert!(matches!(&got[3], SessionCommand::Scroll(d, 5) if d == "up"));
+        assert!(matches!(&got[4], SessionCommand::Mouse(a, b, 3, 4) if a == "down" && b == "left"));
     }
 
     /// The production BridgeGuard owns exactly-once teardown: dropping it

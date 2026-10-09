@@ -63,6 +63,7 @@ private object Keys {
     val SCROLLBACK = intPreferencesKey("scrollback")
     val NOTIFY_DONE = booleanPreferencesKey("notify_done")
     val NOTIFY_BLOCKED = booleanPreferencesKey("notify_blocked")
+    val SHOW_SCROLL_DIAG = booleanPreferencesKey("show_scroll_diagnostics")
 }
 
 private val storeJson = Json { ignoreUnknownKeys = true }
@@ -138,6 +139,7 @@ class SettingsRepositoryImpl(
             scrollbackLimit = prefs[Keys.SCROLLBACK] ?: 2000,
             notifyDone = prefs[Keys.NOTIFY_DONE] ?: true,
             notifyBlocked = prefs[Keys.NOTIFY_BLOCKED] ?: true,
+            showScrollDiagnostics = prefs[Keys.SHOW_SCROLL_DIAG] ?: false,
         )
         loaded.complete(Unit)
     }
@@ -181,6 +183,7 @@ class SettingsRepositoryImpl(
         prefs[Keys.SCROLLBACK] = next.scrollbackLimit
         prefs[Keys.NOTIFY_DONE] = next.notifyDone
         prefs[Keys.NOTIFY_BLOCKED] = next.notifyBlocked
+        prefs[Keys.SHOW_SCROLL_DIAG] = next.showScrollDiagnostics
     }
 
     private fun decodeProfiles(raw: String?): List<HostProfile> {
