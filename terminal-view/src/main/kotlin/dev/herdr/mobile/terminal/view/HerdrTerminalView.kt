@@ -28,7 +28,8 @@ private fun TerminalColor.argb(): Int =
  * Renders [FrameSnapshot]s on Canvas with one monospace paint per style bucket.
  *
  * Interaction contract with the host:
- * - vertical drag / fling scrolls the emulator scrollback through [onScrollLines];
+ * - vertical drag / fling scrolls locally (view-owned offset, termux mTopRow
+ *   model): no emulator round-trip, no grid copy — offset change + invalidate;
  * - single tap moves the emulator cursor only when the remote app asked for mouse events —
  *   the host decides that from its own mouse-mode flag and calls [onTapCell];
  * - pinch zooms the font through [onZoomFont], clamped by the host;
@@ -40,7 +41,6 @@ class HerdrTerminalView @JvmOverloads constructor(
     defStyleAttr: Int = 0,
 ) : View(context, attrs, defStyleAttr) {
 
-    var onScrollLines: ((lines: Int) -> Unit)? = null
     var onTapCell: ((col: Int, row: Int) -> Unit)? = null
     var onZoomFont: ((deltaSp: Float) -> Unit)? = null
     var onSelection: ((text: String) -> Unit)? = null
@@ -67,9 +67,24 @@ class HerdrTerminalView @JvmOverloads constructor(
     private var selectAnchor: Pair<Int, Int>? = null
     private var selectActive: Pair<Int, Int>? = null
 
+    // Viewport offset into history+screen, termux mTopRow style: 0 = pinned to
+    // the live bottom, negative = scrolled up N rows. Owned entirely by the
+    // view: the emulator never sees it, so drags never leave the UI thread.
+    private var topRow = 0
+    // Fractional drag pixels carried across onScroll calls (termux
+    // mScrollRemainder): without this, sub-row drags round to zero per event
+    // and slow drags never move at all.
+    private var scrollRemainder = 0f
+    private val scroller = android.widget.OverScroller(context)
+    private var flingTick: Runnable? = null
+
     private val gestures = GestureDetector(context, object : GestureDetector.SimpleOnGestureListener() {
         override fun onSingleTapUp(e: MotionEvent): Boolean {
-            cellAt(e.x, e.y)?.let { (col, row) -> onTapCell?.invoke(col, row) }
+            // Mouse-reporting apps address the LIVE screen (0-based): convert
+            // buffer coords back by the history size.
+            cellAt(e.x, e.y)?.let { (col, bufRow) ->
+                onTapCell?.invoke(col, bufRow - frame.history.size)
+            }
             // Terminal tap always summons the keyboard: direct ASCII input goes
             // through our InputConnection, CJK goes through the bottom panel.
             requestFocus()
@@ -100,9 +115,14 @@ class HerdrTerminalView @JvmOverloads constructor(
                 }
                 return true
             }
+            // Any new drag kills an in-flight fling (termux: don't scroll
+            // until the last fling is taken care of — a fresh touch wins).
+            stopFling()
             if (cellHeight > 0) {
-                val lines = (distanceY / cellHeight).toInt()
-                if (lines != 0) onScrollLines?.invoke(lines)
+                val total = distanceY + scrollRemainder
+                val lines = (total / cellHeight).toInt()
+                scrollRemainder = total - lines * cellHeight
+                if (lines != 0) scrollRows(lines)
             }
             return true
         }
@@ -113,10 +133,29 @@ class HerdrTerminalView @JvmOverloads constructor(
             velocityX: Float,
             velocityY: Float,
         ): Boolean {
-            if (cellHeight > 0 && selectAnchor == null) {
-                val lines = (velocityY / -cellHeight / 4).toInt().coerceIn(-40, 40)
-                if (lines != 0) onScrollLines?.invoke(lines)
+            if (cellHeight <= 0 || selectAnchor != null) return true
+            if (!scroller.isFinished) return true
+            // Finger-up fling (velocityY < 0) scrolls toward older history:
+            // negate into row space, clamp to available history.
+            val maxUp = frame.history.size
+            scroller.fling(0, topRow, 0, (velocityY / -cellHeight / 4).toInt(), 0, 0, -maxUp, 0)
+            val tick = object : Runnable {
+                override fun run() {
+                    if (scroller.isFinished) {
+                        flingTick = null
+                        return
+                    }
+                    val more = scroller.computeScrollOffset()
+                    setTopRow(scroller.currY)
+                    if (more) {
+                        postOnAnimation(this)
+                    } else {
+                        flingTick = null
+                    }
+                }
             }
+            flingTick = tick
+            postOnAnimation(tick)
             return true
         }
     })
@@ -170,13 +209,71 @@ class HerdrTerminalView @JvmOverloads constructor(
         invalidate()
     }
 
+    /**
+     * Scroll by whole rows: positive = finger dragged up = toward older
+     * history (topRow goes negative, termux convention). Synchronous:
+     * offset change + invalidate on the UI thread, zero copies.
+     */
+    fun scrollRows(lines: Int) {
+        if (lines == 0) return
+        setTopRow(topRow - lines)
+    }
+
+    /** Pin back to the live bottom (input sent, user back at the prompt). */
+    fun snapToBottom() {
+        stopFling()
+        setTopRow(0)
+    }
+
+    private fun stopFling() {
+        flingTick?.let { removeCallbacks(it) }
+        flingTick = null
+        if (!scroller.isFinished) scroller.abortAnimation()
+    }
+
+    private fun setTopRow(row: Int) {
+        // Alt screen has no history: any offset request clamps to live.
+        val maxUp = if (frame.usingAlternateScreen) 0 else frame.history.size
+        val next = row.coerceIn(-maxUp, 0)
+        if (next == topRow) return
+        topRow = next
+        if (topRow == 0) {
+            selectAnchor = null
+            selectActive = null
+        }
+        invalidate()
+    }
+
+    /** Buffer row index (history+screen concatenated) for a visible viewport row. */
+    private fun bufferRow(viewRow: Int): Int {
+        val snap = frame
+        val total = snap.history.size + snap.rowCount
+        return (total - snap.rowCount + topRow + viewRow).coerceIn(0, (total - 1).coerceAtLeast(0))
+    }
+
+    /** Row cells for a buffer index (history first, then live screen). */
+    private fun bufferLine(snap: FrameSnapshot, index: Int): List<TerminalCell> {
+        return if (index < snap.history.size) {
+            snap.history[index]
+        } else {
+            snap.screen.getOrNull(index - snap.history.size) ?: emptyList()
+        }
+    }
+
     /** Called on the UI thread with the newest snapshot. */
     fun render(snapshot: FrameSnapshot) {
         if (snapshot.revision == frame.revision && snapshot.revision >= 0) return
         frame = snapshot
-        if (snapshot.scrollbackOffset == 0) {
-            selectAnchor = null
-            selectActive = null
+        // New content never moves the viewport (stable view while reading
+        // history); just clamp into the new buffer. Input snaps via snapToBottom.
+        val maxUp = if (snapshot.usingAlternateScreen) 0 else snapshot.history.size
+        val clamped = topRow.coerceIn(-maxUp, 0)
+        if (clamped != topRow) {
+            topRow = clamped
+            if (topRow == 0) {
+                selectAnchor = null
+                selectActive = null
+            }
         }
         invalidate()
     }
@@ -198,8 +295,11 @@ class HerdrTerminalView @JvmOverloads constructor(
         val snapshot = frame
         if (snapshot.cols <= 0 || snapshot.rowCount <= 0) return null
         val col = floor(x / cellWidth).toInt().coerceIn(0, snapshot.cols - 1)
-        val row = floor(y / cellHeight).toInt().coerceIn(0, snapshot.rowCount - 1)
-        return col to row
+        val viewRow = floor(y / cellHeight).toInt().coerceIn(0, snapshot.rowCount - 1)
+        // Buffer coords (termux absolute style): selection anchors survive
+        // scrolling. Tap cells (mouse mode) want SCREEN coords instead —
+        // onTapCell callers subtract the offset (see onSingleTapUp).
+        return col to bufferRow(viewRow)
     }
 
     private fun reportSelection() {
@@ -216,7 +316,11 @@ class HerdrTerminalView @JvmOverloads constructor(
             }
         val builder = StringBuilder()
         for (row in startRow..endRow) {
-            val line = snapshot.rows.getOrNull(row) ?: continue
+            val line = bufferLine(snapshot, row)
+            if (line.isEmpty()) {
+                if (row != endRow) builder.append('\n')
+                continue
+            }
             val from = if (row == startRow) startCol else 0
             val to = if (row == endRow) endCol else line.size - 1
             for (col in from..to) {
@@ -229,9 +333,10 @@ class HerdrTerminalView @JvmOverloads constructor(
         onSelection?.invoke(builder.toString().trimEnd())
     }
 
-    private fun isSelected(col: Int, row: Int): Boolean {
+    private fun isSelected(col: Int, viewRow: Int): Boolean {
         val anchor = selectAnchor ?: return false
         val active = selectActive ?: return false
+        val row = bufferRow(viewRow)
         val (r1, c1, r2, c2) =
             if (anchor.second < active.second ||
                 (anchor.second == active.second && anchor.first <= active.first)
@@ -250,6 +355,13 @@ class HerdrTerminalView @JvmOverloads constructor(
         scaleDetector?.onTouchEvent(event)
         if (scaleDetector?.isInProgress == true) return true
         gestures.onTouchEvent(event)
+        // Gesture end: drop the fractional carry (termux onUp). Kept across
+        // onScroll calls within the gesture so sub-row drags accumulate.
+        if (event.actionMasked == MotionEvent.ACTION_UP ||
+            event.actionMasked == MotionEvent.ACTION_CANCEL
+        ) {
+            scrollRemainder = 0f
+        }
         return true
     }
 
@@ -379,9 +491,10 @@ class HerdrTerminalView @JvmOverloads constructor(
         val defaultFg = scheme.foreground.argb()
         val defaultBg = scheme.background.argb()
 
-        for (row in 0 until snapshot.rowCount) {
-            val line = snapshot.rows.getOrNull(row) ?: continue
-            val top = row * cellHeight
+        for (viewRow in 0 until snapshot.rowCount) {
+            val line = bufferLine(snapshot, bufferRow(viewRow))
+            val top = viewRow * cellHeight
+            val row = viewRow
             var col = 0
             while (col < snapshot.cols) {
                 val cell = line.getOrNull(col) ?: break
@@ -428,7 +541,7 @@ class HerdrTerminalView @JvmOverloads constructor(
         // viewport, and drawing it at live coords on scrolled content puts a
         // block in the middle of unrelated text.
         if (snapshot.cursorVisible && showCursor &&
-            snapshot.scrollbackOffset == 0 &&
+            topRow == 0 &&
             snapshot.cursorRow in 0 until snapshot.rowCount &&
             snapshot.cursorCol in 0 until snapshot.cols &&
             selectAnchor == null

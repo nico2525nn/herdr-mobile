@@ -85,12 +85,14 @@ class TerminalBridge(
 
     private fun publish() {
         _frame.value = FrameSnapshot(
-            rows = emulator.lines.map { it.toList() },
+            // History rows are shared refs (never mutated in place post-bank);
+            // only the live screen grid is copied. The view slices by offset.
+            history = emulator.history.toList(),
+            screen = emulator.lines.map { it.toList() },
             cursorRow = emulator.cursorRow,
             cursorCol = emulator.cursorCol,
             cursorVisible = emulator.cursorVisible,
             usingAlternateScreen = emulator.usingAlternateScreen,
-            scrollbackOffset = emulator.scrollbackOffset,
             revision = emulator.revision,
             cols = emulator.cols,
             rowCount = emulator.rows,
@@ -105,35 +107,11 @@ class TerminalBridge(
         scope.launch { runCatching { backend.resize(cols, rows) } }
     }
 
-    /**
-     * Local scrollback scroll ONLY. The Herdr-side `terminal.scroll` is deliberately not
-     * called: it produces no frames on plain shells (verified: zero bytes back), so
-     * calling it alongside the local offset double-scrolls / corrupts the remote view
-     * state for no visible effect. Alt-screen apps have no local scrollback (offset
-     * clamps to 0 against the empty ring), so scroll there is correctly a no-op.
-     */
-    fun scrollBy(lines: Int) {
-        scope.launch(emulatorContext) {
-            emulator.scrollBy(lines)
-            publish()
-        }
-    }
 
     suspend fun send(data: ByteArray) = backend.send(data)
 
     suspend fun sendText(text: String) = backend.sendText(text)
 
-    /**
-     * Snap a scrolled viewport back to live. Called from the input-tick
-     * observer (user typed): bridge.send is emulator-responses only, NOT user
-     * input, so snapping here would never fire for typing.
-     */
-    fun snapToBottom() {
-        scope.launch(emulatorContext) {
-            emulator.snapToBottomOnInput()
-            publish()
-        }
-    }
 
     suspend fun mouse(action: String, button: String, column: Int, row: Int) =
         backend.mouse(action, button, column, row)

@@ -398,7 +398,7 @@ private fun TerminalSurface(
     // the initial value must not yank on mount.
     LaunchedEffect(inputTick) {
         if (inputTick > 0) {
-            bridgeRef.value?.snapToBottom()
+            viewRef?.snapToBottom()
         }
     }
 
@@ -475,12 +475,6 @@ private fun TerminalSurface(
                         clipboard.setText(AnnotatedString(text))
                     }
                 }
-                view.onScrollLines = { lines ->
-                    bridge?.scrollBy(lines)
-                    if (lines != 0) {
-                        // Keep the remote viewport in sync when the user scrolls locally.
-                    }
-                }
                 view.onZoomFont = { delta ->
                     // Font zoom is applied through settings; the host clamps it.
                 }
@@ -511,7 +505,6 @@ private fun TerminalSurface(
                     clipboard.setText(AnnotatedString(text))
                 }
             }
-            view.onScrollLines = { lines -> bridge?.scrollBy(lines) }
             view.onZoomFont = { _ -> }
         },
         modifier = Modifier

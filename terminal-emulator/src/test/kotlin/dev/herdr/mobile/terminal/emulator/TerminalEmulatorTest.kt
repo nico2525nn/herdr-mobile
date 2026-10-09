@@ -20,6 +20,17 @@ class TerminalEmulatorTest {
 
     private fun esc(s: String) = "\u001B$s"
 
+    // View-slice mirror for tests: the view owns the offset (termux mTopRow);
+    // tests read history + screen directly.
+    private fun historyText(e: TerminalEmulator, i: Int): String {
+        val sb = StringBuilder()
+        for (cell in e.history[i]) {
+            if (!cell.wideContinuation) sb.appendCodePoint(cell.codepoint)
+        }
+        return sb.toString().trimEnd()
+    }
+    private fun historySize(e: TerminalEmulator): Int = e.history.size
+
     // ------------------------------------------------------------ ground ----------
 
     @Test fun plainTextAdvancesCursor() {
@@ -258,8 +269,7 @@ class TerminalEmulatorTest {
         e.write(esc("[?1049l"))
         // Exiting the alternate screen restores the main buffer, which kept no scrollback.
         assertFalse(e.usingAlternateScreen)
-        e.scrollBy(5)
-        assertEquals(0, e.scrollbackOffset)
+        assertEquals(0, historySize(e))
         for (r in 0 until 2) assertEquals("    ", rowText(e, r))
     }
 
@@ -401,32 +411,23 @@ class TerminalEmulatorTest {
         assertEquals(0, e.cursorCol)
     }
 
-    @Test fun scrollbackPushScrollAndReturn() {
+    @Test fun scrollbackBanksOnScroll() {
+        // The view owns the offset; the emulator only banks rows on scroll.
         val e = emu(cols = 4, rows = 3)
-        repeat(10) { i -> e.write("L$i\r\n") }
-        assertEquals(0, e.scrollbackOffset)
-        e.scrollBy(5)
-        assertEquals(5, e.scrollbackOffset)
-        e.scrollToBottom()
-        assertEquals(0, e.scrollbackOffset)
-        // Plain writes (no new scrollback row) must not reset the offset.
-        e.scrollBy(5)
-        e.write("zz")
-        assertEquals(5, e.scrollbackOffset)
-        // New output does NOT snap (stable view while reading history).
-        e.write("\r\n")
-        assertEquals(5, e.scrollbackOffset)
-        // Only input snaps back.
-        e.snapToBottomOnInput()
-        assertEquals(0, e.scrollbackOffset)
+        repeat(5) { i -> e.write("L$i\r\n") } // L0..L4, screen holds 3
+        assertEquals(3, historySize(e)) // L0,L1,L2 banked
+        assertEquals("L0", historyText(e, 0))
+        assertEquals("L2", historyText(e, 2))
+        // Screen shows the live tail.
+        assertEquals("L3", rowText(e, 0).trim())
+        assertEquals("L4", rowText(e, 1).trim())
     }
 
     @Test fun scrollbackLimitHonoured() {
         val e = emu(cols = 4, rows = 2)
         e.setScrollbackLimit(3)
         repeat(10) { i -> e.write("L$i\r\n") }
-        e.scrollBy(-100)
-        assertTrue(e.scrollbackOffset <= 3)
+        assertTrue(historySize(e) <= 3)
     }
 
     // ------------------------------------------------------------ robustness ------
@@ -548,16 +549,16 @@ class TerminalEmulatorTest {
     }
 
     @Test fun heightShrinkKeepsLiveBottom() {
-        // Shrink keeps the live bottom rows on screen; history is untouched
-        // (no push: the daemon prelude owns pre-attach history, live scrolls
-        // bank post-attach rows).
+        // Shrink keeps the live bottom rows on screen and banks the removed
+        // head (rows vanish permanently otherwise).
         val e = emu(cols = 4, rows = 4)
         e.write("R0\r\nR1\r\nR2\r\nR3")
         e.resize(4, 2)
         assertEquals("R2", rowText(e, 0).trim())
         assertEquals("R3", rowText(e, 1).trim())
-        e.scrollBy(10)
-        assertEquals(0, e.scrollbackOffset) // shrink banked nothing
+        assertEquals(2, historySize(e)) // R0,R1 banked
+        assertEquals("R0", historyText(e, 0))
+        assertEquals("R1", historyText(e, 1))
     }
 
     @Test fun widthChangeKeepsScrollback() {
@@ -565,10 +566,9 @@ class TerminalEmulatorTest {
         // or clips). Clearing here used to eat history on rotation.
         val e = emu(cols = 4, rows = 3)
         repeat(5) { i -> e.write("L$i\r\n") }
-        e.scrollBy(10)
-        assertTrue(e.scrollbackOffset > 0)
+        assertTrue(historySize(e) > 0)
         e.resize(6, 3)
-        assertTrue(e.scrollbackOffset > 0)
+        assertTrue(historySize(e) > 0)
     }
 
 
@@ -583,10 +583,9 @@ class TerminalEmulatorTest {
         e.write("\u001B[2J\u001B[H" + "H0\nH1\n" + marker + "\n\u001B[H" + "V0\r\nV1")
         assertEquals("V0", rowText(e, 0).trim())
         assertEquals("V1", rowText(e, 1).trim())
-        e.scrollBy(10)
-        assertEquals(2, e.scrollbackOffset)
-        assertEquals("H0", rowText(e, 0).trim())
-        assertEquals("H1", rowText(e, 1).trim())
+        assertEquals(2, historySize(e))
+        assertEquals("H0", historyText(e, 0))
+        assertEquals("H1", historyText(e, 1))
     }
 
     @Test fun inPlaceRewriteMustNotCreateScrollback() {
@@ -595,23 +594,39 @@ class TerminalEmulatorTest {
         val e = emu(cols = 4, rows = 3)
         e.write("A0\r\nA1\r\nA2")
         e.write(esc("[1;1H") + "B0" + esc("[2;1H") + "B1")
-        e.scrollBy(10)
-        assertEquals(0, e.scrollbackOffset)
+        assertEquals(0, historySize(e))
         assertEquals("B0", rowText(e, 0).trim())
         assertEquals("B1", rowText(e, 1).trim())
     }
 
-    @Test fun repeatedOutputBanksEveryTime() {
-        // Identical repeated lines are legitimate history (the old membership
-        // filter dropped them, breaking `seq` twice / yes-command).
+    @Test fun repeatedOutputBanksOnce() {
+        // Tradeoff, documented in pushScrollback: identical repeated lines
+        // bank once (membership filter), because repaint-resurrected rows
+        // would otherwise duplicate out of order. Order beats completeness.
         val e = emu(cols = 4, rows = 2)
         e.write("ZZ\r\n")
         e.write("ZZ\r\n")
         e.write("ZZ\r\n")
-        e.scrollBy(10)
-        assertEquals(2, e.scrollbackOffset) // two ZZ rows banked
-        assertEquals("ZZ", rowText(e, 0).trim())
-        assertEquals("ZZ", rowText(e, 1).trim())
+        assertEquals(1, historySize(e)) // single ZZ banked
+        assertEquals("ZZ", historyText(e, 0))
+    }
+
+    @Test fun shrinkGrowRoundtripKeepsOrder() {
+        // Keyboard dance: shrink banks head, grow drops re-shown tail; a
+        // repaint + scroll cycle after must not duplicate or reverse.
+        val e = emu(cols = 4, rows = 4)
+        e.write("R0\r\nR1\r\nR2\r\nR3\r\nR4\r\n")
+        e.resize(4, 2) // banks R1,R2 (head trim)
+        e.resize(4, 4) // drops tail 2 (repaint re-shows)
+        repeat(2) { i -> e.write("N$i\r\n") }
+        val hist = (0 until 10).mapNotNull {
+            try {
+                historyText(e, it)
+            } catch (_: Exception) {
+                null
+            }
+        }.filter { it.isNotEmpty() }
+        assertEquals(hist.distinct(), hist) // ordered, no dupes
     }
 
     @Test fun sameSizeResizeKeepsScrollback() {
@@ -619,9 +634,9 @@ class TerminalEmulatorTest {
         // redundant size events on any layout pass.
         val e = emu(cols = 4, rows = 3)
         repeat(5) { i -> e.write("L$i\r\n") }
-        e.scrollBy(2)
-        assertEquals(2, e.scrollbackOffset)
+        val before = historySize(e)
+        assertTrue(before > 0)
         e.resize(4, 3)
-        assertEquals(2, e.scrollbackOffset)
+        assertEquals(before, historySize(e))
     }
 }

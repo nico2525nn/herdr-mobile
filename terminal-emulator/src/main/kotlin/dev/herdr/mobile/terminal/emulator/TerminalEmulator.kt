@@ -43,10 +43,15 @@ class TerminalEmulator(
 
     private val scrollback = ArrayDeque<List<TerminalCell>>()
     private var scrollbackLimitValue = DEFAULT_SCROLLBACK_LINES
-    private var scrollbackOffsetValue = 0
 
-    /** 0 = pinned to the live bottom; > 0 = viewing history. */
-    val scrollbackOffset: Int get() = scrollbackOffsetValue
+    /**
+     * Banked history, oldest first. NEVER mutated in place after banking
+     * (entries are replaced wholesale on rewrap) so the view may hold row
+     * references across frames. The viewport offset lives in the VIEW
+     * (termux mTopRow model): the emulator never tracks it, so scrolling
+     * never round-trips through here and never copies the grid.
+     */
+    val history: List<List<TerminalCell>> get() = scrollback
 
     /**
      * True while the daemon history prelude is streaming (CLEAR..MARKER):
@@ -78,11 +83,12 @@ class TerminalEmulator(
     // ------------------------------------------------------------------- viewport --
 
     /**
-     * Row 0 is the top of the visible viewport. Exactly [rows] rows, exactly [cols] cells each.
-     * When scrolled back the top rows come from history; otherwise this is the live screen.
+     * The live screen grid: exactly [rows] rows, exactly [cols] cells each.
+     * History lives in [history]; the VIEW composes viewport = history +
+     * screen sliced by its own offset (termux mTopRow model).
      */
     val lines: List<List<TerminalCell>>
-        get() = viewport()
+        get() = active()
 
     // ------------------------------------------------------------------- counters --
 
@@ -187,22 +193,33 @@ class TerminalEmulator(
         val nc = cols.coerceIn(1, MAX_DIM)
         val nr = rows.coerceIn(1, MAX_DIM)
         if (nc == colsValue && nr == rowsValue) return
-        // History is NEVER touched by resize: width changes rewrap the live
-        // grid in place (banked rows keep their own widths; the view pads or
-        // clips), and height changes only move the viewport window. Clearing
-        // or pushing here is what used to eat history on rotation and
-        // duplicate rows on every keyboard show/hide.
-
-        // Height shrink keeps the live BOTTOM rows (adjustGrid removes from
-        // the tail, so drop the head first). No history push: pre-attach
-        // history came from the prelude; live scrolls bank themselves.
-        if (nc == colsValue && nr < rowsValue) {
-            repeat((rowsValue - nr).coerceAtMost(mainLines.size)) {
-                if (mainLines.isNotEmpty()) mainLines.removeAt(0)
-            }
-            // Same for alt grid (symmetric trim; alt has no scrollback).
-            repeat((rowsValue - nr).coerceAtMost(altLines.size)) {
-                if (altLines.isNotEmpty()) altLines.removeAt(0)
+        // History is never CLEARED by resize (rotation must not eat it).
+        // Shrink banks the removed head (rows vanish permanently); grow drops
+        // the re-shown tail (repaint covers it; re-banks on scroll-off).
+        if (nc == colsValue && !usingAlternateScreen) {
+            if (nr > rowsValue) {
+                // Height grow: Herdr's repaint re-shows the youngest tail rows
+                // on screen. Drop them from history now — they re-bank in
+                // screen order when they genuinely scroll off again. Keeping
+                // them would duplicate (repaint + later scroll-off bank).
+                repeat((nr - rowsValue).coerceAtMost(scrollback.size)) {
+                    scrollback.removeLast()
+                }
+            } else if (nr < rowsValue) {
+                // Height shrink: removed head rows vanish permanently — bank
+                // them (in order). The membership filter drops any row already
+                // banked (repaint-resurrected rows shown again by a grow).
+                val take = (rowsValue - nr).coerceAtMost(mainLines.size)
+                for (i in 0 until take) {
+                    val row = mainLines[i]
+                    if (row.any { !it.isBlank }) pushScrollback(row)
+                }
+                repeat(take) {
+                    if (mainLines.isNotEmpty()) mainLines.removeAt(0)
+                }
+                repeat(take) {
+                    if (altLines.isNotEmpty()) altLines.removeAt(0)
+                }
             }
         }
         colsValue = nc
@@ -218,7 +235,6 @@ class TerminalEmulator(
         tabStops = defaultStops(nc)
         decSaved = decSaved?.coerced(nc, nr)
         mainSaved = mainSaved?.coerced(nc, nr)
-        scrollbackOffsetValue = scrollbackOffsetValue.coerceIn(0, scrollback.size)
         touchAndBump()
     }
 
@@ -264,58 +280,9 @@ class TerminalEmulator(
             scrollback.removeFirst()
             changed = true
         }
-        val off = scrollbackOffsetValue.coerceIn(0, scrollback.size)
-        if (off != scrollbackOffsetValue) {
-            scrollbackOffsetValue = off
-            changed = true
-        }
         if (changed) touchAndBump()
     }
 
-    /**
-     * Moves [scrollbackOffset], clamped to available history. Positive values scroll up into
-     * older history (finger dragged up: `scrollBy(5)` shows five lines back), negative
-     * values scroll down toward live. Matches Android [GestureDetector] sign convention
-     * where finger-up yields positive distance/velocity.
-     */
-    fun scrollBy(lines: Int) {
-        val next = (scrollbackOffsetValue + lines).coerceIn(0, scrollback.size)
-        if (next != scrollbackOffsetValue) {
-            scrollbackOffsetValue = next
-            touchAndBump()
-        }
-    }
-
-    fun scrollToBottom() {
-        if (scrollbackOffsetValue != 0) {
-            scrollbackOffsetValue = 0
-            touchAndBump()
-        }
-    }
-
-    /**
-     * Snap back to live when the user sends input. This is the ONLY automatic
-     * snap: new output never moves the viewport (reading history while output
-     * flows must not yank). Called by the bridge send paths, not by write().
-     */
-    fun snapToBottomOnInput() {
-        scrollToBottom()
-    }
-
-    // ================================================================== viewport ==
-
-    private fun viewport(): List<List<TerminalCell>> {
-        val screen = active()
-        val off = scrollbackOffsetValue.coerceIn(0, scrollback.size)
-        if (off == 0) return ArrayList(screen)
-        val hist = scrollback.size
-        val bottom = hist + screen.size - off
-        val out = ArrayList<List<TerminalCell>>(screen.size)
-        for (i in bottom - screen.size until bottom) {
-            out.add(if (i < hist) scrollback[i] else screen[i - hist])
-        }
-        return out
-    }
 
     // ================================================================== ground ====
 
@@ -703,10 +670,7 @@ class TerminalEmulator(
             }
             3 -> {
                 for (r in 0 until rowsValue) eraseRow(r)
-                if (scrollback.isNotEmpty()) {
-                    scrollback.clear()
-                    scrollbackOffsetValue = 0
-                }
+                scrollback.clear()
                 historyCapture = false
                 historyRow = null
             }
@@ -809,11 +773,17 @@ class TerminalEmulator(
 
     /** Banks the in-progress capture row and starts a new one. Zero-cell rows
      * (line boundary exactly at MARKER) bank nothing — but a blank row WITH
-     * cells (spaces from the pane) is real output spacing and is kept. */
+     * cells (spaces from the pane) is real output spacing and is kept.
+     * Padded to grid width: live-banked rows are always full-width, and the
+     * membership filter compares sizes — unpadded capture rows would never
+     * match their live twins, duplicating history across the prelude/live
+     * boundary on every repaint. */
     private fun flushHistoryRow() {
         val row = historyRow ?: ArrayList()
         historyRow = ArrayList()
-        if (row.isNotEmpty()) pushScrollback(row)
+        if (row.isEmpty()) return
+        while (row.size < colsValue) row.add(TerminalCell(32))
+        pushScrollback(row)
     }
 
     private fun reverseIndex() {
@@ -853,14 +823,31 @@ class TerminalEmulator(
 
     private fun pushScrollback(row: List<TerminalCell>) {
         if (scrollbackLimitValue == 0) return
-        // No dedupe: repeated output (yes-command, `seq` twice) is legitimate
-        // history and must bank every time. Duplicates used to come from
-        // repaint-guessing (now deleted); all bankers below push each row once.
+        // Membership filter: Herdr repaints coalesced viewports, so the same
+        // row legitimately reappears on screen (grow repaint, repaint storm)
+        // and would re-bank out of order. Rows already present are skipped.
+        // Cost: identical REPEATED output (yes-command, `seq` twice) banks
+        // once — order is never violated, which is what scrolling needs.
+        // All rows are width-normalized (capture pads, resize rewrites), so
+        // comparison is apples-to-apples. Scan is tail-capped.
+        for (i in scrollback.size - 1 downTo maxOf(0, scrollback.size - HISTORY_MATCH_WINDOW)) {
+            if (rowEquals(scrollback[i], row)) return
+        }
         scrollback.addLast(row.toList())
         while (scrollback.size > scrollbackLimitValue) scrollback.removeFirst()
-        // No tail-snap: the viewport stays where the user put it while reading
-        // history. Sending input snaps back (TerminalBridge.send paths call
-        // scrollToBottom); see snapToBottomOnInput.
+        // No viewport snap here: the offset lives in the VIEW, which stays
+        // where the user put it while reading history. Input snaps via the
+        // inputTick observer (TerminalScreen -> HerdrTerminalView.snapToBottom).
+    }
+
+    private fun rowEquals(a: List<TerminalCell>, b: List<TerminalCell>): Boolean {
+        if (a.size != b.size) return false
+        for (i in a.indices) {
+            // Glyphs only: repainted rows may carry different SGR runs for
+            // identical text (herdr normalizes attrs on redraw).
+            if (a[i].codepoint != b[i].codepoint || a[i].wideContinuation != b[i].wideContinuation) return false
+        }
+        return true
     }
 
     private fun setScrollRegion(topParam: Int?, bottomParam: Int?) {
@@ -906,7 +893,6 @@ class TerminalEmulator(
         if (!isAltValue) {
             mainSaved = capture()
             isAltValue = true
-            scrollbackOffsetValue = 0
         }
         if (clear) {
             for (r in 0 until rowsValue) altLines[r] = blankRowOf()
@@ -925,7 +911,6 @@ class TerminalEmulator(
         isAltValue = false
         mainSaved?.let { restore(it, withRegion = true) }
         mainSaved = null
-        scrollbackOffsetValue = 0
         wrapPending = false
         touch()
     }
@@ -1280,7 +1265,6 @@ class TerminalEmulator(
             altLines[r] = blankRowOf()
         }
         scrollback.clear()
-        scrollbackOffsetValue = 0
         cursorRowValue = 0
         cursorColValue = 0
         cursorVisibleValue = true
@@ -1384,6 +1368,7 @@ class TerminalEmulator(
         private const val MAX_OSC_BYTES = 4096
         // Daemon history-prelude marker: OSC 314159 ; herdr-history-end.
         // Must match HISTORY_MARKER in daemon/src/terminal.rs.
+        private const val HISTORY_MATCH_WINDOW = 500
         private const val HISTORY_MARKER_PS = 314159
         private const val HISTORY_MARKER_PT = "herdr-history-end"
 
