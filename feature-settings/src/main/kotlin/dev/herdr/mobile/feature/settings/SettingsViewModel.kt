@@ -201,7 +201,6 @@ class SettingsViewModel(
     fun setNotifyBlocked(enabled: Boolean) = edit { it.copy(notifyBlocked = enabled) }
     fun setBackgroundMonitoring(enabled: Boolean) = edit { it.copy(backgroundMonitoring = enabled) }
     fun setShowScrollDiagnostics(enabled: Boolean) = edit { it.copy(showScrollDiagnostics = enabled) }
-    fun setTapSummonsKeyboard(enabled: Boolean) = edit { it.copy(tapSummonsKeyboard = enabled) }
 
     fun testConnection() {
         testJob?.cancel()

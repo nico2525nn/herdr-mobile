@@ -80,7 +80,11 @@ class MainActivity : ComponentActivity() {
         // POST_NOTIFICATIONS defaults to denied on API 33+; without this every
         // relay notification is silently dropped while the user believes done /
         // blocked / failed alerts are enabled. Ask once per install.
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
+        // Skipped on notification-tap landings: the prompt would cover the
+        // deep-link target the user explicitly asked to see (grant state is
+        // also surfaced in Settings with a system link).
+        if (routeFromIntent(intent) == null &&
+            Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
             checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) !=
                 PackageManager.PERMISSION_GRANTED
         ) {

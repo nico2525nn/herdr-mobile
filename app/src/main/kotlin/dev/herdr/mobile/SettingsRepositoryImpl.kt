@@ -63,9 +63,9 @@ private object Keys {
     val SCROLLBACK = intPreferencesKey("scrollback")
     val NOTIFY_DONE = booleanPreferencesKey("notify_done")
     val NOTIFY_BLOCKED = booleanPreferencesKey("notify_blocked")
+    val NOTIFIED_MAP = stringPreferencesKey("notified_map")
     val SHOW_SCROLL_DIAG = booleanPreferencesKey("show_scroll_diagnostics")
     val BG_MONITOR = booleanPreferencesKey("bg_monitor")
-    val TAP_KEYBOARD = booleanPreferencesKey("tap_keyboard")
 }
 
 private val storeJson = Json { ignoreUnknownKeys = true }
@@ -81,6 +81,10 @@ class SettingsRepositoryImpl(
 
     private val _settings = MutableStateFlow(AppSettings())
     override val settings: StateFlow<AppSettings> = _settings.asStateFlow()
+
+    override suspend fun awaitLoaded() {
+        loaded.await()
+    }
 
     /**
      * Serializes update(): two concurrent read-modify-writes interleave on a
@@ -143,9 +147,31 @@ class SettingsRepositoryImpl(
             notifyBlocked = prefs[Keys.NOTIFY_BLOCKED] ?: true,
             showScrollDiagnostics = prefs[Keys.SHOW_SCROLL_DIAG] ?: false,
             backgroundMonitoring = prefs[Keys.BG_MONITOR] ?: true,
-            tapSummonsKeyboard = prefs[Keys.TAP_KEYBOARD] ?: false,
         )
         loaded.complete(Unit)
+    }
+
+    /**
+     * Last notified status per pane (M9): persisted so a process restart can
+     * tell "already alerted" from "finished while dead". Trivial `id=wire;…`
+     * encoding (pane ids and wire names never contain `;`/`=`); corrupt data
+     * reads as empty (worst case: re-alert once).
+     */
+    suspend fun loadNotified(): Map<String, String> {
+        loaded.await()
+        val raw = context.dataStore.data.first()[Keys.NOTIFIED_MAP] ?: return emptyMap()
+        return raw.split(';')
+            .mapNotNull { part ->
+                val eq = part.indexOf('=')
+                if (eq <= 0) null else part.take(eq) to part.substring(eq + 1)
+            }
+            .toMap()
+    }
+
+    suspend fun saveNotified(map: Map<String, String>) {
+        loaded.await()
+        val raw = map.entries.joinToString(";") { "${it.key}=${it.value}" }
+        context.dataStore.edit { prefs -> prefs[Keys.NOTIFIED_MAP] = raw }
     }
 
     override suspend fun update(transform: (AppSettings) -> AppSettings) {
@@ -189,7 +215,6 @@ class SettingsRepositoryImpl(
         prefs[Keys.NOTIFY_BLOCKED] = next.notifyBlocked
         prefs[Keys.SHOW_SCROLL_DIAG] = next.showScrollDiagnostics
         prefs[Keys.BG_MONITOR] = next.backgroundMonitoring
-        prefs[Keys.TAP_KEYBOARD] = next.tapSummonsKeyboard
     }
 
     private fun decodeProfiles(raw: String?): List<HostProfile> {

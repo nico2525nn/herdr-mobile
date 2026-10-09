@@ -6,11 +6,22 @@
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
     <uses-permission android:name="android.permission.VIBRATE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
-    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SPECIAL_USE" />
     <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
+    <uses-permission android:name="android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS" />
 
+    <!-- usesCleartextTraffic: the daemon speaks plain HTTP. Destinations are ONLY
+         hosts the user explicitly configures: 127.0.0.1 (SSH-tunnel local end,
+         encrypted at the SSH layer — the default) or a Direct-mode URL the user
+         typed (tailnet/LAN, their own network). A network_security_config cannot
+         express this (IP ranges like 100.64/10 are not allowlistable by domain
+         rules; exact-IP entries don't scale), and the implicit loopback
+         exemption failed on a physical Android 13 tablet ("CLEARTEXT
+         communication to 127.0.0.1 not permitted"). The app has no other HTTP
+         clients (no ads/analytics SDKs), so the blast radius is the daemon. -->
     <application
         android:name=".HerdrApp"
+        android:usesCleartextTraffic="true"
         android:allowBackup="true"
         android:fullBackupContent="@xml/backup_rules_legacy"
         android:dataExtractionRules="@xml/backup_rules"
@@ -34,12 +45,20 @@
         <service
             android:name=".HerdrMonitorService"
             android:exported="false"
-            android:foregroundServiceType="dataSync" />
+            android:foregroundServiceType="specialUse">
+            <property
+                android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
+                android:value=" herdr_agent_monitoring" />
+        </service>
         <receiver
             android:name=".BootReceiver"
             android:exported="false">
             <intent-filter>
                 <action android:name="android.intent.action.BOOT_COMPLETED" />
+            </intent-filter>
+            <!-- App update kills the FGS without sticky restart: re-arm here. -->
+            <intent-filter>
+                <action android:name="android.intent.action.MY_PACKAGE_REPLACED" />
             </intent-filter>
         </receiver>
     </application>

@@ -72,7 +72,7 @@ class AppContainer(context: Context) {
                             } catch (_: Exception) {
                             }
                             providerFlow.value = null
-                            client.kick()
+                            client.restartLink()
                         }
                     } else {
                         if (old != null) {
@@ -82,7 +82,7 @@ class AppContainer(context: Context) {
                             }
                         }
                         providerFlow.value = rebuilt
-                        client.kick()
+                        client.restartLink()
                     }
                 }
         }

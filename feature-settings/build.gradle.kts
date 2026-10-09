@@ -35,6 +35,7 @@ dependencies {
     api(project(":core-network"))
     api(project(":connection-ssh"))
     api(project(":connection-direct"))
+    implementation(libs.androidx.core.ktx)
     implementation(libs.androidx.lifecycle.viewmodel.compose)
     implementation(libs.androidx.lifecycle.runtime.compose)
     implementation(libs.compose.material.icons.core)

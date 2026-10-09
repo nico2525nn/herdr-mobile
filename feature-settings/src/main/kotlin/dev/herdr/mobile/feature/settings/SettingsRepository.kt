@@ -12,6 +12,9 @@ import kotlinx.coroutines.flow.StateFlow
 interface SettingsRepository {
     val settings: StateFlow<AppSettings>
 
+    /** Suspends until the persisted values have landed (pre-load reads are defaults). */
+    suspend fun awaitLoaded()
+
     suspend fun update(transform: (AppSettings) -> AppSettings)
 
     /** Store a PEM private key under an alias. Returns the alias to reference from a profile. */

@@ -13,12 +13,16 @@ import dev.herdr.mobile.core.model.SemanticEvent
  * Semantic notifications: done, blocked/permission-required, and failed — never progress,
  * never per-line output, never heartbeats.
  *
- * The tap target is a deep link the app resolves on foreground: refresh the snapshot, then
- * open the workspace/tab and attach only if needed.
+ * The tap target is a deep link the app resolves on foreground: the terminal
+ * refreshes first, opens the exact pane when it exists, and warns loudly when it
+ * fell back to a neighbor (never a silent wrong-agent landing).
  */
 object HerdrNotifications {
 
     const val CHANNEL_AGENTS = "herdr_agents"
+    /** Blocked agents wait on the user: heads-up, separate channel. */
+    const val CHANNEL_BLOCKED = "herdr_blocked"
+    const val TAG_AGENTS = "herdr_agent"
     const val EXTRA_WORKSPACE_ID = "dev.herdr.mobile.extra.WORKSPACE_ID"
     const val EXTRA_TAB_ID = "dev.herdr.mobile.extra.TAB_ID"
     const val EXTRA_PANE_ID = "dev.herdr.mobile.extra.PANE_ID"
@@ -31,7 +35,16 @@ object HerdrNotifications {
                 "Agent alerts",
                 NotificationManager.IMPORTANCE_DEFAULT,
             ).apply {
-                description = "Done, blocked and failed agent transitions"
+                description = "Agent finished with new results"
+            },
+        )
+        manager.createNotificationChannel(
+            NotificationChannel(
+                CHANNEL_BLOCKED,
+                "Blocked agents",
+                NotificationManager.IMPORTANCE_HIGH,
+            ).apply {
+                description = "Agent waits for input or permission (heads-up)"
             },
         )
     }
@@ -89,7 +102,8 @@ object HerdrNotifications {
             intent,
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
         )
-        val notification = NotificationCompat.Builder(context, CHANNEL_AGENTS)
+        val channel = if (status == AgentStatus.BLOCKED) CHANNEL_BLOCKED else CHANNEL_AGENTS
+        val notification = NotificationCompat.Builder(context, channel)
             .setSmallIcon(android.R.drawable.stat_notify_chat)
             .setContentTitle(title)
             .setContentText(body)
@@ -101,7 +115,11 @@ object HerdrNotifications {
             .setVisibility(NotificationCompat.VISIBILITY_PRIVATE)
             .build()
         val manager = context.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
-        manager.notify(notificationId(event), notification)
+        // Tag namespaces agent alerts away from the monitor slot: a hashCode
+        // collision with MONITOR_ID would otherwise replace the persistent
+        // (non-dismissible) notification with a dismissible one — swiping it
+        // would leave the FGS notification-less and the system kills it.
+        manager.notify(TAG_AGENTS, notificationId(event), notification)
     }
 
     fun notificationId(event: SemanticEvent): Int {

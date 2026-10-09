@@ -1,5 +1,6 @@
 package dev.herdr.mobile.feature.terminal
 
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -9,8 +10,6 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
-import androidx.compose.foundation.layout.WindowInsets
-import androidx.compose.foundation.layout.ime
 import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.navigationBarsPadding
@@ -83,32 +82,12 @@ fun TerminalScreen(
     dev.herdr.mobile.core.model.SeenDots.version.collectAsStateWithLifecycle().value
     var tabMenu by remember { mutableStateOf<TabMenuTarget?>(null) }
     var renameTarget by remember { mutableStateOf<TabMenuTarget?>(null) }
-    // Incremented when the input panel wants the terminal surface to take IME
-    // focus back (leaving CJK page). Counter, not boolean: two consecutive
-    // requests must both fire even with no value change in between.
-    var terminalFocusRequest by remember { mutableStateOf(0) }
-    // KEYBOARD extra key (Termux special button): toggles the IME. Two
-    // counters (show/hide), routed by ACTUAL visibility from WindowInsets —
-    // a local parity guess desyncs (tap-shown keyboards, IME back-gesture)
-    // and IMM.toggleSoftInput is unreliable on modern Android (show-half
-    // silently no-ops). The ref keeps the once-bound lambda current.
+    // Manual keyboard summon (CJK panel button) / hide (leaving the CJK page
+    // must not strand the IME on a hidden field). Counters, not booleans: two
+    // consecutive requests must both fire. Nothing else shows the IME — no
+    // tap, no swipe, no focus change (Termux behavior).
     var keyboardShowRequest by remember { mutableStateOf(0) }
     var keyboardHideRequest by remember { mutableStateOf(0) }
-    // IME visibility from real insets (snapshot-state backed: recomposes on change).
-    val imeBottom = WindowInsets.ime.getBottom(LocalDensity.current)
-    val imeVisibleRef = remember { mutableStateOf(false) }
-    imeVisibleRef.value = imeBottom > 0
-    // Bound once: the VM outlives compositions, the lambda reads latest state.
-    LaunchedEffect(viewModel) {
-        viewModel.onKeyAction = { action ->
-            if (action == dev.herdr.mobile.terminal.view.TerminalKeyEncoder.KeyAction.TOGGLE_KEYBOARD) {
-                if (imeVisibleRef.value) keyboardHideRequest++ else keyboardShowRequest++
-            }
-        }
-    }
-    DisposableEffect(viewModel) {
-        onDispose { viewModel.onKeyAction = null }
-    }
 
     // App backgrounded (Home button, task switch) does NOT dispose this screen,
     // so neither DisposableEffect nor onCleared runs. Release the controller or
@@ -176,7 +155,6 @@ fun TerminalScreen(
                     onSendBytes = { viewModel.sendBytes(it) },
                     onSendText = { viewModel.sendText(it) },
                     onRetry = { viewModel.retryAttach() },
-                    terminalFocusRequest = terminalFocusRequest,
                     keyboardShowRequest = keyboardShowRequest,
                     keyboardHideRequest = keyboardHideRequest,
                     inputTick = viewModel.inputTick.collectAsStateWithLifecycle().value,
@@ -190,7 +168,8 @@ fun TerminalScreen(
             onSendText = { viewModel.sendText(it) },
             onExtraKey = { viewModel.sendExtraKey(it) },
             onPageChange = { viewModel.setInputPage(it) },
-            onReturnFocusToTerminal = { terminalFocusRequest++ },
+            onSummonKeyboard = { keyboardShowRequest++ },
+            onHideKeyboard = { keyboardHideRequest++ },
         )
     }
 
@@ -410,7 +389,6 @@ private fun TerminalSurface(
     onSendBytes: (ByteArray) -> Unit,
     onSendText: (String) -> Unit,
     onRetry: () -> Unit,
-    terminalFocusRequest: Int,
     keyboardShowRequest: Int,
     keyboardHideRequest: Int,
     inputTick: Int,
@@ -447,27 +425,22 @@ private fun TerminalSurface(
     val density = LocalDensity.current
     val scope = rememberCoroutineScope()
 
-    // Panel asked for IME focus back (left CJK page): take it, keyboard and all.
-    // Guard 0 so composition doesn't steal focus on first mount.
-    LaunchedEffect(terminalFocusRequest) {
-        if (terminalFocusRequest > 0) {
-            viewRef?.requestFocus()
-            viewRef?.showKeyboard()
-        }
-    }
-    // KEYBOARD toggle: explicit show/hide resolved by real visibility.
+    // Manual summon: the CJK keyboard button. Guard 0 so composition
+    // doesn't steal focus on first mount.
     LaunchedEffect(keyboardShowRequest) {
         if (keyboardShowRequest > 0) {
             viewRef?.requestFocus()
             viewRef?.showKeyboard()
         }
     }
+    // Leaving the CJK page hides the IME (it was bound to the hidden field)
+    // and returns focus to the terminal without showing anything.
     LaunchedEffect(keyboardHideRequest) {
         if (keyboardHideRequest > 0) {
             viewRef?.hideKeyboard()
+            viewRef?.requestFocus()
         }
     }
-
     // User input snaps a scrolled viewport home (back at the prompt). Guard 0:
     // the initial value must not yank on mount.
     LaunchedEffect(inputTick) {
@@ -533,7 +506,6 @@ private fun TerminalSurface(
                     settings.terminalLineHeight,
                 )
                 view.setCursorStyle(settings.cursorStyle)
-                view.tapSummonsKeyboard = settings.tapSummonsKeyboard
                 view.onDirectInput = { text -> onSendText(text) }
                 view.onDirectDelete = { onSendBytes(byteArrayOf(0x7F)) }
                 view.onTapCell = { col, row ->
@@ -566,7 +538,6 @@ private fun TerminalSurface(
                 settings.terminalLineHeight,
             )
             view.setCursorStyle(settings.cursorStyle)
-            view.tapSummonsKeyboard = settings.tapSummonsKeyboard
             // Rebind every composition: the factory closure runs once and its
             // captured `bridge` State goes stale after a tab switch (remember
             // yields a NEW State object). Stale callbacks tap/scroll the
@@ -702,7 +673,8 @@ private fun BottomInputPanel(
     onSendText: (String) -> Unit,
     onExtraKey: (dev.herdr.mobile.terminal.view.TerminalKeyEncoder.Key) -> Unit,
     onPageChange: (InputPanelPage) -> Unit,
-    onReturnFocusToTerminal: () -> Unit,
+    onSummonKeyboard: () -> Unit,
+    onHideKeyboard: () -> Unit,
 ) {
     val settings = state.settings
     val pages = buildList {
@@ -727,16 +699,16 @@ private fun BottomInputPanel(
     LaunchedEffect(pagerState.currentPage, pages.size) {
         pages.getOrNull(pagerState.currentPage)?.let { onPageChange(it) }
     }
-    // Leaving the CJK page returns input focus to the terminal surface: the CJK
-    // field held the IME target, and without this the keyboard stays bound to a
-    // hidden field — native Enter/typing goes nowhere until the user re-taps.
+    // Leaving the CJK page hides the IME (it was bound to the hidden field)
+    // and returns focus to the terminal. Never shows anything: all IME
+    // appearances are explicit user taps.
     var previousPage by remember { mutableStateOf(pagerState.currentPage) }
     LaunchedEffect(pagerState.currentPage) {
         val prev = pages.getOrNull(previousPage)
         val cur = pages.getOrNull(pagerState.currentPage)
         previousPage = pagerState.currentPage
         if (prev == InputPanelPage.CJK_INPUT && cur == InputPanelPage.EXTRA_KEYS) {
-            onReturnFocusToTerminal()
+            onHideKeyboard()
         }
     }
     Surface(
@@ -767,10 +739,15 @@ private fun BottomInputPanel(
                                     viewModel.clearCjkDraft(tabId)
                                 },
                                 onBackspace = { onSendBytes(byteArrayOf(0x7F)) },
+                                onSummonKeyboard = onSummonKeyboard,
                             )
                         }
                     }
                 }
+                // Dots double as page buttons: with the keyboard up, the CJK
+                // field eats horizontal drags, so swiping back can be
+                // impossible — tapping a dot always pages.
+                val dotScope = rememberCoroutineScope()
                 Row(
                     modifier = Modifier
                         .fillMaxWidth()
@@ -779,14 +756,25 @@ private fun BottomInputPanel(
                     verticalAlignment = Alignment.CenterVertically,
                 ) {
                     pages.forEachIndexed { index, _ ->
-                        StatusDot(
-                            status = state.tab?.status
-                                ?: state.workspace?.status
-                                ?: dev.herdr.mobile.core.model.AgentStatus.UNKNOWN,
-                            diameter = if (index == pagerState.currentPage) 7.dp else 5.dp,
-                            describe = false,
-                        )
-                        Spacer(Modifier.size(4.dp))
+                        // 32dp hit box around the 5–7dp dot (finger target).
+                        Box(
+                            contentAlignment = Alignment.Center,
+                            modifier = Modifier
+                                .size(32.dp)
+                                .clickable {
+                                    dotScope.launch {
+                                        pagerState.animateScrollToPage(index)
+                                    }
+                                },
+                        ) {
+                            StatusDot(
+                                status = state.tab?.status
+                                    ?: state.workspace?.status
+                                    ?: dev.herdr.mobile.core.model.AgentStatus.UNKNOWN,
+                                diameter = if (index == pagerState.currentPage) 7.dp else 5.dp,
+                                describe = false,
+                            )
+                        }
                     }
                 }
             } else {
@@ -808,6 +796,7 @@ private fun BottomInputPanel(
                                 viewModel.clearCjkDraft(tabId)
                             },
                             onBackspace = { onSendBytes(byteArrayOf(0x7F)) },
+                            onSummonKeyboard = onSummonKeyboard,
                         )
                     }
                 }

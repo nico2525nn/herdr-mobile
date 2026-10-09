@@ -24,8 +24,7 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 
 /**
- * Page A of the bottom input panel: the Termux default extra-keys layout (two key
- * rows plus the KEYBOARD toggle row).
+ * Page A of the bottom input panel: the Termux default two-row extra-keys layout.
  *
  * CTRL/ALT are sticky multi-select toggles owned by the ViewModel: armed modifiers
  * highlight here AND apply to the next soft-keyboard char (keyboard Ctrl+C works,

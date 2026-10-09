@@ -16,14 +16,19 @@ import kotlinx.coroutines.launch
  */
 class BootReceiver : BroadcastReceiver() {
     override fun onReceive(context: Context, intent: Intent) {
-        if (intent.action != Intent.ACTION_BOOT_COMPLETED) return
+        if (intent.action != Intent.ACTION_BOOT_COMPLETED &&
+            intent.action != Intent.ACTION_MY_PACKAGE_REPLACED
+        ) return
         val pending = goAsync()
         CoroutineScope(SupervisorJob() + Dispatchers.IO).launch {
             try {
                 val app = context.applicationContext as HerdrApp
-                val on = app.container.settingsRepository.settings.first().backgroundMonitoring
+                val repo = app.container.settingsRepository
+                repo.awaitLoaded()
+                val on = repo.settings.first().backgroundMonitoring
                 if (on) HerdrMonitorService.start(context.applicationContext)
-            } catch (_: Exception) {
+            } catch (e: Exception) {
+                android.util.Log.w("HerdrBoot", "boot monitor start failed", e)
             } finally {
                 pending.finish()
             }

@@ -7,8 +7,8 @@ import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.Backspace
-import androidx.compose.material.icons.automirrored.filled.Send
 import androidx.compose.material.icons.filled.Clear
+import androidx.compose.material.icons.filled.Keyboard
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.OutlinedTextField
@@ -24,8 +24,12 @@ import androidx.compose.ui.unit.dp
  * Page B of the bottom input panel: CJK pre-composition.
  *
  * The Android IME composes inside this ordinary TextField; nothing is sent until the text is
- * committed (IME action or the send button), at which point the whole string goes to the
+ * committed (keyboard's Send action), at which point the whole string goes to the
  * terminal as UTF-8. Composing text never trickles into the remote PTY mid-conversion.
+ *
+ * The trailing button summons the terminal's direct-typing keyboard instead of
+ * sending: this panel never auto-shows anything, and neither do taps or page
+ * swipes — every IME appearance is an explicit user tap (Termux behavior).
  *
  * [text]/[onTextChange] are hoisted to the ViewModel's per-tab draft store: swiping pages
  * or switching tabs keeps half-composed input. Commit clears the draft.
@@ -46,6 +50,7 @@ fun CjkInputPanel(
     onTextChange: (String) -> Unit,
     onSend: (String) -> Unit,
     onBackspace: () -> Unit,
+    onSummonKeyboard: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
     fun commit() {
@@ -95,8 +100,8 @@ fun CjkInputPanel(
                 }
             },
         )
-        IconButton(onClick = { commit() }) {
-            Icon(Icons.AutoMirrored.Filled.Send, contentDescription = "Send to terminal")
+        IconButton(onClick = onSummonKeyboard) {
+            Icon(Icons.Filled.Keyboard, contentDescription = "Terminal keyboard")
         }
     }
 }

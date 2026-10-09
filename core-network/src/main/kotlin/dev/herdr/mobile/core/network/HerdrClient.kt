@@ -136,7 +136,8 @@ class HerdrClient(
                         _state.update {
                             if (it.connection == ConnectionState.CONNECTED ||
                                 it.connection == ConnectionState.RECONNECTING ||
-                                it.connection == ConnectionState.STALE
+                                it.connection == ConnectionState.STALE ||
+                                it.connection == ConnectionState.FAILED
                             ) {
                                 it.copy(connection = ConnectionState.IDLE, stale = it.snapshot != null)
                             } else {
@@ -167,14 +168,34 @@ class HerdrClient(
         kickQueue.trySend(LoopCommand.Stop)
     }
 
-    /** Retry now instead of waiting out the backoff (network regained, user pulled to refresh). */
+    /**
+     * Retry now instead of waiting out the backoff (network regained, sticky
+     * restart). No-op when already CONNECTED: every foregrounding used to tear
+     * down a healthy SSE (transient STALE, resubscribe gap, extra SSH dials).
+     */
     fun kick() {
+        if (_state.value.connection == ConnectionState.CONNECTED) return
         kickQueue.trySend(LoopCommand.Restart)
     }
 
-    /** Force an authoritative refetch, folding nothing. */
+    /** Forced full redial, even when connected (transport settings changed). */
+    fun restartLink() {
+        kickQueue.trySend(LoopCommand.Restart)
+    }
+
+    /**
+     * Force an authoritative refetch, folding nothing. Redials only when the
+     * link is down; on a healthy link it re-GETs the snapshot without tearing
+     * down the SSE (deep-link freshness, post-createTab waits).
+     */
     fun refresh() {
-        kick()
+        if (_state.value.connection != ConnectionState.CONNECTED) {
+            kick()
+            return
+        }
+        scope.launch {
+            runCatching { refetch("manual") }
+        }
     }
 
     private suspend fun run() {
@@ -243,7 +264,17 @@ class HerdrClient(
                             error = userMessage(e),
                         )
                     }
-                    if (e.code == "unauthorized" || e.code == "protocol_mismatch") return
+                    if (e.code == "unauthorized" || e.code == "protocol_mismatch") {
+                        // Auth/protocol failures need a human (token rotation,
+                        // daemon upgrade) — but parking FOREVER (bare return)
+                        // leaves a live process silently dead: no kick source
+                        // fires while backgrounded, so monitoring never revives
+                        // even after the user fixes the cause elsewhere. Retry
+                        // on a long timer: one cheap dial per 5 min, and any
+                        // settings edit/provider rebuild kicks immediately.
+                        delay(FAILED_RETRY_MS)
+                        continue
+                    }
                     delay(backoffMs + (0..250).random())
                     backoffMs = min(backoffMs * 2, MAX_BACKOFF_MS)
                 }
@@ -291,7 +322,7 @@ class HerdrClient(
                     // already gone. If the cursor moved past our snapshot, refetch
                     // before consuming, or the gap is silently lost.
                     val held = _state.value.snapshot?.seq ?: -1
-                    if (signal.seq > held) {
+                    if (signal.seq != held) {
                         refetch("cursor moved ${held} -> ${signal.seq} during subscribe")
                     }
                 }
@@ -511,5 +542,6 @@ class HerdrClient(
     companion object {
         private const val INITIAL_BACKOFF_MS = 500L
         private const val MAX_BACKOFF_MS = 15_000L
+        private const val FAILED_RETRY_MS = 300_000L
     }
 }

@@ -10,8 +10,8 @@ import kotlinx.coroutines.launch
 
 /**
  * Watches alert-worthy semantic events and posts system notifications while the app is
- * alive (foreground or cached process — there is no foreground service, so a dead
- * process gets no alerts; documented, not a bug).
+ * alive (foreground, cached, or pinned by the monitor service — a dead process with
+ * monitoring off gets no alerts).
  *
  * Two paths, one dedupe key (paneId -> last notified status):
  * - event flow (exact): every daemon event, no coalescing loss — a fast
@@ -19,15 +19,20 @@ import kotlinx.coroutines.launch
  * - snapshot-diff backstop: refetch jumps (cold start, reconnect, gap) carry
  *   transitions with no event; the diff catches them.
  * Either path skips when the pane's status already notified (prevents double
- * alerts for the same transition). First snapshot seeds silently (no launch storm).
+ * alerts for the same transition). The dedupe map persists across restarts: the
+ * first snapshot diffs against it instead of blanket-suppressing, so panes that
+ * finished while dead still alert exactly once.
  */
 class NotificationRelay(
     private val context: Context,
     private val settings: SettingsRepositoryImpl,
     private val client: HerdrClient,
-    scope: CoroutineScope,
+    private val scope: CoroutineScope,
 ) {
-    private val lastNotified = mutableMapOf<String, AgentStatus>()
+    // Concurrent: the event path and the snapshot-diff path run on
+    // Dispatchers.Default (multi-threaded); a plain HashMap races (lost
+    // dedupe = double alerts, torn reads = skipped alerts, CME = dead path).
+    private val lastNotified = java.util.concurrent.ConcurrentHashMap<String, AgentStatus>()
     private var seeded = false
 
     init {
@@ -38,11 +43,19 @@ class NotificationRelay(
                 val status = event.status ?: return@collect
                 if (lastNotified[paneId] == status) return@collect
                 lastNotified[paneId] = status
+                persist()
                 maybeNotify(event)
             }
         }
         scope.launch {
             var previous: Map<String, AgentStatus> = emptyMap()
+            // Persisted map from the last process: diffed at seed so dead-window
+            // completions alert once instead of being blanket-suppressed. Fresh
+            // installs read empty — but then every existing done would alert on
+            // first launch (launch storm), so an EMPTY persisted map still seeds
+            // silently; only panes that ADVANCED vs a non-empty map alert.
+            val persisted = runCatching { settings.loadNotified() }.getOrDefault(emptyMap())
+                .mapValues { AgentStatus.fromWire(it.value) }
             client.state.collect { state ->
                 val snapshot = state.snapshot ?: return@collect
                 val current = snapshot.workspaces
@@ -50,10 +63,36 @@ class NotificationRelay(
                     .flatMap { it.panes }
                     .associate { it.id to it.status }
                 if (!seeded) {
-                    // First snapshot: seed both maps silently. Cold start and
-                    // process restart must not replay old dones as new alerts.
                     previous = current
-                    lastNotified.putAll(current)
+                    if (persisted.isEmpty()) {
+                        lastNotified.putAll(current)
+                    } else {
+                        for (pane in snapshot.workspaces.flatMap { it.tabs }.flatMap { it.panes }) {
+                            val old = persisted[pane.id]
+                            lastNotified[pane.id] = pane.status
+                            // Advanced while dead (working->done with no live
+                            // process to see it): alert now, exactly once —
+                            // lastNotified already records it, so the event
+                            // path and later diffs skip the duplicate.
+                            if (old != null && old != pane.status) {
+                                val tab = snapshot.tab(pane.tabId)
+                                val workspace = snapshot.workspace(pane.workspaceId)
+                                maybeNotify(
+                                    SemanticEvent(
+                                        seq = snapshot.seq,
+                                        type = SemanticEvent.TYPE_PANE_STATUS_CHANGED,
+                                        workspaceId = pane.workspaceId,
+                                        tabId = pane.tabId,
+                                        paneId = pane.id,
+                                        status = pane.status,
+                                    ),
+                                    workspace?.label,
+                                    tab?.displayLabel,
+                                )
+                            }
+                        }
+                    }
+                    persist()
                     seeded = true
                     return@collect
                 }
@@ -64,6 +103,7 @@ class NotificationRelay(
                             lastNotified[pane.id] != pane.status
                         ) {
                             lastNotified[pane.id] = pane.status
+                            persist()
                             val tab = snapshot.tab(pane.tabId)
                             val workspace = snapshot.workspace(pane.workspaceId)
                             val event = SemanticEvent(
@@ -86,8 +126,19 @@ class NotificationRelay(
         }
     }
 
+    /** Best-effort write-through: transitions are rare, DataStore writes are cheap. */
+    private fun persist() {
+        val copy = HashMap(lastNotified).mapValues { it.value.wire }
+        scope.launch {
+            runCatching { settings.saveNotified(copy) }
+        }
+    }
+
     private fun maybeNotify(event: SemanticEvent, workspaceLabel: String? = null, tabLabel: String? = null) {
         val s = settings.settings.value
+        // Monitoring OFF = no alerts, even in the cached-process window where
+        // the link is still up (or while UI is open — the user sees live dots).
+        if (!s.backgroundMonitoring) return
         if (!HerdrNotifications.shouldNotify(event, s.notifyDone, s.notifyBlocked)) return
         val snapshot = client.state.value.snapshot
         val ws = workspaceLabel ?: snapshot?.workspace(event.workspaceId)?.label

@@ -72,9 +72,9 @@ data class TerminalUiState(
 
 class TerminalViewModel(
     private val client: HerdrClient,
-    initialWorkspaceId: String?,
-    initialTabId: String?,
-    initialPaneId: String? = null,
+    private val initialWorkspaceId: String?,
+    private val initialTabId: String?,
+    private val initialPaneId: String? = null,
     private val settingsFlow: StateFlow<AppSettings>,
 ) : ViewModel() {
 
@@ -136,16 +136,53 @@ class TerminalViewModel(
 
     init {
         viewModelScope.launch {
+            // Deep links (notification taps) refresh first: the cached snapshot
+            // may predate the pane (reconnect gap) or outlive it (closed).
+            // Resolving on stale state silently opens the WRONG agent — the
+            // user then types into a live session they never chose.
+            val wantPane = initialPaneId
+            if (wantPane != null) {
+                client.refresh()
+                // Await the pane (fresh snapshot wins over the cached one);
+                // 10s cap, then fall through to best-effort resolve + warning.
+                runCatching {
+                    withTimeout(10_000) {
+                        client.state.first { st ->
+                            st.snapshot?.pane(wantPane) != null &&
+                                st.connection == dev.herdr.mobile.core.model.ConnectionState.CONNECTED
+                        }
+                    }
+                }
+            }
             // Resolve the initial target once a snapshot exists.
             client.state.collect { s ->
                 val snapshot = s.snapshot ?: return@collect
                 if (targetFlow.value == null) {
                     val target = resolveTarget(snapshot, initialWorkspaceId, initialTabId, initialPaneId)
                     if (target != null) {
+                        warnOnFallback(snapshot, target)
                         openTarget(target)
                     }
                 }
             }
+        }
+    }
+
+    /**
+     * Deep-link safety: when the requested pane/tab/workspace is gone and
+     * resolveTarget fell back to a neighbor, say so LOUDLY (status banner)
+     * instead of silently landing input in the wrong agent.
+     */
+    private fun warnOnFallback(snapshot: SessionSnapshot, target: TerminalTarget) {
+        if (initialPaneId == null) return // in-app navigation: no expectation to violate
+        if (target.paneId != initialPaneId) {
+            val pane = snapshot.pane(target.paneId)
+            messageFlow.value =
+                "Original pane is gone — opened ${pane?.displayLabel ?: target.paneId} instead"
+        } else if (initialTabId != null && target.tabId != initialTabId) {
+            messageFlow.value = "Original tab is gone — opened a neighbor tab instead"
+        } else if (initialWorkspaceId != null && target.workspaceId != initialWorkspaceId) {
+            messageFlow.value = "Original workspace is gone — opened another workspace instead"
         }
     }
 
@@ -407,11 +444,7 @@ class TerminalViewModel(
      * both modifiers; escape sequences ignore them (same rule as the encoder:
      * raw sequences are sent as-is, latch still consumed).
      */
-    /** Local key actions (KEYBOARD toggle): the screen owns the IME, not the VM. */
-    var onKeyAction: ((TerminalKeyEncoder.KeyAction) -> Unit)? = null
-
     fun sendExtraKey(key: TerminalKeyEncoder.Key) {
-        key.action?.let { onKeyAction?.invoke(it); return }
         val modifier = key.modifier
         if (modifier != null) {
             val current = stickyFlow.value

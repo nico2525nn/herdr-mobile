@@ -243,7 +243,7 @@ fun SettingsScreen(
             SettingsSection(title = "Terminal") {
                 SettingsRow(
                     headline = "Extra keys",
-                    supporting = "Key bar with keyboard toggle",
+                    supporting = "Two-row key bar above the panel",
                     showDivider = true,
                     trailing = {
                         Switch(
@@ -294,17 +294,6 @@ fun SettingsScreen(
                     },
                 )
                 SettingsRow(
-                    headline = "Tap summons keyboard",
-                    supporting = "Terminal tap opens the IME (off = KEYBOARD key only)",
-                    showDivider = true,
-                    trailing = {
-                        Switch(
-                            checked = settings.tapSummonsKeyboard,
-                            onCheckedChange = { viewModel.setTapSummonsKeyboard(it) },
-                        )
-                    },
-                )
-                SettingsRow(
                     headline = "Scroll diagnostics",
                     supporting = "Overlay scroll state (debug, no content)",
                     showDivider = false,
@@ -319,6 +308,8 @@ fun SettingsScreen(
         }
         item(key = "notifications") {
             SettingsSection(title = "Notifications") {
+                NotificationGrantRow()
+                BatteryExemptionRow()
                 SettingsRow(
                     headline = "Done",
                     supporting = "Agent finished with new results",
@@ -613,4 +604,92 @@ private fun ProfileEditorDialog(
             TextButton(onClick = onDismiss) { Text("Cancel") }
         },
     )
+}
+
+/**
+ * System grant state (M7): the Done/Blocked toggles are meaningless when the OS
+ * denies notifications — say so with a link to system settings instead of
+ * silently dropping every alert. Re-checked on every resume (the user may have
+ * just flipped the system switch and come back).
+ */
+@Composable
+private fun NotificationGrantRow() {
+    val context = androidx.compose.ui.platform.LocalContext.current
+    val lifecycle = androidx.lifecycle.compose.LocalLifecycleOwner.current.lifecycle
+    var granted by remember { mutableStateOf(true) }
+    fun refresh() {
+        granted = androidx.core.app.NotificationManagerCompat.from(context).areNotificationsEnabled()
+    }
+    androidx.compose.runtime.DisposableEffect(lifecycle) {
+        val observer = androidx.lifecycle.LifecycleEventObserver { _, event ->
+            if (event == androidx.lifecycle.Lifecycle.Event.ON_RESUME) refresh()
+        }
+        lifecycle.addObserver(observer)
+        onDispose { lifecycle.removeObserver(observer) }
+    }
+    // Initial read (before any resume fires for this composition).
+    androidx.compose.runtime.LaunchedEffect(Unit) { refresh() }
+    if (!granted) {
+        SettingsRow(
+            headline = "System notifications off",
+            supporting = "Alerts are blocked by Android — tap to open system settings",
+            showDivider = true,
+            trailing = {
+                TextButton(onClick = {
+                    val intent = android.content.Intent().apply {
+                        action = android.provider.Settings.ACTION_APP_NOTIFICATION_SETTINGS
+                        putExtra(android.provider.Settings.EXTRA_APP_PACKAGE, context.packageName)
+                    }
+                    context.startActivity(intent)
+                }) {
+                    Text("Open")
+                }
+            },
+        )
+    }
+}
+
+/**
+ * Doze guidance (B2): Android suspends SSE/SSH network in Doze unless the user
+ * exempts the app — there is no FCM fallback (self-hosted daemon), so without
+ * this overnight alerts silently stop. States the current exemption with a
+ * one-tap system dialog. Re-checked on resume like the grant row.
+ */
+@Composable
+private fun BatteryExemptionRow() {
+    val context = androidx.compose.ui.platform.LocalContext.current
+    val lifecycle = androidx.lifecycle.compose.LocalLifecycleOwner.current.lifecycle
+    var exempt by remember { mutableStateOf(true) }
+    fun refresh() {
+        val pm = context.getSystemService(android.content.Context.POWER_SERVICE) as android.os.PowerManager
+        exempt = pm.isIgnoringBatteryOptimizations(context.packageName)
+    }
+    androidx.compose.runtime.DisposableEffect(lifecycle) {
+        val observer = androidx.lifecycle.LifecycleEventObserver { _, event ->
+            if (event == androidx.lifecycle.Lifecycle.Event.ON_RESUME) refresh()
+        }
+        lifecycle.addObserver(observer)
+        onDispose { lifecycle.removeObserver(observer) }
+    }
+    androidx.compose.runtime.LaunchedEffect(Unit) { refresh() }
+    if (!exempt) {
+        SettingsRow(
+            headline = "Battery optimization on",
+            supporting = "Doze pauses monitoring overnight — tap to exempt",
+            showDivider = true,
+            trailing = {
+                TextButton(onClick = {
+                    runCatching {
+                        val intent = android.content.Intent().apply {
+                            action = android.provider.Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS
+                            data = android.net.Uri.parse("package:${context.packageName}")
+                        }
+                        context.startActivity(intent)
+                    }
+                }) {
+                    Text("Exempt")
+                }
+            },
+        )
+    }
 }

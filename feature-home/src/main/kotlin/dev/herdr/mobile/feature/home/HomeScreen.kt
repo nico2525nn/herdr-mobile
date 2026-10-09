@@ -4,6 +4,7 @@ import androidx.compose.animation.animateContentSize
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ExperimentalLayoutApi
 import androidx.compose.foundation.layout.FlowRow
@@ -17,6 +18,10 @@ import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.grid.GridCells
+import androidx.compose.foundation.lazy.grid.GridItemSpan
+import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
+import androidx.compose.foundation.lazy.grid.items
 import androidx.compose.foundation.lazy.items
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.ChevronRight
@@ -103,39 +108,74 @@ fun HomeScreen(
             }
 
             else -> {
-                LazyColumn(
-                    modifier = Modifier.fillMaxSize(),
-                    contentPadding = PaddingValues(horizontal = 16.dp),
-                    verticalArrangement = Arrangement.spacedBy(12.dp),
-                ) {
-                    if (state.showOfflineBanner || state.stale) {
-                        item(key = "banner") {
-                            OfflineBanner(
-                                connection = state.connection,
-                                stale = state.stale,
-                                error = state.error,
-                            )
+                // Width-adaptive: phones keep the single-column list; tablets
+                // tile the same cards (2 cols ≥600dp, 3 cols ≥840dp). The card
+                // (incl. tab chips + longpress anchors) is reused verbatim —
+                // anchors are window-coords, so grid placement needs no math.
+                BoxWithConstraints(modifier = Modifier.fillMaxSize()) {
+                    val columns = when {
+                        maxWidth < 600.dp -> 1
+                        maxWidth < 840.dp -> 2
+                        else -> 3
+                    }
+                    if (columns == 1) {
+                        LazyColumn(
+                            modifier = Modifier.fillMaxSize(),
+                            contentPadding = PaddingValues(horizontal = 16.dp),
+                            verticalArrangement = Arrangement.spacedBy(12.dp),
+                        ) {
+                            if (state.showOfflineBanner || state.stale) {
+                                item(key = "banner") {
+                                    OfflineBanner(
+                                        connection = state.connection,
+                                        stale = state.stale,
+                                        error = state.error,
+                                    )
+                                }
+                            }
+                            items(
+                                items = state.snapshot!!.workspaces,
+                                key = { it.id },
+                            ) { workspace ->
+                                workspaceCard(
+                                    workspace,
+                                    onOpenWorkspace,
+                                    onOpenTab,
+                                    screenOrigin,
+                                ) { tabMenu = it }
+                            }
+                            item(key = "bottom-space") { Spacer(Modifier.height(8.dp)) }
+                        }
+                    } else {
+                        LazyVerticalGrid(
+                            columns = GridCells.Fixed(columns),
+                            modifier = Modifier.fillMaxSize(),
+                            contentPadding = PaddingValues(horizontal = 16.dp),
+                            verticalArrangement = Arrangement.spacedBy(12.dp),
+                            horizontalArrangement = Arrangement.spacedBy(12.dp),
+                        ) {
+                            if (state.showOfflineBanner || state.stale) {
+                                item(key = "banner", span = { GridItemSpan(maxLineSpan) }) {
+                                    OfflineBanner(
+                                        connection = state.connection,
+                                        stale = state.stale,
+                                        error = state.error,
+                                    )
+                                }
+                            }
+                            items(
+                                items = state.snapshot!!.workspaces,
+                                key = { it.id },
+                            ) { workspace ->
+                                workspaceCard(
+                                    workspace,
+                                    onOpenWorkspace,
+                                    onOpenTab,
+                                    screenOrigin,
+                                ) { tabMenu = it }
+                            }
                         }
                     }
-                    items(
-                        items = state.snapshot!!.workspaces,
-                        key = { it.id },
-                    ) { workspace ->
-                        WorkspaceCard(
-                            workspace = workspace,
-                            onOpenWorkspace = { onOpenWorkspace(workspace.id, workspace.activeTabId) },
-                            onOpenTab = { tab -> onOpenTab(workspace.id, tab.id) },
-                            onTabLongPress = { tab, pressWindow ->
-                                // Window point minus our origin = anchor-box offset.
-                                val anchor = androidx.compose.ui.unit.IntOffset(
-                                    (pressWindow.x - screenOrigin.x).toInt(),
-                                    (pressWindow.y - screenOrigin.y).toInt(),
-                                )
-                                tabMenu = HomeTabMenuTarget(workspace.id, tab.id, tab.displayLabel, anchor)
-                            },
-                        )
-                    }
-                    item(key = "bottom-space") { Spacer(Modifier.height(8.dp)) }
                 }
             }
         }
@@ -173,6 +213,29 @@ fun HomeScreen(
             },
         )
     }
+}
+
+@Composable
+private fun workspaceCard(
+    workspace: Workspace,
+    onOpenWorkspace: (workspaceId: String, tabId: String?) -> Unit,
+    onOpenTab: (workspaceId: String, tabId: String) -> Unit,
+    screenOrigin: androidx.compose.ui.geometry.Offset,
+    onMenu: (HomeTabMenuTarget) -> Unit,
+) {
+    WorkspaceCard(
+        workspace = workspace,
+        onOpenWorkspace = { onOpenWorkspace(workspace.id, workspace.activeTabId) },
+        onOpenTab = { tab -> onOpenTab(workspace.id, tab.id) },
+        onTabLongPress = { tab, pressWindow ->
+            // Window point minus our origin = anchor-box offset.
+            val anchor = androidx.compose.ui.unit.IntOffset(
+                (pressWindow.x - screenOrigin.x).toInt(),
+                (pressWindow.y - screenOrigin.y).toInt(),
+            )
+            onMenu(HomeTabMenuTarget(workspace.id, tab.id, tab.displayLabel, anchor))
+        },
+    )
 }
 
 /** Which Home tab a long-press menu refers to. */

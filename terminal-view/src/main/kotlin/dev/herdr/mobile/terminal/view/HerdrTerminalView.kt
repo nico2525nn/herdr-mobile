@@ -69,8 +69,6 @@ class HerdrTerminalView @JvmOverloads constructor(
     var onTapCell: ((col: Int, row: Int) -> Unit)? = null
     var onZoomFont: ((deltaSp: Float) -> Unit)? = null
     var onSelection: ((text: String) -> Unit)? = null
-    /** False = taps take focus but never summon the IME (Settings). */
-    var tapSummonsKeyboard: Boolean = true
     /** ASCII / direct keys from the soft keyboard (no composition). */
     var onDirectInput: ((text: String) -> Unit)? = null
     /** DEL key from the soft keyboard. */
@@ -151,11 +149,11 @@ class HerdrTerminalView @JvmOverloads constructor(
             cellAt(e.x, e.y)?.let { (col, bufRow) ->
                 onTapCell?.invoke(col, bufRow - frame.history.size)
             }
-            // The keyboard only summons when the user wants tap-to-type
-            // (default off: KEYBOARD key or the CJK field summons instead).
-            // Focus is still taken — hardware keys keep working either way.
+            // Click-only (Termux): the keyboard NEVER auto-shows — not on
+            // tap, not on page swipe, not on focus. The CJK panel's keyboard
+            // button is the single summon path. Focus is still taken so
+            // hardware keys keep working.
             requestFocus()
-            if (tapSummonsKeyboard) showKeyboard()
             return true
         }
 
