@@ -36,6 +36,13 @@ class TerminalEmulator(
 
     /** True while the alternate screen (DEC 47/1047/1049) is active. */
     val usingAlternateScreen: Boolean get() = isAltValue
+    /**
+     * True while the app requested mouse-press reporting (DEC 1000/1002 —
+     * termux `isMouseTrackingActive`). The host forwards taps as button
+     * events instead of summoning the keyboard (termux TerminalView.onUp).
+     */
+    val isMouseTracking: Boolean
+        get() = 1000 in privateModes || 1002 in privateModes
 
     private fun active(): ArrayList<ArrayList<TerminalCell>> = if (isAltValue) altLines else mainLines
 

@@ -2,15 +2,17 @@ package dev.herdr.mobile.terminal.view
 
 import org.junit.Assert.assertArrayEquals
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class TerminalKeyEncoderTest {
 
     @Test
-    fun `default layout has two rows of seven`() {
-        assertEquals(2, TerminalKeyEncoder.DEFAULT_LAYOUT.size)
+    fun `default layout has two key rows plus keyboard toggle`() {
+        assertEquals(3, TerminalKeyEncoder.DEFAULT_LAYOUT.size)
         assertEquals(7, TerminalKeyEncoder.DEFAULT_LAYOUT[0].size)
         assertEquals(7, TerminalKeyEncoder.DEFAULT_LAYOUT[1].size)
+        assertEquals(1, TerminalKeyEncoder.DEFAULT_LAYOUT[2].size)
     }
 
     @Test
@@ -68,6 +70,15 @@ class TerminalKeyEncoderTest {
         assertEquals(null, TerminalKeyEncoder.withModifiers(ctrl, "ab"))
         assertEquals(null, TerminalKeyEncoder.withModifiers(ctrl, "あ"))
         assertEquals(null, TerminalKeyEncoder.withModifiers(emptySet(), "c"))
+    }
+
+    @Test
+    fun `layout carries keyboard toggle and no letters`() {
+        // Termux parity: KEYBOARD special button toggles the IME; Ctrl chords
+        // come from the soft keyboard with the latch armed, so no letter row.
+        val flat = TerminalKeyEncoder.DEFAULT_LAYOUT.flatten()
+        assertTrue(flat.any { it.action == TerminalKeyEncoder.KeyAction.TOGGLE_KEYBOARD })
+        assertTrue(flat.none { it.label.length == 1 && it.label[0].isLetter() && it.bytes?.size == 1 })
     }
 
     @Test

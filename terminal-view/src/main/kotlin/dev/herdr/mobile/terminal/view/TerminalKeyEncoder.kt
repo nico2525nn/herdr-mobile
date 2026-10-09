@@ -10,13 +10,18 @@ object TerminalKeyEncoder {
 
     const val ESC = 0x1B.toByte()
 
-    /** Single extra key: either literal [bytes] or a set of Herdr key-combo [herdrKeys]. */
+    /** Local UI actions a key can trigger instead of sending bytes. */
+    enum class KeyAction { TOGGLE_KEYBOARD }
+
+    /** Single extra key: literal [bytes], Herdr key-combo [herdrKeys], a [modifier] latch, or a local [action]. */
     data class Key(
         val label: String,
         val bytes: ByteArray? = null,
         val herdrKeys: List<String>? = null,
         /** While held, the next key is sent with this modifier. */
         val modifier: Modifier? = null,
+        /** Local action (never sent to the PTY): KEYBOARD toggles the IME like Termux's special button. */
+        val action: KeyAction? = null,
     ) {
         override fun equals(other: Any?): Boolean {
             if (this === other) return true
@@ -31,7 +36,7 @@ object TerminalKeyEncoder {
 
     private fun esc(seq: String): ByteArray = byteArrayOf(ESC) + seq.toByteArray(Charsets.US_ASCII)
 
-    /** The Termux default layout, two rows of seven. */
+    /** The Termux default layout: two rows of seven plus the KEYBOARD toggle row. */
     val DEFAULT_LAYOUT: List<List<Key>> = listOf(
         listOf(
             Key("ESC", bytes = byteArrayOf(ESC)),
@@ -51,22 +56,11 @@ object TerminalKeyEncoder {
             Key("→", bytes = esc("[C")),
             Key("PGDN", bytes = esc("[6~")),
         ),
-    )
-
-    /**
-     * Letter row for Ctrl chords (Ctrl-C / Ctrl-D / …). The two-row panel has no
-     * letters, which made the CTRL latch a dead end; hosts that want Ctrl chords
-     * append this row. Letters send as-is; with a latched CTRL they become 0x01…
-     * via [withModifier], with ALT they become ESC-prefixed.
-     */
-    val LETTER_ROW: List<Key> = listOf(
-        Key("A", bytes = "a".toByteArray()),
-        Key("C", bytes = "c".toByteArray()),
-        Key("D", bytes = "d".toByteArray()),
-        Key("G", bytes = "g".toByteArray()),
-        Key("L", bytes = "l".toByteArray()),
-        Key("R", bytes = "r".toByteArray()),
-        Key("Z", bytes = "z".toByteArray()),
+        // Third row: Termux's KEYBOARD special button lives here. No letter
+        // row — Ctrl chords come from the soft keyboard with the latch armed.
+        listOf(
+            Key("KEYBOARD", action = KeyAction.TOGGLE_KEYBOARD),
+        ),
     )
 
     /**

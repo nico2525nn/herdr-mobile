@@ -13,7 +13,9 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.material.icons.Icons
@@ -34,6 +36,8 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
+import androidx.compose.ui.layout.onGloballyPositioned
+import androidx.compose.ui.layout.positionInWindow
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -48,6 +52,7 @@ import dev.herdr.mobile.core.designsystem.contentDescription
 import dev.herdr.mobile.core.model.ConnectionState
 import dev.herdr.mobile.core.model.Tab
 import dev.herdr.mobile.core.model.Workspace
+import dev.herdr.mobile.core.model.isSeenDone
 
 /**
  * Semantic overview: workspace cards with peer tab chips, never a terminal grid.
@@ -66,10 +71,21 @@ fun HomeScreen(
 ) {
     val state by viewModel.uiState.collectAsStateWithLifecycle()
     val message by viewModel.message.collectAsStateWithLifecycle()
+    // Seen-done version: recompose dots when a pane is marked (else Compose
+    // skips — the mark changes no other input).
+    @Suppress("UNUSED_EXPRESSION")
+    dev.herdr.mobile.core.model.SeenDots.version.collectAsStateWithLifecycle().value
     var tabMenu by remember { mutableStateOf<HomeTabMenuTarget?>(null) }
     var renameTarget by remember { mutableStateOf<HomeTabMenuTarget?>(null) }
+    // Screen origin in window coords: the anchor Box renders here, so press
+    // points (window coords) are offset back by this to land on the chip.
+    var screenOrigin by remember { mutableStateOf(androidx.compose.ui.geometry.Offset.Zero) }
 
-    Column(modifier = modifier.fillMaxSize()) {
+    Column(
+        modifier = modifier
+            .fillMaxSize()
+            .onGloballyPositioned { screenOrigin = it.positionInWindow() },
+    ) {
         HomeHeader(
             workspaceCount = state.workspaceCount,
             tabCount = state.tabCount,
@@ -109,8 +125,13 @@ fun HomeScreen(
                             workspace = workspace,
                             onOpenWorkspace = { onOpenWorkspace(workspace.id, workspace.activeTabId) },
                             onOpenTab = { tab -> onOpenTab(workspace.id, tab.id) },
-                            onTabLongPress = { tab ->
-                                tabMenu = HomeTabMenuTarget(workspace.id, tab.id, tab.displayLabel)
+                            onTabLongPress = { tab, pressWindow ->
+                                // Window point minus our origin = anchor-box offset.
+                                val anchor = androidx.compose.ui.unit.IntOffset(
+                                    (pressWindow.x - screenOrigin.x).toInt(),
+                                    (pressWindow.y - screenOrigin.y).toInt(),
+                                )
+                                tabMenu = HomeTabMenuTarget(workspace.id, tab.id, tab.displayLabel, anchor)
                             },
                         )
                     }
@@ -159,6 +180,7 @@ private data class HomeTabMenuTarget(
     val workspaceId: String,
     val tabId: String,
     val label: String,
+    val anchor: androidx.compose.ui.unit.IntOffset,
 )
 
 @Composable
@@ -168,15 +190,23 @@ private fun HomeTabActionsMenu(
     onRename: () -> Unit,
     onClose: () -> Unit,
 ) {
-    DropdownMenu(expanded = true, onDismissRequest = onDismiss) {
-        DropdownMenuItem(
-            text = { Text("Rename \"${target.label}\"") },
-            onClick = onRename,
-        )
-        DropdownMenuItem(
-            text = { Text("Close \"${target.label}\"") },
-            onClick = onClose,
-        )
+    // Same anchor trick as the Terminal rail: unanchored menus render at
+    // the window origin. Offset = press point relative to this screen.
+    Box(
+        modifier = Modifier
+            .offset { target.anchor }
+            .size(1.dp),
+    ) {
+        DropdownMenu(expanded = true, onDismissRequest = onDismiss) {
+            DropdownMenuItem(
+                text = { Text("Rename \"${target.label}\"") },
+                onClick = onRename,
+            )
+            DropdownMenuItem(
+                text = { Text("Close \"${target.label}\"") },
+                onClick = onClose,
+            )
+        }
     }
 }
 
@@ -307,7 +337,7 @@ private fun WorkspaceCard(
     workspace: Workspace,
     onOpenWorkspace: () -> Unit,
     onOpenTab: (Tab) -> Unit,
-    onTabLongPress: (Tab) -> Unit,
+    onTabLongPress: (Tab, androidx.compose.ui.geometry.Offset) -> Unit,
     modifier: Modifier = Modifier,
 ) {
     Card(
@@ -330,7 +360,7 @@ private fun WorkspaceCard(
                 .padding(16.dp),
         ) {
             Row(verticalAlignment = Alignment.CenterVertically) {
-                StatusDot(status = workspace.status)
+                StatusDot(status = workspace.status, muted = workspace.isSeenDone())
                 Column(
                     modifier = Modifier
                         .weight(1f)
@@ -369,12 +399,17 @@ private fun WorkspaceCard(
                     verticalArrangement = Arrangement.spacedBy(8.dp),
                 ) {
                     workspace.tabs.forEach { tab ->
+                        var chipOrigin by remember(tab.id) { mutableStateOf(androidx.compose.ui.geometry.Offset.Zero) }
                         PeerTabChip(
                             label = tab.displayLabel,
                             subtitle = tab.harnessNames.joinToString(",").takeIf { it.isNotEmpty() },
                             status = tab.status,
                             onClick = { onOpenTab(tab) },
-                            onLongClick = { onTabLongPress(tab) },
+                            muted = tab.isSeenDone(),
+                            modifier = Modifier.onGloballyPositioned { chipOrigin = it.positionInWindow() },
+                            onLongClick = { press ->
+                                onTabLongPress(tab, chipOrigin + press)
+                            },
                         )
                     }
                 }

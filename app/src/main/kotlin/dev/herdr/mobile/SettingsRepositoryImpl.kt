@@ -64,6 +64,8 @@ private object Keys {
     val NOTIFY_DONE = booleanPreferencesKey("notify_done")
     val NOTIFY_BLOCKED = booleanPreferencesKey("notify_blocked")
     val SHOW_SCROLL_DIAG = booleanPreferencesKey("show_scroll_diagnostics")
+    val BG_MONITOR = booleanPreferencesKey("bg_monitor")
+    val TAP_KEYBOARD = booleanPreferencesKey("tap_keyboard")
 }
 
 private val storeJson = Json { ignoreUnknownKeys = true }
@@ -140,6 +142,8 @@ class SettingsRepositoryImpl(
             notifyDone = prefs[Keys.NOTIFY_DONE] ?: true,
             notifyBlocked = prefs[Keys.NOTIFY_BLOCKED] ?: true,
             showScrollDiagnostics = prefs[Keys.SHOW_SCROLL_DIAG] ?: false,
+            backgroundMonitoring = prefs[Keys.BG_MONITOR] ?: true,
+            tapSummonsKeyboard = prefs[Keys.TAP_KEYBOARD] ?: false,
         )
         loaded.complete(Unit)
     }
@@ -184,6 +188,8 @@ class SettingsRepositoryImpl(
         prefs[Keys.NOTIFY_DONE] = next.notifyDone
         prefs[Keys.NOTIFY_BLOCKED] = next.notifyBlocked
         prefs[Keys.SHOW_SCROLL_DIAG] = next.showScrollDiagnostics
+        prefs[Keys.BG_MONITOR] = next.backgroundMonitoring
+        prefs[Keys.TAP_KEYBOARD] = next.tapSummonsKeyboard
     }
 
     private fun decodeProfiles(raw: String?): List<HostProfile> {

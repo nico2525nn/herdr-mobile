@@ -629,6 +629,27 @@ class TerminalEmulatorTest {
         assertEquals(hist.distinct(), hist) // ordered, no dupes
     }
 
+    @Test fun mouseTrackingFollowsDec1000And1002() {
+        // Termux isMouseTrackingActive parity: 1000/1002 arm tap-as-click,
+        // anything else (1006 SGR alone, focus 1004) does not.
+        val e = emu()
+        assertFalse(e.isMouseTracking)
+        e.write(esc("[?1000h"))
+        assertTrue(e.isMouseTracking)
+        e.write(esc("[?1000l"))
+        assertFalse(e.isMouseTracking)
+        e.write(esc("[?1002h"))
+        assertTrue(e.isMouseTracking)
+        e.write(esc("[?1002l"))
+        assertFalse(e.isMouseTracking)
+        e.write(esc("[?1006h"))
+        assertFalse(e.isMouseTracking)
+        e.write(esc("[?1000h") + esc("[?1006h"))
+        assertTrue(e.isMouseTracking)
+        e.write(esc("[?1000l"))
+        assertFalse(e.isMouseTracking)
+    }
+
     @Test fun sameSizeResizeKeepsScrollback() {
         // No-op resizes (same dims) must not wipe history: the view can emit
         // redundant size events on any layout pass.

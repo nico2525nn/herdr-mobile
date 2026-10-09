@@ -69,6 +69,8 @@ class HerdrTerminalView @JvmOverloads constructor(
     var onTapCell: ((col: Int, row: Int) -> Unit)? = null
     var onZoomFont: ((deltaSp: Float) -> Unit)? = null
     var onSelection: ((text: String) -> Unit)? = null
+    /** False = taps take focus but never summon the IME (Settings). */
+    var tapSummonsKeyboard: Boolean = true
     /** ASCII / direct keys from the soft keyboard (no composition). */
     var onDirectInput: ((text: String) -> Unit)? = null
     /** DEL key from the soft keyboard. */
@@ -107,6 +109,8 @@ class HerdrTerminalView @JvmOverloads constructor(
     val snapshotHistorySize: Int get() = frame.history.size
     /** Alt-screen flag of the latest snapshot. */
     val snapshotUsingAlt: Boolean get() = frame.usingAlternateScreen
+    /** Mouse-tracking flag of the latest snapshot. */
+    val snapshotMouseTracking: Boolean get() = frame.mouseTracking
     // Fractional drag pixels carried across onScroll calls (termux
     // mScrollRemainder): without this, sub-row drags round to zero per event
     // and slow drags never move at all.
@@ -133,15 +137,25 @@ class HerdrTerminalView @JvmOverloads constructor(
                 invalidate()
                 return true
             }
+            // Tap = click + optional keyboard. The click ALWAYS goes out:
+            // herdr routes terminal.mouse server-side (ghostty knows the real
+            // mouse state) and ignores it for non-mouse apps — so this is safe
+            // on shells and correct on vim/less/tmux. We do NOT gate on our
+            // own mouseTracking flag: herdr's control stream consumes DECSET
+            // into server state and never forwards the raw sequence (verified:
+            // a live ESC[?1000h never appears in any frame), so our flag reads
+            // false even when the app tracks the mouse. Termux gates on its
+            // emulator because it OWNS the PTY; we are a remote client.
             // Mouse-reporting apps address the LIVE screen (0-based): convert
             // buffer coords back by the history size.
             cellAt(e.x, e.y)?.let { (col, bufRow) ->
                 onTapCell?.invoke(col, bufRow - frame.history.size)
             }
-            // Terminal tap always summons the keyboard: direct ASCII input goes
-            // through our InputConnection, CJK goes through the bottom panel.
+            // The keyboard only summons when the user wants tap-to-type
+            // (default off: KEYBOARD key or the CJK field summons instead).
+            // Focus is still taken — hardware keys keep working either way.
             requestFocus()
-            showKeyboard()
+            if (tapSummonsKeyboard) showKeyboard()
             return true
         }
 
@@ -714,6 +728,7 @@ class HerdrTerminalView @JvmOverloads constructor(
             ?: return
         imm.hideSoftInputFromWindow(windowToken, 0)
     }
+
 
     override fun onCheckIsTextEditor(): Boolean = true
 

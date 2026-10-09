@@ -6,6 +6,7 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.Backspace
 import androidx.compose.material.icons.automirrored.filled.Send
 import androidx.compose.material.icons.filled.Clear
 import androidx.compose.material3.Icon
@@ -13,10 +14,6 @@ import androidx.compose.material3.IconButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableStateOf
-import androidx.compose.runtime.remember
-import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.input.ImeAction
@@ -30,26 +27,32 @@ import androidx.compose.ui.unit.dp
  * committed (IME action or the send button), at which point the whole string goes to the
  * terminal as UTF-8. Composing text never trickles into the remote PTY mid-conversion.
  *
- * Commit sends text verbatim with NO appended newline: the field is single-line so the
- * keyboard's action key fires commit (Enter = send), and a bare commit with empty text
- * sends a lone newline (= pressing Enter on an empty prompt). Appending "\n" to every
- * commit made Enter-after-typing insert a stray blank line — the reported bug.
+ * [text]/[onTextChange] are hoisted to the ViewModel's per-tab draft store: swiping pages
+ * or switching tabs keeps half-composed input. Commit clears the draft.
  *
- * Paste comes from the IME/system long-press menu, not a dedicated button: a paste
- * button would either discard the in-progress composition or need merge semantics.
+ * Commit sends text verbatim with NO appended terminator: the field is single-line so the
+ * keyboard's action key fires commit (Enter = send). A bare commit with empty text sends
+ * CR ("\r", the Enter key) — NOT LF: raw-mode apps (codex, vim) read LF as linefeed
+ * (cursor down a row), while CR is Enter everywhere, matching the direct-IME path.
+ *
+ * Backspace deletes one local char when the draft is non-empty, else sends DEL to the
+ * remote line (erase a char the terminal already echoes). Paste comes from the IME/system
+ * long-press menu, not a dedicated button: a paste button would either discard the
+ * in-progress composition or need merge semantics.
  */
 @Composable
 fun CjkInputPanel(
+    text: String,
+    onTextChange: (String) -> Unit,
     onSend: (String) -> Unit,
+    onBackspace: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
-    var text by remember { mutableStateOf("") }
-
     fun commit() {
-        // Empty commit = bare Enter (newline). Non-empty = verbatim text, no
-        // terminator: the user presses action again (or native Enter) to run it.
-        onSend(text.ifEmpty { "\n" })
-        text = ""
+        // Empty commit = bare Enter key (CR). Non-empty = verbatim text, no
+        // terminator: the user presses action again to run it.
+        onSend(text.ifEmpty { "\r" })
+        onTextChange("")
         // Deliberately NOT clearing focus: continuous CJK input must keep the
         // keyboard up. The user dismisses it with system back when done.
     }
@@ -59,9 +62,22 @@ fun CjkInputPanel(
         horizontalArrangement = Arrangement.spacedBy(8.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
+        IconButton(
+            onClick = {
+                if (text.isNotEmpty()) {
+                    // Delete the last code point (surrogate-pair safe).
+                    val cut = text.offsetByCodePoints(text.length, -1)
+                    onTextChange(text.substring(0, cut))
+                } else {
+                    onBackspace()
+                }
+            },
+        ) {
+            Icon(Icons.AutoMirrored.Filled.Backspace, contentDescription = "Backspace")
+        }
         OutlinedTextField(
             value = text,
-            onValueChange = { text = it },
+            onValueChange = onTextChange,
             modifier = Modifier.weight(1f),
             placeholder = { Text("Type, convert, then send") },
             singleLine = true,
@@ -73,7 +89,7 @@ fun CjkInputPanel(
             keyboardActions = KeyboardActions(onSend = { commit() }),
             trailingIcon = {
                 if (text.isNotEmpty()) {
-                    IconButton(onClick = { text = "" }) {
+                    IconButton(onClick = { onTextChange("") }) {
                         Icon(Icons.Filled.Clear, contentDescription = "Clear input")
                     }
                 }

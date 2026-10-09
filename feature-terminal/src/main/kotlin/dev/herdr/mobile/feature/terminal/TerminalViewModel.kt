@@ -27,6 +27,7 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
@@ -170,6 +171,7 @@ class TerminalViewModel(
 
     /** Switch workspace/tab. The old stream is released before the new one opens. */
     fun openTarget(target: TerminalTarget) {
+        dev.herdr.mobile.core.model.SeenDots.mark(target.paneId)
         attachJob?.cancel()
         targetFlow.value = target
         attachJob = viewModelScope.launch {
@@ -255,6 +257,27 @@ class TerminalViewModel(
 
     fun setInputPage(page: InputPanelPage) {
         pageFlow.value = page
+    }
+
+    // CJK drafts, keyed by tab id: swiping pages or switching tabs must not
+    // eat half-composed Japanese. The panel writes through on every keystroke.
+    private val draftFlow = MutableStateFlow<Map<String, String>>(emptyMap())
+
+    fun cjkDraft(tabId: String?): StateFlow<String> =
+        draftFlow.map { it[tabId].orEmpty() }
+            .stateIn(viewModelScope, SharingStarted.Eagerly, draftFlow.value[tabId].orEmpty())
+
+    fun setCjkDraft(tabId: String?, text: String) {
+        if (tabId == null) return
+        val current = draftFlow.value[tabId].orEmpty()
+        if (current == text) return
+        draftFlow.value = draftFlow.value + (tabId to text)
+    }
+
+    fun clearCjkDraft(tabId: String?) {
+        if (tabId == null) return
+        if (!draftFlow.value.containsKey(tabId)) return
+        draftFlow.value = draftFlow.value - tabId
     }
 
     /**
@@ -384,7 +407,11 @@ class TerminalViewModel(
      * both modifiers; escape sequences ignore them (same rule as the encoder:
      * raw sequences are sent as-is, latch still consumed).
      */
+    /** Local key actions (KEYBOARD toggle): the screen owns the IME, not the VM. */
+    var onKeyAction: ((TerminalKeyEncoder.KeyAction) -> Unit)? = null
+
     fun sendExtraKey(key: TerminalKeyEncoder.Key) {
+        key.action?.let { onKeyAction?.invoke(it); return }
         val modifier = key.modifier
         if (modifier != null) {
             val current = stickyFlow.value

@@ -9,7 +9,10 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.WindowInsets
+import androidx.compose.foundation.layout.ime
 import androidx.compose.foundation.layout.imePadding
+import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
@@ -38,6 +41,8 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.layout.onGloballyPositioned
+import androidx.compose.ui.layout.positionInWindow
 import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalClipboardManager
@@ -49,6 +54,7 @@ import dev.herdr.mobile.core.designsystem.StatusChip
 import dev.herdr.mobile.core.designsystem.StatusDot
 import dev.herdr.mobile.core.model.ConnectionState
 import dev.herdr.mobile.core.model.InputPanelPage
+import dev.herdr.mobile.core.model.isSeenDone
 import dev.herdr.mobile.terminal.view.HerdrTerminalView
 import dev.herdr.mobile.terminal.view.BackendState
 import dev.herdr.mobile.terminal.view.TerminalBridge
@@ -71,12 +77,38 @@ fun TerminalScreen(
     modifier: Modifier = Modifier,
 ) {
     val state by viewModel.uiState.collectAsStateWithLifecycle()
+    // Seen-done version: rails recompose when a mark lands (target switches
+    // recompose anyway, but deep-link opens to the SAME tab would skip).
+    @Suppress("UNUSED_EXPRESSION")
+    dev.herdr.mobile.core.model.SeenDots.version.collectAsStateWithLifecycle().value
     var tabMenu by remember { mutableStateOf<TabMenuTarget?>(null) }
     var renameTarget by remember { mutableStateOf<TabMenuTarget?>(null) }
     // Incremented when the input panel wants the terminal surface to take IME
     // focus back (leaving CJK page). Counter, not boolean: two consecutive
     // requests must both fire even with no value change in between.
     var terminalFocusRequest by remember { mutableStateOf(0) }
+    // KEYBOARD extra key (Termux special button): toggles the IME. Two
+    // counters (show/hide), routed by ACTUAL visibility from WindowInsets —
+    // a local parity guess desyncs (tap-shown keyboards, IME back-gesture)
+    // and IMM.toggleSoftInput is unreliable on modern Android (show-half
+    // silently no-ops). The ref keeps the once-bound lambda current.
+    var keyboardShowRequest by remember { mutableStateOf(0) }
+    var keyboardHideRequest by remember { mutableStateOf(0) }
+    // IME visibility from real insets (snapshot-state backed: recomposes on change).
+    val imeBottom = WindowInsets.ime.getBottom(LocalDensity.current)
+    val imeVisibleRef = remember { mutableStateOf(false) }
+    imeVisibleRef.value = imeBottom > 0
+    // Bound once: the VM outlives compositions, the lambda reads latest state.
+    LaunchedEffect(viewModel) {
+        viewModel.onKeyAction = { action ->
+            if (action == dev.herdr.mobile.terminal.view.TerminalKeyEncoder.KeyAction.TOGGLE_KEYBOARD) {
+                if (imeVisibleRef.value) keyboardHideRequest++ else keyboardShowRequest++
+            }
+        }
+    }
+    DisposableEffect(viewModel) {
+        onDispose { viewModel.onKeyAction = null }
+    }
 
     // App backgrounded (Home button, task switch) does NOT dispose this screen,
     // so neither DisposableEffect nor onCleared runs. Release the controller or
@@ -119,8 +151,8 @@ fun TerminalScreen(
                 val workspaceId = state.target?.workspaceId ?: return@TabRail
                 viewModel.createTab(workspaceId, label = null)
             },
-            onTabLongPress = { workspaceId, tabId, label ->
-                tabMenu = TabMenuTarget(workspaceId, tabId, label)
+            onTabLongPress = { workspaceId, tabId, label, anchor ->
+                tabMenu = TabMenuTarget(workspaceId, tabId, label, anchor)
             },
         )
         state.statusMessage?.let { message ->
@@ -145,11 +177,14 @@ fun TerminalScreen(
                     onSendText = { viewModel.sendText(it) },
                     onRetry = { viewModel.retryAttach() },
                     terminalFocusRequest = terminalFocusRequest,
+                    keyboardShowRequest = keyboardShowRequest,
+                    keyboardHideRequest = keyboardHideRequest,
                     inputTick = viewModel.inputTick.collectAsStateWithLifecycle().value,
                 )
             }
         }
         BottomInputPanel(
+            viewModel = viewModel,
             state = state,
             onSendBytes = { viewModel.sendBytes(it) },
             onSendText = { viewModel.sendText(it) },
@@ -185,11 +220,12 @@ fun TerminalScreen(
     }
 }
 
-/** Which tab a long-press menu refers to. */
+/** Which tab a long-press menu refers to. [anchor] is the press point in the TabRail's coordinates. */
 private data class TabMenuTarget(
     val workspaceId: String,
     val tabId: String,
     val label: String,
+    val anchor: androidx.compose.ui.unit.IntOffset,
 )
 
 @Composable
@@ -199,15 +235,23 @@ private fun TabActionsMenu(
     onRename: () -> Unit,
     onClose: () -> Unit,
 ) {
-    DropdownMenu(expanded = true, onDismissRequest = onDismiss) {
-        DropdownMenuItem(
-            text = { Text("Rename \"${target.label}\"") },
-            onClick = onRename,
-        )
-        DropdownMenuItem(
-            text = { Text("Close \"${target.label}\"") },
-            onClick = onClose,
-        )
+    // Anchored at the pressed chip: DropdownMenu unanchored renders at the
+    // window origin (the reported "wrong position"). Offset = press point.
+    Box(
+        modifier = Modifier
+            .offset { target.anchor }
+            .size(1.dp),
+    ) {
+        DropdownMenu(expanded = true, onDismissRequest = onDismiss) {
+            DropdownMenuItem(
+                text = { Text("Rename \"${target.label}\"") },
+                onClick = onRename,
+            )
+            DropdownMenuItem(
+                text = { Text("Close \"${target.label}\"") },
+                onClick = onClose,
+            )
+        }
     }
 }
 
@@ -268,6 +312,7 @@ private fun WorkspaceRail(
                 status = workspace.status,
                 selected = workspace.id == state.target?.workspaceId,
                 onClick = { onSelectWorkspace(workspace.id) },
+                muted = workspace.isSeenDone(),
             )
         }
     }
@@ -278,13 +323,17 @@ private fun TabRail(
     state: TerminalUiState,
     onSelectTab: (workspaceId: String, tabId: String) -> Unit,
     onAddTab: () -> Unit,
-    onTabLongPress: (workspaceId: String, tabId: String, label: String) -> Unit,
+    onTabLongPress: (workspaceId: String, tabId: String, label: String, androidx.compose.ui.unit.IntOffset) -> Unit,
     modifier: Modifier = Modifier,
 ) {
     val workspace = state.workspace ?: return
+    // Rail origin in window coordinates: chip-local press offsets are summed
+    // with it so the menu anchor lands on the pressed chip.
+    var railOrigin by remember { mutableStateOf(androidx.compose.ui.geometry.Offset.Zero) }
     Row(
         modifier = modifier
             .fillMaxWidth()
+            .onGloballyPositioned { railOrigin = it.positionInWindow() }
             .horizontalScroll(rememberScrollState())
             .padding(horizontal = 16.dp, vertical = 4.dp),
         horizontalArrangement = Arrangement.spacedBy(8.dp),
@@ -292,12 +341,23 @@ private fun TabRail(
     ) {
         workspace.tabs.forEach { tab ->
             val harness = tab.harnessNames.joinToString(",").takeIf { it.isNotEmpty() }
+            var chipOrigin by remember(tab.id) { mutableStateOf(androidx.compose.ui.geometry.Offset.Zero) }
             StatusChip(
                 label = if (harness != null) "${tab.displayLabel} · $harness" else tab.displayLabel,
                 status = tab.status,
                 selected = tab.id == state.target?.tabId,
+                modifier = Modifier.onGloballyPositioned { chipOrigin = it.positionInWindow() },
                 onClick = { onSelectTab(workspace.id, tab.id) },
-                onLongClick = { onTabLongPress(workspace.id, tab.id, tab.displayLabel) },
+                muted = tab.isSeenDone(),
+                onLongClick = { press ->
+                    // Menu renders at the Column top (below rails): window
+                    // coords minus the rails' height. Rail origin ≈ menu origin.
+                    val anchor = androidx.compose.ui.unit.IntOffset(
+                        (chipOrigin.x + press.x).toInt(),
+                        (chipOrigin.y + press.y - railOrigin.y).toInt(),
+                    )
+                    onTabLongPress(workspace.id, tab.id, tab.displayLabel, anchor)
+                },
             )
         }
         IconButton(onClick = onAddTab, modifier = Modifier.size(40.dp)) {
@@ -351,6 +411,8 @@ private fun TerminalSurface(
     onSendText: (String) -> Unit,
     onRetry: () -> Unit,
     terminalFocusRequest: Int,
+    keyboardShowRequest: Int,
+    keyboardHideRequest: Int,
     inputTick: Int,
 ) {
     val backend = state.backend ?: return
@@ -391,6 +453,18 @@ private fun TerminalSurface(
         if (terminalFocusRequest > 0) {
             viewRef?.requestFocus()
             viewRef?.showKeyboard()
+        }
+    }
+    // KEYBOARD toggle: explicit show/hide resolved by real visibility.
+    LaunchedEffect(keyboardShowRequest) {
+        if (keyboardShowRequest > 0) {
+            viewRef?.requestFocus()
+            viewRef?.showKeyboard()
+        }
+    }
+    LaunchedEffect(keyboardHideRequest) {
+        if (keyboardHideRequest > 0) {
+            viewRef?.hideKeyboard()
         }
     }
 
@@ -459,6 +533,7 @@ private fun TerminalSurface(
                     settings.terminalLineHeight,
                 )
                 view.setCursorStyle(settings.cursorStyle)
+                view.tapSummonsKeyboard = settings.tapSummonsKeyboard
                 view.onDirectInput = { text -> onSendText(text) }
                 view.onDirectDelete = { onSendBytes(byteArrayOf(0x7F)) }
                 view.onTapCell = { col, row ->
@@ -491,6 +566,7 @@ private fun TerminalSurface(
                 settings.terminalLineHeight,
             )
             view.setCursorStyle(settings.cursorStyle)
+            view.tapSummonsKeyboard = settings.tapSummonsKeyboard
             // Rebind every composition: the factory closure runs once and its
             // captured `bridge` State goes stale after a tab switch (remember
             // yields a NEW State object). Stale callbacks tap/scroll the
@@ -550,6 +626,8 @@ private fun TerminalSurface(
                 append(v?.snapshotHistorySize ?: -1)
                 append(" alt=")
                 append(v?.snapshotUsingAlt ?: false)
+                append(" mse=")
+                append(if (v?.snapshotMouseTracking == true) 1 else 0)
                 append(" top=")
                 append(v?.currentTopRow ?: 0)
                 append(" ev=")
@@ -618,6 +696,7 @@ private fun TerminalSurface(
 
 @Composable
 private fun BottomInputPanel(
+    viewModel: TerminalViewModel,
     state: TerminalUiState,
     onSendBytes: (ByteArray) -> Unit,
     onSendText: (String) -> Unit,
@@ -677,7 +756,19 @@ private fun BottomInputPanel(
                             haptic = settings.hapticFeedback,
                         )
 
-                        InputPanelPage.CJK_INPUT -> CjkInputPanel(onSend = onSendText)
+                        InputPanelPage.CJK_INPUT -> {
+                            val tabId = state.target?.tabId
+                            val draft by viewModel.cjkDraft(tabId).collectAsStateWithLifecycle()
+                            CjkInputPanel(
+                                text = draft,
+                                onTextChange = { viewModel.setCjkDraft(tabId, it) },
+                                onSend = {
+                                    onSendText(it)
+                                    viewModel.clearCjkDraft(tabId)
+                                },
+                                onBackspace = { onSendBytes(byteArrayOf(0x7F)) },
+                            )
+                        }
                     }
                 }
                 Row(
@@ -706,7 +797,19 @@ private fun BottomInputPanel(
                         haptic = settings.hapticFeedback,
                     )
 
-                    InputPanelPage.CJK_INPUT -> CjkInputPanel(onSend = onSendText)
+                    InputPanelPage.CJK_INPUT -> {
+                        val tabId = state.target?.tabId
+                        val draft by viewModel.cjkDraft(tabId).collectAsStateWithLifecycle()
+                        CjkInputPanel(
+                            text = draft,
+                            onTextChange = { viewModel.setCjkDraft(tabId, it) },
+                            onSend = {
+                                onSendText(it)
+                                viewModel.clearCjkDraft(tabId)
+                            },
+                            onBackspace = { onSendBytes(byteArrayOf(0x7F)) },
+                        )
+                    }
                 }
             }
         }

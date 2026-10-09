@@ -243,7 +243,7 @@ fun SettingsScreen(
             SettingsSection(title = "Terminal") {
                 SettingsRow(
                     headline = "Extra keys",
-                    supporting = "Two-row key bar above the panel",
+                    supporting = "Key bar with keyboard toggle",
                     showDivider = true,
                     trailing = {
                         Switch(
@@ -294,6 +294,17 @@ fun SettingsScreen(
                     },
                 )
                 SettingsRow(
+                    headline = "Tap summons keyboard",
+                    supporting = "Terminal tap opens the IME (off = KEYBOARD key only)",
+                    showDivider = true,
+                    trailing = {
+                        Switch(
+                            checked = settings.tapSummonsKeyboard,
+                            onCheckedChange = { viewModel.setTapSummonsKeyboard(it) },
+                        )
+                    },
+                )
+                SettingsRow(
                     headline = "Scroll diagnostics",
                     supporting = "Overlay scroll state (debug, no content)",
                     showDivider = false,
@@ -322,11 +333,22 @@ fun SettingsScreen(
                 SettingsRow(
                     headline = "Blocked",
                     supporting = "Agent waits for input or permission",
-                    showDivider = false,
+                    showDivider = true,
                     trailing = {
                         Switch(
                             checked = settings.notifyBlocked,
                             onCheckedChange = { viewModel.setNotifyBlocked(it) },
+                        )
+                    },
+                )
+                SettingsRow(
+                    headline = "Background monitoring",
+                    supporting = "Keep watching when the app is closed (persistent status)",
+                    showDivider = false,
+                    trailing = {
+                        Switch(
+                            checked = settings.backgroundMonitoring,
+                            onCheckedChange = { viewModel.setBackgroundMonitoring(it) },
                         )
                     },
                 )

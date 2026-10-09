@@ -124,6 +124,8 @@ data class AppSettings(
     /** Direct-transport daemon origin, e.g. `http://100.x.y.z:8765`. Not a secret. */
     val directUrl: String = "http://10.0.2.2:8765",
 
+    /** Tap-to-type (Termux default). Off = taps click only; KEYBOARD key / CJK field summon. */
+    val tapSummonsKeyboard: Boolean = false,
     val extraKeysEnabled: Boolean = true,
     val extraKeysLayoutId: String = DEFAULT_EXTRA_KEYS_LAYOUT,
     val cjkInputEnabled: Boolean = true,
@@ -134,6 +136,8 @@ data class AppSettings(
 
     val notifyDone: Boolean = true,
     val notifyBlocked: Boolean = true,
+    /** Foreground-service monitoring: done/blocked alert while the app is closed. */
+    val backgroundMonitoring: Boolean = true,
     /** Debug-only scroll diagnostics overlay (hist/alt/offset/gestures). Never content. */
     val showScrollDiagnostics: Boolean = false,
 ) {

@@ -20,6 +20,8 @@ data class FrameSnapshot(
     val cursorCol: Int,
     val cursorVisible: Boolean,
     val usingAlternateScreen: Boolean,
+    /** App requested mouse-press reporting (DEC 1000/1002 at publish time). */
+    val mouseTracking: Boolean,
     val revision: Long,
     val cols: Int,
     val rowCount: Int,
@@ -32,6 +34,7 @@ data class FrameSnapshot(
             cursorCol = 0,
             cursorVisible = false,
             usingAlternateScreen = false,
+            mouseTracking = false,
             revision = -1,
             cols = 0,
             rowCount = 0,

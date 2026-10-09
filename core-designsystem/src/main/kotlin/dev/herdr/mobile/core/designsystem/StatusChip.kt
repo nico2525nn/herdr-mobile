@@ -12,6 +12,8 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -41,8 +43,9 @@ fun StatusChip(
     onClick: () -> Unit,
     modifier: Modifier = Modifier,
     enabled: Boolean = true,
-    onLongClick: (() -> Unit)? = null,
+    onLongClick: ((androidx.compose.ui.geometry.Offset) -> Unit)? = null,
     trailing: (@Composable () -> Unit)? = null,
+    muted: Boolean = false,
 ) {
     val container = if (selected) {
         MaterialTheme.colorScheme.secondaryContainer
@@ -53,6 +56,21 @@ fun StatusChip(
         MaterialTheme.colorScheme.onSecondaryContainer
     } else {
         MaterialTheme.colorScheme.onSurfaceVariant
+    }
+    // combinedClickable has no press-offset overload (function 1.11): the
+    // interaction source carries the latest press point for menu anchoring.
+    val interactions = androidx.compose.runtime.remember {
+        androidx.compose.foundation.interaction.MutableInteractionSource()
+    }
+    var pressPoint by androidx.compose.runtime.remember {
+        androidx.compose.runtime.mutableStateOf(androidx.compose.ui.geometry.Offset.Zero)
+    }
+    androidx.compose.runtime.LaunchedEffect(interactions) {
+        interactions.interactions.collect { interaction ->
+            if (interaction is androidx.compose.foundation.interaction.PressInteraction.Press) {
+                pressPoint = interaction.pressPosition
+            }
+        }
     }
     Surface(
         modifier = modifier
@@ -65,7 +83,9 @@ fun StatusChip(
                         role = Role.Tab,
                         onClickLabel = label,
                         onLongClickLabel = "$label actions",
-                        onLongClick = onLongClick,
+                        interactionSource = interactions,
+                        indication = androidx.compose.foundation.LocalIndication.current,
+                        onLongClick = { onLongClick.invoke(pressPoint) },
                         onClick = onClick,
                     )
                 } else {
@@ -77,7 +97,10 @@ fun StatusChip(
                     )
                 },
             )
-            .semantics { contentDescription = "$label, ${status.contentDescription()}" },
+            .semantics {
+            contentDescription = "$label, ${status.contentDescription()}" +
+                if (muted) ", seen" else ""
+        },
         shape = CircleShape,
         color = container,
         contentColor = content,
@@ -87,7 +110,7 @@ fun StatusChip(
             verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.spacedBy(8.dp),
         ) {
-            StatusDot(status = status, diameter = 14.dp, describe = false)
+            StatusDot(status = status, diameter = 14.dp, describe = false, muted = muted)
             Text(
                 text = label,
                 style = MaterialTheme.typography.labelLarge.copy(fontSize = 11.5.sp),
@@ -112,7 +135,8 @@ fun PeerTabChip(
     onClick: () -> Unit,
     modifier: Modifier = Modifier,
     subtitle: String? = null,
-    onLongClick: (() -> Unit)? = null,
+    onLongClick: ((androidx.compose.ui.geometry.Offset) -> Unit)? = null,
+    muted: Boolean = false,
 ) {
     StatusChip(
         label = if (subtitle != null) "$label · $subtitle" else label,
@@ -121,5 +145,6 @@ fun PeerTabChip(
         onClick = onClick,
         modifier = modifier,
         onLongClick = onLongClick,
+        muted = muted,
     )
 }

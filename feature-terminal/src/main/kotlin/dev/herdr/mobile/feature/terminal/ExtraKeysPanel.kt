@@ -24,7 +24,8 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 
 /**
- * Page A of the bottom input panel: the Termux default two-row extra-keys layout.
+ * Page A of the bottom input panel: the Termux default extra-keys layout (two key
+ * rows plus the KEYBOARD toggle row).
  *
  * CTRL/ALT are sticky multi-select toggles owned by the ViewModel: armed modifiers
  * highlight here AND apply to the next soft-keyboard char (keyboard Ctrl+C works,
@@ -54,10 +55,7 @@ fun ExtraKeysPanel(
         modifier = modifier.fillMaxWidth(),
         verticalArrangement = Arrangement.spacedBy(8.dp),
     ) {
-        (TerminalKeyEncoder.DEFAULT_LAYOUT + listOf(TerminalKeyEncoder.LETTER_ROW)).forEach { row ->
-            // The letter row only helps with an armed modifier; without one it
-            // duplicates nothing (letters are typed on the keyboard instead).
-            if (row === TerminalKeyEncoder.LETTER_ROW && armed.isEmpty()) return@forEach
+        TerminalKeyEncoder.DEFAULT_LAYOUT.forEach { row ->
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.spacedBy(8.dp),

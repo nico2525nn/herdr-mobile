@@ -93,6 +93,7 @@ class TerminalBridge(
             cursorCol = emulator.cursorCol,
             cursorVisible = emulator.cursorVisible,
             usingAlternateScreen = emulator.usingAlternateScreen,
+            mouseTracking = emulator.isMouseTracking,
             revision = emulator.revision,
             cols = emulator.cols,
             rowCount = emulator.rows,
