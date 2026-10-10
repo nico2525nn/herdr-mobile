@@ -54,9 +54,12 @@ import dev.herdr.mobile.core.designsystem.StatusDot
 import dev.herdr.mobile.core.model.ConnectionState
 import dev.herdr.mobile.core.model.InputPanelPage
 import dev.herdr.mobile.core.model.isSeenDone
-import dev.herdr.mobile.terminal.view.HerdrTerminalView
+import com.termux.view.TerminalView
 import dev.herdr.mobile.terminal.view.BackendState
-import dev.herdr.mobile.terminal.view.TerminalBridge
+import dev.herdr.mobile.terminal.view.RemoteTermuxSession
+import dev.herdr.mobile.terminal.view.TermuxSchemes
+import dev.herdr.mobile.terminal.view.TermuxTerminalHost
+import dev.herdr.mobile.terminal.view.TermuxViewClient
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -158,6 +161,7 @@ fun TerminalScreen(
                     keyboardShowRequest = keyboardShowRequest,
                     keyboardHideRequest = keyboardHideRequest,
                     inputTick = viewModel.inputTick.collectAsStateWithLifecycle().value,
+                    onGridChanged = { cols, rows -> viewModel.setAttachGrid(cols, rows) },
                 )
             }
         }
@@ -392,6 +396,7 @@ private fun TerminalSurface(
     keyboardShowRequest: Int,
     keyboardHideRequest: Int,
     inputTick: Int,
+    onGridChanged: (cols: Int, rows: Int) -> Unit,
 ) {
     val backend = state.backend ?: return
     val backendState by backend.state.collectAsStateWithLifecycle(initialValue = BackendState.Idle)
@@ -415,13 +420,15 @@ private fun TerminalSurface(
         else -> {}
     }
     val settings = state.settings
-    var bridge by remember(backend) { mutableStateOf<TerminalBridge?>(null) }
+    var bridge by remember(backend) { mutableStateOf<RemoteTermuxSession?>(null) }
     // DisposableEffect(backend) re-runs on backend change — but by onDispose
     // time, remember(backend) has ALREADY reset `bridge` to null, so reading
     // it there releases nothing (leak) or the wrong bridge. Capture the live
     // bridge in a ref that survives the reset.
-    val bridgeRef = remember { mutableStateOf<TerminalBridge?>(null) }
-    var viewRef by remember { mutableStateOf<HerdrTerminalView?>(null) }
+    val bridgeRef = remember { mutableStateOf<RemoteTermuxSession?>(null) }
+    var viewRef by remember { mutableStateOf<TerminalView?>(null) }
+    var hostRef by remember { mutableStateOf<TermuxTerminalHost?>(null) }
+    var viewClientRef by remember { mutableStateOf<TermuxViewClient?>(null) }
     val density = LocalDensity.current
     val scope = rememberCoroutineScope()
 
@@ -429,15 +436,14 @@ private fun TerminalSurface(
     // doesn't steal focus on first mount.
     LaunchedEffect(keyboardShowRequest) {
         if (keyboardShowRequest > 0) {
-            viewRef?.requestFocus()
-            viewRef?.showKeyboard()
+            hostRef?.showKeyboard()
         }
     }
     // Leaving the CJK page hides the IME (it was bound to the hidden field)
     // and returns focus to the terminal without showing anything.
     LaunchedEffect(keyboardHideRequest) {
         if (keyboardHideRequest > 0) {
-            viewRef?.hideKeyboard()
+            hostRef?.hideKeyboard()
             viewRef?.requestFocus()
         }
     }
@@ -445,7 +451,7 @@ private fun TerminalSurface(
     // the initial value must not yank on mount.
     LaunchedEffect(inputTick) {
         if (inputTick > 0) {
-            viewRef?.snapToBottom()
+            hostRef?.snapToBottom()
         }
     }
 
@@ -453,125 +459,138 @@ private fun TerminalSurface(
 
     // View size → grid size → backend resize, debounced by the bridge/daemon coalescing.
     var viewSizePx by remember { mutableStateOf(0 to 0) }
+    // First traversal complete (view.post in the factory): creating the
+    // session before layout yields a transient grid.
+    var viewLaidOut by remember { mutableStateOf(false) }
 
-    // The bridge belongs to the backend, not to the view size: create it
-    // eagerly (with the last known size, or a sane default) so a tab switch
-    // with an identical layout — where onSizeChanged never fires — still
-    // attaches. Size updates only resize the existing bridge.
-    LaunchedEffect(backend) {
-        if (bridge == null) {
-            val (w, h) = viewSizePx
-            val view = viewRef
-            val (cols, rows) = view?.gridFor(w, h) ?: (80 to 24)
-            val created = TerminalBridge(
+    // The session belongs to the backend, not to the view size: create it
+    // eagerly once layout is known (viewSizePx persists across tab switches,
+    // so identical-layout switches attach immediately). NEVER start at the
+    // 80x24 fallback: Termux growth-resize (24→30) consumes transcript rows
+    // into the screen, which would eat the prelude history the daemon just
+    // banked. Waiting for the first layout costs one frame and sizes exactly.
+    LaunchedEffect(backend, viewRef, viewSizePx, viewLaidOut) {
+        val view = viewRef
+        val host = hostRef
+        val (w, h) = viewSizePx
+        if (bridge == null && view != null && host != null && w > 0 && h > 0 && viewLaidOut) {
+            TermuxSchemes.apply(scheme)
+            val created = RemoteTermuxSession(
                 backend = backend,
-                colorScheme = scheme,
-                boldIsBright = settings.boldIsBright,
+                view = view,
+                host = host,
                 scrollbackLimit = settings.scrollbackLimit,
+                onCopyText = { text ->
+                    if (text.isNotEmpty()) {
+                        clipboard.setText(AnnotatedString(text))
+                    }
+                },
             )
+            created.sessionClient.cursorStyle = settings.cursorStyle
+            created.emulator.mColors.reset()
+            view.attachSession(created.termuxSession)
+            // The view computed the grid synchronously in attach (updateSize):
+            // start the pump with ITS numbers, never our own metrics (a
+            // disagreeing size resizes mid-prelude through the column-change
+            // reflow, which drops banked transcript rows).
+            val cols = created.emulator.mColumns
+            val rows = created.emulator.mRows
             bridge = created
             bridgeRef.value = created
             created.start(cols, rows)
-            // Backend-scoped, not composition-scoped: when the backend
-            // changes, DisposableEffect releases the old bridge AND this
-            // collector dies with it. A composition-scoped launch would
-            // leak one collector per pane switch, each able to render
-            // stale snapshots over the new bridge's output.
-            launch {
-                try {
-                    created.frame.collect { snapshot -> viewRef?.render(snapshot) }
-                } catch (e: kotlinx.coroutines.CancellationException) {
-                    // onRelease cancels this collector: must propagate, or the
-                    // cancel never completes and the old collector keeps rendering
-                    // stale snapshots over the new bridge's output.
-                    throw e
-                } catch (_: Exception) {
-                }
-            }.also { collector ->
-                // Tie the collector to the bridge lifetime explicitly.
-                created.onRelease = { collector.cancel() }
+        }
+    }
+
+    // Rebind every composition in update(): the factory closure runs once and
+    // captured `bridge` State goes stale after a tab switch (remember yields a
+    // NEW State object). Stale callbacks tap/scroll the released backend,
+    // silently dropped by runCatching.
+    fun bindTermuxCallbacks(viewClient: TermuxViewClient, host: TermuxTerminalHost) {
+        viewClient.onDirectInput = { text -> onSendText(text) }
+        viewClient.onDirectDelete = { onSendBytes(byteArrayOf(0x7F)) }
+        viewClient.onTapCell = { col, row ->
+            // Mouse-mode apps (vim, less, tmux): forward the tap as a
+            // left-button press. Non-mouse apps ignore it server-side.
+            val b = bridgeRef.value
+            if (b != null) {
+                scope.launch { runCatching { b.mouse("down", "left", col, row) } }
             }
-            launch { runCatching { backend.resize(cols, rows) } }
+        }
+        viewClient.onZoomFont = { _ ->
+            // Font zoom is applied through settings; the host clamps it.
+        }
+        host.onRemoteScroll = { lines ->
+            bridgeRef.value?.scrollRemote(lines)
         }
     }
 
     AndroidView(
         factory = { context ->
-            HerdrTerminalView(context).also { view ->
-                viewRef = view
-                view.setColorScheme(scheme)
-                view.setTerminalFont(
-                    settings.terminalFont.familyName,
-                    settings.terminalFontSizeSp.toFloat(),
-                    settings.terminalLineHeight,
-                )
-                view.setCursorStyle(settings.cursorStyle)
-                view.onDirectInput = { text -> onSendText(text) }
-                view.onDirectDelete = { onSendBytes(byteArrayOf(0x7F)) }
-                view.onTapCell = { col, row ->
-                    // Mouse-mode apps (vim, less, tmux): forward the tap as a
-                    // left-button press. Non-mouse apps ignore it server-side.
-                    val b = bridge
-                    if (b != null) {
-                        scope.launch { runCatching { b.mouse("down", "left", col, row) } }
-                    }
-                }
-                view.onSelection = { text ->
-                    // Copy to clipboard; the user pastes via the CJK panel.
-                    if (text.isNotEmpty()) {
-                        clipboard.setText(AnnotatedString(text))
-                    }
-                }
-                view.onRemoteScroll = { lines ->
-                    bridgeRef.value?.scrollRemote(lines)
-                }
-                view.onZoomFont = { delta ->
-                    // Font zoom is applied through settings; the host clamps it.
-                }
-            }
+            // Init order matters (Termux NPEs otherwise): text size first
+            // (updateSize derefs the renderer), then the view client (updateSize
+            // calls onEmulatorSet), then attach (in the session effect above).
+            val viewClient = TermuxViewClient()
+            val view = TerminalView(context, null)
+            // Termux sets these in layout XML; programmatically-created views
+            // are NOT focusable by default, and without focus the IME never
+            // binds (manual keyboard summon silently no-ops) and hardware keys
+            // never arrive.
+            view.isFocusable = true
+            view.isFocusableInTouchMode = true
+            val px = (settings.terminalFontSizeSp * density.density).toInt()
+            view.setTextSize(px)
+            view.setTypeface(android.graphics.Typeface.create(settings.terminalFont.familyName, android.graphics.Typeface.NORMAL))
+            view.setTerminalViewClient(viewClient)
+            viewClient.view = view
+            view.setBackgroundColor(TermuxSchemes.backgroundAndroid(scheme))
+            val host = TermuxTerminalHost(view)
+            host.textSizePx = px
+            viewRef = view
+            hostRef = host
+            viewClientRef = viewClient
+            bindTermuxCallbacks(viewClient, host)
+            view.post { viewLaidOut = true }
+            view
         },
         update = { view ->
-            view.setColorScheme(scheme)
-            view.setTerminalFont(
-                settings.terminalFont.familyName,
-                settings.terminalFontSizeSp.toFloat(),
-                settings.terminalLineHeight,
-            )
-            view.setCursorStyle(settings.cursorStyle)
-            // Rebind every composition: the factory closure runs once and its
-            // captured `bridge` State goes stale after a tab switch (remember
-            // yields a NEW State object). Stale callbacks tap/scroll the
-            // released backend, silently dropped by runCatching.
-            view.onDirectInput = { text -> onSendText(text) }
-            view.onDirectDelete = { onSendBytes(byteArrayOf(0x7F)) }
-            view.onTapCell = { col, row ->
-                val b = bridge
-                if (b != null) {
-                    scope.launch { runCatching { b.mouse("down", "left", col, row) } }
-                }
-            }
-            view.onSelection = { text ->
-                if (text.isNotEmpty()) {
-                    clipboard.setText(AnnotatedString(text))
-                }
-            }
-            view.onRemoteScroll = { lines ->
-                bridgeRef.value?.scrollRemote(lines)
-            }
+            // Scheme/font/cursor follow settings live (Termux has no line-height
+            // multiplier: terminalLineHeight is accepted as unsupported).
+            TermuxSchemes.apply(scheme)
+            bridge?.emulator?.mColors?.reset()
+            view.setBackgroundColor(TermuxSchemes.backgroundAndroid(scheme))
+            view.invalidate()
+            val px = (settings.terminalFontSizeSp * density.density).toInt()
+            view.setTextSize(px)
+            view.setTypeface(android.graphics.Typeface.create(settings.terminalFont.familyName, android.graphics.Typeface.NORMAL))
+            hostRef?.textSizePx = px
+            bridge?.sessionClient?.cursorStyle = settings.cursorStyle
+            // Sticky CTRL/ALT feed the view client (Termux applies them to the
+            // next hardware key when set).
+            viewClientRef?.ctrlDown = dev.herdr.mobile.terminal.view.TerminalKeyEncoder.Modifier.CTRL in state.stickyModifiers
+            viewClientRef?.altDown = dev.herdr.mobile.terminal.view.TerminalKeyEncoder.Modifier.ALT in state.stickyModifiers
             // Remote scroll routing (host part): agent panes (main-screen
             // TUIs like codex whose transcript lives in HOST scrollback, not
-            // local history). Alt-screen is OR-ed live inside the view.
+            // local history). Alt-screen is OR-ed live by the pump.
             // Plain shells keep instant local scroll.
-            view.remoteScrollHost = state.pane?.agent?.isNotBlank() == true
-            view.onZoomFont = { _ -> }
+            hostRef?.remoteScrollHost = state.pane?.agent?.isNotBlank() == true
+            val vc = viewClientRef
+            val h = hostRef
+            if (vc != null && h != null) bindTermuxCallbacks(vc, h)
         },
         modifier = Modifier
             .fillMaxSize()
             .onSizeChanged { size ->
                 viewSizePx = size.width to size.height
-                val view = viewRef ?: return@onSizeChanged
-                val (cols, rows) = view.gridFor(size.width, size.height)
-                bridge?.resize(cols, rows)
+                // Publish the live grid for the NEXT attach (daemon prelude
+                // fill must match the real grid or history under-banks).
+                val px = hostRef?.textSizePx ?: 0
+                if (px > 0) {
+                    val (gc, gr) = gridFor(px, size.width, size.height, settings.terminalFont.familyName)
+                    onGridChanged(gc, gr)
+                }
+                // After layout (view.updateSize ran first): forward the
+                // view-computed grid. Never resize the emulator from here.
+                viewRef?.post { bridgeRef.value?.syncBackendSize() }
             },
     )
 
@@ -590,15 +609,15 @@ private fun TerminalSurface(
         @Suppress("UNUSED_EXPRESSION")
         diagTick
         val attached = backendState as? BackendState.Attached
-        val diagText = remember(diagTick, backendState, viewRef) {
-            val v = viewRef
+        val diagText = remember(diagTick, backendState, hostRef) {
+            val v = hostRef
             buildString {
                 append("hist=")
                 append(v?.snapshotHistorySize ?: -1)
                 append(" alt=")
                 append(v?.snapshotUsingAlt ?: false)
                 append(" mse=")
-                append(if (v?.snapshotMouseTracking == true) 1 else 0)
+                append(if (v?.mouseTracking == true) 1 else 0)
                 append(" top=")
                 append(v?.currentTopRow ?: 0)
                 append(" ev=")
@@ -803,4 +822,27 @@ private fun BottomInputPanel(
             }
         }
     }
+}
+
+/**
+ * Grid for a view size + text size, computed EXACTLY the way Termux's own
+ * updateSize does (monospace "X" advance, ceiled font spacing): the attach
+ * geometry (and the daemon's prelude blank-fill) must match the view's grid
+ * or history banking falls short. Same 20x5 clamp as the old view.
+ */
+private fun gridFor(
+    textSizePx: Int,
+    widthPx: Int,
+    heightPx: Int,
+    familyName: String = "monospace",
+): Pair<Int, Int> {
+    if (textSizePx <= 0 || widthPx <= 0 || heightPx <= 0) return 80 to 24
+    val paint = android.graphics.Paint().apply {
+        textSize = textSizePx.toFloat()
+        typeface = android.graphics.Typeface.create(familyName, android.graphics.Typeface.NORMAL)
+    }
+    val cellWidth = paint.measureText("X").toInt().coerceAtLeast(1)
+    val cellHeight = kotlin.math.ceil(paint.fontSpacing).toInt().coerceAtLeast(1)
+    return maxOf(20, widthPx / cellWidth) to
+        maxOf(5, heightPx / cellHeight)
 }

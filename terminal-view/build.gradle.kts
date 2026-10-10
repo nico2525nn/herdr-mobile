@@ -25,6 +25,9 @@ kotlin {
 
 dependencies {
     api(project(":terminal-emulator"))
+    // Termux xterm core (JitPack; emulator comes transitively). Pinned: the
+    // remote-session injection asserts TerminalSession internals at startup.
+    api(libs.termux.terminal.view)
     api(project(":core-model"))
     implementation(libs.androidx.core.ktx)
     implementation(libs.kotlinx.coroutines.android)

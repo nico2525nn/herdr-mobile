@@ -85,6 +85,13 @@ class TerminalViewModel(
     private val stickyFlow =
         MutableStateFlow<Set<TerminalKeyEncoder.Modifier>>(emptySet())
 
+    // Live view grid, pushed by the screen (Termux-exact metrics): consumed as
+    // the attach geometry so the daemon's prelude blank-fill matches the real
+    // grid (a mismatched fill under-banks history). Defaults to 90x30.
+    // Declared BEFORE init (same NPE trap as pendingInput below): init's
+    // viewModelScope.launch starts undispatched and openTarget reads this.
+    private val attachGridFlow = MutableStateFlow(90 to 30)
+
     /**
      * Increments on every user input send (text, bytes, extra keys). The
      * terminal surface collects it to snap a scrolled viewport back to live:
@@ -207,6 +214,10 @@ class TerminalViewModel(
     }
 
     /** Switch workspace/tab. The old stream is released before the new one opens. */
+    fun setAttachGrid(cols: Int, rows: Int) {
+        attachGridFlow.value = cols to rows
+    }
+
     fun openTarget(target: TerminalTarget) {
         dev.herdr.mobile.core.model.SeenDots.mark(target.paneId)
         attachJob?.cancel()
@@ -228,8 +239,9 @@ class TerminalViewModel(
             // two racing attaches both reach backendFlow and the loser leaks a
             // live controller while last-writer-wins shows the wrong pane.
             ensureActive()
+            val (attachCols, attachRows) = attachGridFlow.value
             val connection = try {
-                client.openTerminal(target.paneId, cols = 90, rows = 30)
+                client.openTerminal(target.paneId, cols = attachCols, rows = attachRows)
             } catch (e: Exception) {
                 // "no endpoint is open" = transient link gap (backgrounded tunnel,
                 // reconnect beat): kick the client, wait for CONNECTED once, and

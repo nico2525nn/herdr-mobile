@@ -5,7 +5,7 @@ package dev.herdr.mobile.terminal.emulator
  *
  * The default 16-entry ANSI palette and the well-known theme colours live in
  * [TerminalColorScheme] / [TerminalThemes]; resolved colours are stored in
- * [TextAttributes] so a renderer never needs palette lookups.
+ * the scheme defaults so a renderer never needs palette lookups.
  */
 data class TerminalColor(
     val red: Int,
@@ -25,7 +25,7 @@ data class TerminalColor(
 }
 
 /**
- * Colours that apply when a cell uses the theme default ([TextAttributes] holds `null`).
+ * Colours that apply when a cell uses the theme default (a null cell color means "theme default").
  *
  * @param ansi Indexed palette, exactly 16 entries: `0..7` normal, `8..15` bright.
  */

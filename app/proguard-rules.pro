@@ -35,3 +35,9 @@
 # Test APK only (releaseAndroidTest shares this file): error-prone annotations
 # reference javax.lang.model, absent on Android.
 -dontwarn javax.lang.model.element.Modifier
+
+# Termux remote session: mEmulator is injected reflectively (no setter, final
+# class). Keep the field or release builds fail the startup assertion.
+-keepclassmembers class com.termux.terminal.TerminalSession {
+    com.termux.terminal.TerminalEmulator mEmulator;
+}
