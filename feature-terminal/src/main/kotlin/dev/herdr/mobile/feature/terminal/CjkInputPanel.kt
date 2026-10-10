@@ -8,7 +8,6 @@ import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.Backspace
 import androidx.compose.material.icons.filled.Clear
-import androidx.compose.material.icons.filled.Keyboard
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
@@ -52,7 +51,6 @@ fun CjkInputPanel(
     onTextChange: (String) -> Unit,
     onSend: (String) -> Unit,
     onBackspace: () -> Unit,
-    onSummonKeyboard: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
     fun commit() {
@@ -110,8 +108,5 @@ fun CjkInputPanel(
                 }
             },
         )
-        IconButton(onClick = onSummonKeyboard) {
-            Icon(Icons.Filled.Keyboard, contentDescription = "Terminal keyboard")
-        }
     }
 }

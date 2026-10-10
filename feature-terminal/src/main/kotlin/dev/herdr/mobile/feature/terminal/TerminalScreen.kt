@@ -21,6 +21,7 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Home
+import androidx.compose.material.icons.filled.Keyboard
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.Icon
@@ -80,12 +81,12 @@ fun TerminalScreen(
     val state by viewModel.uiState.collectAsStateWithLifecycle()
     var tabMenu by remember { mutableStateOf<TabMenuTarget?>(null) }
     var renameTarget by remember { mutableStateOf<TabMenuTarget?>(null) }
-    // Manual keyboard summon (CJK panel button) / hide (leaving the CJK page
-    // must not strand the IME on a hidden field). Counters, not booleans: two
+    // Manual keyboard summon (CJK panel button). Counter, not boolean: two
     // consecutive requests must both fire. Nothing else shows the IME — no
-    // tap, no swipe, no focus change (Termux behavior).
+    // tap, no swipe, no focus change (Termux behavior). Page swipes never
+    // hide it either: Extra Keys + soft keyboard is the sticky-chord flow
+    // (arm CTRL, type C), and auto-hide broke it.
     var keyboardShowRequest by remember { mutableStateOf(0) }
-    var keyboardHideRequest by remember { mutableStateOf(0) }
 
     // App backgrounded (Home button, task switch) does NOT dispose this screen,
     // so neither DisposableEffect nor onCleared runs. Release the controller or
@@ -124,6 +125,7 @@ fun TerminalScreen(
         TabRail(
             state = state,
             onSelectTab = { workspaceId, tabId -> viewModel.openTab(workspaceId, tabId) },
+            onSummonKeyboard = { keyboardShowRequest++ },
             onAddTab = {
                 val workspaceId = state.target?.workspaceId ?: return@TabRail
                 viewModel.createTab(workspaceId, label = null)
@@ -154,7 +156,6 @@ fun TerminalScreen(
                     onSendText = { viewModel.sendText(it) },
                     onRetry = { viewModel.retryAttach() },
                     keyboardShowRequest = keyboardShowRequest,
-                    keyboardHideRequest = keyboardHideRequest,
                     inputTick = viewModel.inputTick.collectAsStateWithLifecycle().value,
                     onGridChanged = { cols, rows -> viewModel.setAttachGrid(cols, rows) },
                 )
@@ -167,8 +168,6 @@ fun TerminalScreen(
             onSendText = { viewModel.sendText(it) },
             onExtraKey = { viewModel.sendExtraKey(it) },
             onPageChange = { viewModel.setInputPage(it) },
-            onSummonKeyboard = { keyboardShowRequest++ },
-            onHideKeyboard = { keyboardHideRequest++ },
         )
     }
 
@@ -307,6 +306,7 @@ private fun WorkspaceRail(
 private fun TabRail(
     state: TerminalUiState,
     onSelectTab: (workspaceId: String, tabId: String) -> Unit,
+    onSummonKeyboard: () -> Unit,
     onAddTab: () -> Unit,
     onTabLongPress: (workspaceId: String, tabId: String, label: String, androidx.compose.ui.unit.IntOffset) -> Unit,
     modifier: Modifier = Modifier,
@@ -352,6 +352,9 @@ private fun TabRail(
                     },
                 )
             }
+        }
+        IconButton(onClick = onSummonKeyboard, modifier = Modifier.size(40.dp)) {
+            Icon(Icons.Filled.Keyboard, contentDescription = "Terminal keyboard")
         }
         IconButton(onClick = onAddTab, modifier = Modifier.size(40.dp)) {
             Icon(Icons.Filled.Add, contentDescription = "New tab in ${workspace.label}")
@@ -404,7 +407,6 @@ private fun TerminalSurface(
     onSendText: (String) -> Unit,
     onRetry: () -> Unit,
     keyboardShowRequest: Int,
-    keyboardHideRequest: Int,
     inputTick: Int,
     onGridChanged: (cols: Int, rows: Int) -> Unit,
 ) {
@@ -458,14 +460,6 @@ private fun TerminalSurface(
     LaunchedEffect(keyboardShowRequest) {
         if (keyboardShowRequest > 0) {
             hostRef?.showKeyboard()
-        }
-    }
-    // Leaving the CJK page hides the IME (it was bound to the hidden field)
-    // and returns focus to the terminal without showing anything.
-    LaunchedEffect(keyboardHideRequest) {
-        if (keyboardHideRequest > 0) {
-            hostRef?.hideKeyboard()
-            viewRef?.requestFocus()
         }
     }
     // User input snaps a scrolled viewport home (back at the prompt). Guard 0:
@@ -714,8 +708,6 @@ private fun BottomInputPanel(
     onSendText: (String) -> Unit,
     onExtraKey: (dev.herdr.mobile.terminal.view.TerminalKeyEncoder.Key) -> Unit,
     onPageChange: (InputPanelPage) -> Unit,
-    onSummonKeyboard: () -> Unit,
-    onHideKeyboard: () -> Unit,
 ) {
     val settings = state.settings
     val pages = buildList {
@@ -739,18 +731,6 @@ private fun BottomInputPanel(
     }
     LaunchedEffect(pagerState.currentPage, pages.size) {
         pages.getOrNull(pagerState.currentPage)?.let { onPageChange(it) }
-    }
-    // Leaving the CJK page hides the IME (it was bound to the hidden field)
-    // and returns focus to the terminal. Never shows anything: all IME
-    // appearances are explicit user taps.
-    var previousPage by remember { mutableStateOf(pagerState.currentPage) }
-    LaunchedEffect(pagerState.currentPage) {
-        val prev = pages.getOrNull(previousPage)
-        val cur = pages.getOrNull(pagerState.currentPage)
-        previousPage = pagerState.currentPage
-        if (prev == InputPanelPage.CJK_INPUT && cur == InputPanelPage.EXTRA_KEYS) {
-            onHideKeyboard()
-        }
     }
     Surface(
         tonalElevation = 3.dp,
@@ -780,7 +760,6 @@ private fun BottomInputPanel(
                                     viewModel.clearCjkDraft(tabId)
                                 },
                                 onBackspace = { onSendBytes(byteArrayOf(0x7F)) },
-                                onSummonKeyboard = onSummonKeyboard,
                             )
                         }
                     }
@@ -837,7 +816,6 @@ private fun BottomInputPanel(
                                 viewModel.clearCjkDraft(tabId)
                             },
                             onBackspace = { onSendBytes(byteArrayOf(0x7F)) },
-                            onSummonKeyboard = onSummonKeyboard,
                         )
                     }
                 }

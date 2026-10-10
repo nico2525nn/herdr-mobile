@@ -218,10 +218,4 @@ class TermuxTerminalHost(
             as? android.view.inputmethod.InputMethodManager ?: return
         imm.showSoftInput(view, android.view.inputmethod.InputMethodManager.SHOW_IMPLICIT)
     }
-
-    fun hideKeyboard() {
-        val imm = view.context.getSystemService(Context.INPUT_METHOD_SERVICE)
-            as? android.view.inputmethod.InputMethodManager ?: return
-        imm.hideSoftInputFromWindow(view.windowToken, 0)
-    }
 }
