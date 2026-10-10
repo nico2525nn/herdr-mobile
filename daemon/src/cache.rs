@@ -136,6 +136,7 @@ impl SessionCache {
         let name = event.name.as_str();
         match name {
             "pane_agent_status_changed" | "pane_agent_detected" => Ok(self.apply_status_change(event)),
+            "pane_exited" => self.apply_exit_diff(event).await,
             "tab_renamed" => Ok(self.apply_tab_rename(event)),
             "workspace_renamed" => Ok(self.apply_workspace_rename(event)),
             "pane_created" | "pane_closed" | "tab_created" | "tab_closed" | "workspace_created"
@@ -336,11 +337,13 @@ impl SessionCache {
     /// clients only learn through events and never poll. Called on a 60s tick
     /// from the resync loop; quiet when nothing drifted.
     pub async fn reconcile(&self) -> Result<Vec<SemanticEvent>> {
-        let before: std::collections::HashMap<String, AgentStatus> = self
+        let before_snap = self
             .inner
             .read()
             .expect("cache lock")
             .snapshot
+            .clone();
+        let before: std::collections::HashMap<String, AgentStatus> = before_snap
             .as_ref()
             .map(|s| {
                 s.workspaces
@@ -368,6 +371,25 @@ impl SessionCache {
             });
         let mut out = vec![];
         let revision = snapshot.revision;
+        // Structural drift first (silent closes the event stream never
+        // described): same closed events as the exit path. Clients refetch
+        // on any of them; the status triplets below then describe a current
+        // tree instead of a stale one. Zero extra traffic (reuses refresh).
+        if let Some(before_snap) = &before_snap {
+            for closed in diff_closed(before_snap, &snapshot) {
+                out.push(self.emit(
+                    closed.kind,
+                    Some(closed.workspace_id.clone()),
+                    closed.tab_id.clone(),
+                    closed.pane_id.clone(),
+                    None,
+                    None,
+                    revision,
+                    Some(serde_json::json!({"reconciled": true})),
+                    None,
+                ));
+            }
+        }
         for drift in diff_statuses(&before, &snapshot) {
             // Unknown panes (born without a structural event) and drifted
             // panes both heal here with the same triplet.
@@ -473,6 +495,56 @@ impl SessionCache {
         vec![ev]
     }
 
+    /// Exit path: refresh, then emit precise closed events for whatever
+    /// vanished (pane/tab/workspace). Herdr sends only `pane_exited` with the
+    /// pane id — no tab_closed follows — so the diff (not the event) decides
+    /// what closed. One snapshot GET + tiny events; clients refetch on any
+    /// structural kind. Empty diff (duplicate/late exit) emits nothing.
+    async fn apply_exit_diff(&self, event: &HerdrEvent) -> Result<Vec<SemanticEvent>> {
+        let before = self
+            .inner
+            .read()
+            .expect("cache lock")
+            .snapshot
+            .clone();
+        let summary = self.refresh_from_herdr().await?;
+        let after = self
+            .inner
+            .read()
+            .expect("cache lock")
+            .snapshot
+            .clone();
+        let (before, after) = match (before, after) {
+            (Some(b), Some(a)) => (b, a),
+            _ => return Ok(vec![]),
+        };
+        let mut out = vec![];
+        for closed in diff_closed(&before, &after) {
+            out.push(self.emit(
+                closed.kind,
+                Some(closed.workspace_id),
+                closed.tab_id,
+                closed.pane_id,
+                None,
+                None,
+                summary.revision,
+                Some(serde_json::json!({"via": "pane_exited"})),
+                None,
+            ));
+        }
+        if out.is_empty() {
+            // Nothing vanished (duplicate exit, or pane already reaped by an
+            // earlier structural refresh): stay quiet, no resubscribe churn.
+            tracing::debug!(
+                pane = event.data.get("pane_id").and_then(|v| v.as_str()).unwrap_or("?"),
+                "pane_exited with no structural delta"
+            );
+        } else {
+            self.sync_snapshot_seq();
+        }
+        Ok(out)
+    }
+
     async fn apply_structural(&self, event: &HerdrEvent) -> Result<Vec<SemanticEvent>> {
         // Never patch structure by hand: rebuild authoritatively, then describe the change.
         let summary = self.refresh_from_herdr().await?;
@@ -540,6 +612,70 @@ fn diff_statuses(
     drifts
 }
 
+
+/// One entity present in `before` but missing in `after`.
+struct ClosedEntity {
+    kind: &'static str,
+    workspace_id: String,
+    tab_id: Option<String>,
+    pane_id: Option<String>,
+}
+
+/// Pure structural diff: tabs/panes/workspaces that vanished between two
+/// snapshots. Parent ids come from `before` (the entity is gone in `after`).
+/// Used by the exit path and the periodic reconcile — same helper, so silent
+/// structural drift heals with identical events in both paths.
+fn diff_closed(before: &SessionSnapshot, after: &SessionSnapshot) -> Vec<ClosedEntity> {
+    let mut out = vec![];
+    let after_ws: std::collections::HashSet<&str> =
+        after.workspaces.iter().map(|w| w.id.as_str()).collect();
+    let after_tabs: std::collections::HashSet<&str> = after
+        .workspaces
+        .iter()
+        .flat_map(|w| w.tabs.iter())
+        .map(|t| t.id.as_str())
+        .collect();
+    let after_panes: std::collections::HashSet<&str> = after
+        .workspaces
+        .iter()
+        .flat_map(|w| w.tabs.iter())
+        .flat_map(|t| t.panes.iter())
+        .map(|p| p.id.as_str())
+        .collect();
+    for workspace in &before.workspaces {
+        if !after_ws.contains(workspace.id.as_str()) {
+            out.push(ClosedEntity {
+                kind: "workspace.closed",
+                workspace_id: workspace.id.clone(),
+                tab_id: None,
+                pane_id: None,
+            });
+            continue;
+        }
+        for tab in &workspace.tabs {
+            if !after_tabs.contains(tab.id.as_str()) {
+                out.push(ClosedEntity {
+                    kind: "tab.closed",
+                    workspace_id: workspace.id.clone(),
+                    tab_id: Some(tab.id.clone()),
+                    pane_id: None,
+                });
+                continue;
+            }
+            for pane in &tab.panes {
+                if !after_panes.contains(pane.id.as_str()) {
+                    out.push(ClosedEntity {
+                        kind: "pane.closed",
+                        workspace_id: workspace.id.clone(),
+                        tab_id: Some(tab.id.clone()),
+                        pane_id: Some(pane.id.clone()),
+                    });
+                }
+            }
+        }
+    }
+    out
+}
 
 /// Subscription loop: keeps the cache current and broadcasts semantic events.
 /// On `events_lost` or any socket failure it refetches, tells every Android subscriber the
@@ -620,7 +756,7 @@ pub async fn run_resync_loop(cache: Arc<SessionCache>, bus: Arc<EventBus>) {
                     let is_structural = matches!(
                         event.name.as_str(),
                         "pane_created" | "pane_closed" | "tab_created" | "tab_closed"
-                            | "workspace_created" | "workspace_closed"
+                            | "workspace_created" | "workspace_closed" | "pane_exited"
                     );
                     match cache.apply_herdr_event(&event).await {
                         Ok(events) => {
@@ -676,13 +812,15 @@ pub async fn run_resync_loop(cache: Arc<SessionCache>, bus: Arc<EventBus>) {
 }
 
 fn is_passive(name: &str) -> bool {
+    // NOTE: pane_exited is DELIBERATELY absent: herdr deletes the tab on exit
+    // but emits only pane_exited (no tab_closed follows) — skipping it strands
+    // dead tabs. It routes to apply_exit_diff below.
     matches!(
         name,
         "pane_updated"
             | "pane_focused"
             | "pane_moved"
             | "pane_output_changed"
-            | "pane_exited"
             | "tab_focused"
             | "tab_moved"
             | "workspace_updated"
@@ -948,6 +1086,28 @@ mod tests {
         same.insert("w1:pT".to_string(), AgentStatus::Working);
         same.insert("w2:p1".to_string(), AgentStatus::Idle);
         assert!(diff_statuses(&same, &snap).is_empty());
+    }
+
+    #[test]
+    fn diff_closed_finds_vanished_tab_and_pane() {
+        let before = build_snapshot(fixture(), 7, 42, None, None).unwrap();
+        // After: drop tab w1:tR (and its pane w1:pT); keep w2 intact.
+        let mut after = before.clone();
+        after.workspaces.retain(|w| w.id != "w1");
+        let closed = diff_closed(&before, &after);
+        // Whole workspace gone → single workspace.closed (no per-tab spam).
+        assert_eq!(closed.len(), 1);
+        assert_eq!(closed[0].kind, "workspace.closed");
+        assert_eq!(closed[0].workspace_id, "w1");
+        // Tab gone but workspace alive → tab.closed only.
+        let mut after2 = before.clone();
+        after2.workspaces[0].tabs.clear();
+        let closed2 = diff_closed(&before, &after2);
+        assert_eq!(closed2.len(), 1);
+        assert_eq!(closed2[0].kind, "tab.closed");
+        assert_eq!(closed2[0].tab_id.as_deref(), Some("w1:tR"));
+        // Identical → silent.
+        assert!(diff_closed(&before, &before).is_empty());
     }
 
     #[test]
