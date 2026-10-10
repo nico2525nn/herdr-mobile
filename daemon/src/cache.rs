@@ -329,6 +329,90 @@ impl SessionCache {
         out
     }
 
+    /// Periodic reconciliation: refresh from Herdr and emit catch-up status
+    /// events for any pane whose status drifted without an event (lost
+    /// `pane.agent_status_changed`, structural resubscribe races, herdr-side
+    /// quirks). Without this a single dropped event desyncs dots FOREVER —
+    /// clients only learn through events and never poll. Called on a 60s tick
+    /// from the resync loop; quiet when nothing drifted.
+    pub async fn reconcile(&self) -> Result<Vec<SemanticEvent>> {
+        let before: std::collections::HashMap<String, AgentStatus> = self
+            .inner
+            .read()
+            .expect("cache lock")
+            .snapshot
+            .as_ref()
+            .map(|s| {
+                s.workspaces
+                    .iter()
+                    .flat_map(|w| w.tabs.iter())
+                    .flat_map(|t| t.panes.iter())
+                    .map(|p| (p.id.clone(), p.status))
+                    .collect()
+            })
+            .unwrap_or_default();
+        self.refresh_from_herdr().await?;
+        let snapshot = self
+            .inner
+            .read()
+            .expect("cache lock")
+            .snapshot
+            .clone()
+            .unwrap_or_else(|| SessionSnapshot {
+                revision: self.revision.load(Ordering::SeqCst),
+                seq: self.seq.load(Ordering::SeqCst),
+                captured_at: None,
+                herdr: crate::model::HerdrInfo::default(),
+                focus: crate::model::Focus::default(),
+                workspaces: vec![],
+            });
+        let mut out = vec![];
+        let revision = snapshot.revision;
+        for drift in diff_statuses(&before, &snapshot) {
+            // Unknown panes (born without a structural event) and drifted
+            // panes both heal here with the same triplet.
+            let detail = serde_json::json!({"reconciled": true});
+            out.push(self.emit(
+                "pane.status_changed",
+                Some(drift.workspace_id.clone()),
+                Some(drift.tab_id.clone()),
+                Some(drift.pane_id.clone()),
+                Some(drift.pane_status),
+                None,
+                revision,
+                Some(detail.clone()),
+                None,
+            ));
+            out.push(self.emit(
+                "tab.status_changed",
+                Some(drift.workspace_id.clone()),
+                Some(drift.tab_id.clone()),
+                None,
+                Some(drift.tab_status),
+                None,
+                revision,
+                Some(detail.clone()),
+                None,
+            ));
+            out.push(self.emit(
+                "workspace.status_changed",
+                Some(drift.workspace_id),
+                None,
+                None,
+                Some(drift.workspace_status),
+                None,
+                revision,
+                Some(detail),
+                None,
+            ));
+        }
+        if !out.is_empty() {
+            tracing::info!(drifted = out.len() / 3, "reconciled status drift");
+            self.sync_snapshot_seq();
+        }
+        Ok(out)
+    }
+
     fn apply_tab_rename(&self, event: &HerdrEvent) -> Vec<SemanticEvent> {
         let tab_id = event.data.get("tab_id").and_then(|v| v.as_str()).unwrap_or("");
         let workspace_id = event.data.get("workspace_id").and_then(|v| v.as_str()).unwrap_or("");
@@ -419,6 +503,44 @@ impl SessionCache {
     }
 }
 
+/// One pane whose status differs between the cache and a fresh Herdr snapshot.
+struct StatusDrift {
+    workspace_id: String,
+    tab_id: String,
+    pane_id: String,
+    pane_status: AgentStatus,
+    tab_status: AgentStatus,
+    workspace_status: AgentStatus,
+}
+
+/// Pure diff: panes missing from [before] (born silently) or with a changed
+/// status. Aggregate statuses come from the fresh snapshot (already rolled up).
+fn diff_statuses(
+    before: &std::collections::HashMap<String, AgentStatus>,
+    snapshot: &SessionSnapshot,
+) -> Vec<StatusDrift> {
+    let mut drifts = vec![];
+    for workspace in &snapshot.workspaces {
+        for tab in &workspace.tabs {
+            for pane in &tab.panes {
+                if before.get(&pane.id) == Some(&pane.status) {
+                    continue;
+                }
+                drifts.push(StatusDrift {
+                    workspace_id: workspace.id.clone(),
+                    tab_id: tab.id.clone(),
+                    pane_id: pane.id.clone(),
+                    pane_status: pane.status,
+                    tab_status: tab.status,
+                    workspace_status: workspace.status,
+                });
+            }
+        }
+    }
+    drifts
+}
+
+
 /// Subscription loop: keeps the cache current and broadcasts semantic events.
 /// On `events_lost` or any socket failure it refetches, tells every Android subscriber the
 /// cache is untrustworthy (`snapshot.required`), and resubscribes with backoff.
@@ -458,8 +580,27 @@ pub async fn run_resync_loop(cache: Arc<SessionCache>, bus: Arc<EventBus>) {
             StreamBroken,
         }
         let mut break_reason = BreakReason::StreamBroken;
+        let mut reconcile_tick =
+            tokio::time::interval(std::time::Duration::from_secs(60));
+        reconcile_tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
         loop {
-            match sub.next_event().await {
+            tokio::select! {
+                biased;
+                _ = reconcile_tick.tick() => {
+                    match cache.reconcile().await {
+                        Ok(events) => {
+                            for e in events {
+                                bus.broadcast(e);
+                            }
+                        }
+                        Err(e) => {
+                            warn!("reconcile failed ({e:#}); breaking to resubscribe");
+                            break;
+                        }
+                    }
+                    continue;
+                }
+                next = sub.next_event() => match next {
                 Ok(Some(event)) => {
                     if is_passive(&event.name) {
                         stale_noops += 1;
@@ -514,6 +655,7 @@ pub async fn run_resync_loop(cache: Arc<SessionCache>, bus: Arc<EventBus>) {
                         warn!("herdr event stream broke ({e:#}); resubscribing");
                     }
                     break;
+                }
                 }
             }
         }
@@ -781,6 +923,31 @@ mod tests {
         let idle = &snap.workspaces[1];
         assert_eq!(idle.status, AgentStatus::Idle);
         assert_eq!(snap.focus.workspace_id.as_deref(), Some("w1"));
+    }
+
+    #[test]
+    fn diff_finds_changed_and_silent_panes() {
+        let snap = build_snapshot(fixture(), 7, 42, None, None).unwrap();
+        // w1:pT is working in the fixture; pretend the cache held idle, and
+        // drop w2:p1 (born without a structural event).
+        let mut before = std::collections::HashMap::new();
+        before.insert("w1:pT".to_string(), AgentStatus::Idle);
+        before.insert("w2:p1".to_string(), AgentStatus::Idle);
+        // w2:p1 idle==idle: no drift. w1:pT idle->working: drift.
+        let drifts = diff_statuses(&before, &snap);
+        assert_eq!(drifts.len(), 1);
+        assert_eq!(drifts[0].pane_id, "w1:pT");
+        assert_eq!(drifts[0].pane_status, AgentStatus::Working);
+        assert_eq!(drifts[0].tab_status, AgentStatus::Working);
+        // Silent birth: remove w2:p1 from before -> drift even though idle.
+        before.remove("w2:p1");
+        let drifts = diff_statuses(&before, &snap);
+        assert_eq!(drifts.len(), 2);
+        // No drift when identical.
+        let mut same = std::collections::HashMap::new();
+        same.insert("w1:pT".to_string(), AgentStatus::Working);
+        same.insert("w2:p1".to_string(), AgentStatus::Idle);
+        assert!(diff_statuses(&same, &snap).is_empty());
     }
 
     #[test]

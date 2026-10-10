@@ -118,6 +118,19 @@ class HerdrClient(
     private val kickQueue = kotlinx.coroutines.channels.Channel<LoopCommand>(capacity = Channel.CONFLATED)
 
     init {
+        // Status backstop: re-GET the snapshot every 90s on a healthy link. The
+        // daemon reconciles itself every 60s and emits catch-up events, but a
+        // client-side fold divergence (dropped WS frame, reducer edge) would
+        // otherwise freeze dots with no signal. One cheap REST GET; refresh()
+        // never tears down the SSE.
+        scope.launch {
+            while (true) {
+                kotlinx.coroutines.delay(90_000)
+                if (_state.value.connection == ConnectionState.CONNECTED) {
+                    runCatching { refresh() }
+                }
+            }
+        }
         scope.launch {
             for (cmd in kickQueue) {
                 when (cmd) {

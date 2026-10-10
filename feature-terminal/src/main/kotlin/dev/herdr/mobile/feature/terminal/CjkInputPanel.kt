@@ -11,7 +11,9 @@ import androidx.compose.material.icons.filled.Clear
 import androidx.compose.material.icons.filled.Keyboard
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
+import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.OutlinedTextFieldDefaults
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
@@ -92,6 +94,14 @@ fun CjkInputPanel(
                 autoCorrectEnabled = true,
             ),
             keyboardActions = KeyboardActions(onSend = { commit() }),
+            // Quiet focus ring: the default primary-colored outline flashes
+            // bright on every tap (the reported annoyance). Unfocused and
+            // focused borders stay the same subdued outlineVariant; the cursor
+            // + keyboard appearance already signal focus.
+            colors = OutlinedTextFieldDefaults.colors(
+                focusedBorderColor = MaterialTheme.colorScheme.outlineVariant,
+                unfocusedBorderColor = MaterialTheme.colorScheme.outlineVariant,
+            ),
             trailingIcon = {
                 if (text.isNotEmpty()) {
                     IconButton(onClick = { onTextChange("") }) {
