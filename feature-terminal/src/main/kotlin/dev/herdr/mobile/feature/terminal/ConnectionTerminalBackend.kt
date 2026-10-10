@@ -34,6 +34,7 @@ class ConnectionTerminalBackend(
                     BackendState.Attached(
                         s.paneId, s.cols, s.rows,
                         s.historyRows, s.historyTruncated, s.historyError,
+                        s.visibleOk,
                     )
 
                 is TerminalAttachmentState.Detached -> BackendState.Detached(s.reason)

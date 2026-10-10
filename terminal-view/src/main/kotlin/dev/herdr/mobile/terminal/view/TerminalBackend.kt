@@ -49,6 +49,8 @@ sealed interface BackendState {
         val historyRows: Int = 0,
         val historyTruncated: Boolean = false,
         val historyError: String? = null,
+        /** False when the prelude live-screen fetch failed: grid starts blank. */
+        val visibleOk: Boolean = true,
     ) : BackendState
     data class Detached(val reason: String) : BackendState
     data class Failed(val code: String, val message: String) : BackendState

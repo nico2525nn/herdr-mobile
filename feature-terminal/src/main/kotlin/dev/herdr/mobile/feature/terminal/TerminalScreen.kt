@@ -427,6 +427,17 @@ private fun TerminalSurface(
             TerminalErrorBody("Detached (${bs.reason})", onRetry)
             return
         }
+        // Prelude live-screen fetch failed: the grid starts BLANK (no bytes
+        // yet, possibly never on an idle pane). Without this branch the user
+        // stares at an empty terminal with no explanation and no recourse
+        // (the reported notification-tap blank that survived reconnects).
+        // History-only failure stays silent (diagnostics overlay shows it).
+        is BackendState.Attached -> {
+            if (!bs.visibleOk) {
+                TerminalErrorBody("Live screen unavailable — the pane may be gone", onRetry)
+                return
+            }
+        }
         else -> {}
     }
     val settings = state.settings
