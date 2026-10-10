@@ -2,7 +2,9 @@ package dev.herdr.mobile.notifications
 
 import dev.herdr.mobile.core.model.AgentStatus
 import dev.herdr.mobile.core.model.SemanticEvent
+import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNotEquals
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -72,6 +74,24 @@ class HerdrNotificationsTest {
                 notifyBlocked = true,
             ),
         )
+    }
+
+    @Test
+    fun notificationIdStableAcrossOverloads() {
+        val e = event(SemanticEvent.TYPE_PANE_STATUS_CHANGED, AgentStatus.DONE)
+        assertEquals(
+            HerdrNotifications.notificationId(e),
+            HerdrNotifications.notificationId("w1", "w1:t1", "w1:p1", AgentStatus.DONE),
+        )
+    }
+
+    @Test
+    fun doneAndBlockedIdsDifferPerPane() {
+        // dismissPane cancels both: if they collided, one alert would clobber
+        // the other instead of coexisting.
+        val done = HerdrNotifications.notificationId("w1", "w1:t1", "w1:p1", AgentStatus.DONE)
+        val blocked = HerdrNotifications.notificationId("w1", "w1:t1", "w1:p1", AgentStatus.BLOCKED)
+        assertNotEquals(done, blocked)
     }
 
     @Test

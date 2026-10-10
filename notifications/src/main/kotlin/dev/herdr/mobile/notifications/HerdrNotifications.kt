@@ -123,7 +123,40 @@ object HerdrNotifications {
     }
 
     fun notificationId(event: SemanticEvent): Int {
-        val key = "${event.workspaceId}/${event.tabId}/${event.paneId}/${event.status}"
+        return notificationId(event.workspaceId, event.tabId, event.paneId, event.status)
+    }
+
+    fun notificationId(
+        workspaceId: String?,
+        tabId: String?,
+        paneId: String?,
+        status: AgentStatus?,
+    ): Int {
+        val key = "$workspaceId/$tabId/$paneId/$status"
         return key.hashCode()
+    }
+
+    /**
+     * Retract a previously posted alert. Read-ack is server-driven: opening a
+     * done pane flips it idle everywhere, and EVERY device watching the daemon
+     * sees the transition and retracts its own copy — no cross-device
+     * messaging needed. Cancelling an absent id is a harmless no-op, so callers
+     * can retract unconditionally on leave-status (even when the post was
+     * skipped by a toggle — nothing posted, nothing cancelled).
+     */
+    fun dismissPane(
+        context: Context,
+        workspaceId: String?,
+        tabId: String?,
+        paneId: String?,
+    ) {
+        if (paneId == null) return
+        val manager = context.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
+        // One id per alert-worthy status: DONE and BLOCKED alerts for the same
+        // pane are separate notifications; a leave-status retraction must clear
+        // whichever (or both) were posted.
+        for (status in listOf(AgentStatus.DONE, AgentStatus.BLOCKED)) {
+            manager.cancel(TAG_AGENTS, notificationId(workspaceId, tabId, paneId, status))
+        }
     }
 }
