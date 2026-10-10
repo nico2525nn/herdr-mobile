@@ -134,6 +134,13 @@ class TermuxTerminalHost(
     )
 
     init {
+        // Long-press DISABLED on our detector: stock GestureDetector swallows
+        // every MOVE after its own 500ms long-press fires (mInLongPress gate),
+        // which would deaden onScroll for dwell-then-drag — the reported
+        // frozen-selection + zero-scroll. Termux's own detector (separate
+        // instance) still selects on a still finger; once the finger moves
+        // big, our onScroll fires and the scroll clears the selection.
+        remoteGestures.setIsLongpressEnabled(false)
         view.setOnTouchListener { _, event ->
             onTouch(event)
         }
@@ -165,13 +172,36 @@ class TermuxTerminalHost(
             touchMoved = true
         }
         remoteGestures.onTouchEvent(event)
-        if (remoteArmed) return true
         if (event.action == MotionEvent.ACTION_UP ||
             event.action == MotionEvent.ACTION_CANCEL
         ) {
+            // Dwell-then-drag: the scroll already tried to clear the
+            // just-started selection, but Termux's hide() refuses within
+            // 300ms of show (anti-flicker guard) — a short fast drag ends
+            // inside the guard and the selection sticks. Retry at stream
+            // end (show is old by now), plus one delayed retry for the
+            // pathological micro-drag. Gated on remoteArmed: a still
+            // long-press (no scroll) must keep its selection on UP.
+            // The delayed retry cannot nuke a NEW selection: starting one
+            // needs its own 500ms long-press, past the 350ms retry.
+            if (remoteArmed) {
+                try {
+                    view.stopTextSelectionMode()
+                } catch (_: Exception) {
+                }
+                if (view.isSelectingText) {
+                    view.postDelayed({
+                        try {
+                            view.stopTextSelectionMode()
+                        } catch (_: Exception) {
+                        }
+                    }, 350)
+                }
+            }
             remoteArmed = false
             return false // tap / long-press completes inside Termux.
         }
+        if (remoteArmed) return true
         // Pre-arm movement: consume (a remote scroll must never reach
         // Termux's doScroll — it would emit arrow bytes / mouse reports into
         // the dead session AND shift mTopRow locally, double-scrolling
