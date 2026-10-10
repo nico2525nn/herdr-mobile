@@ -134,7 +134,7 @@ class SettingsRepositoryImpl(
             cursorStyle = CursorStyle.fromWire(prefs[Keys.CURSOR_STYLE]),
             boldIsBright = prefs[Keys.BOLD_BRIGHT] ?: true,
             transportMode = TransportMode.fromWire(prefs[Keys.TRANSPORT_MODE]),
-            directUrl = prefs[Keys.DIRECT_URL] ?: "http://10.0.2.2:8765",
+            directUrl = prefs[Keys.DIRECT_URL] ?: BuildConfig.DEFAULT_DIRECT_URL,
             activeProfileId = prefs[Keys.ACTIVE_PROFILE],
             hostProfiles = decodeProfiles(prefs[Keys.PROFILES]),
             extraKeysEnabled = prefs[Keys.EXTRA_KEYS] ?: true,
@@ -345,7 +345,7 @@ class SettingsRepositoryImpl(
             TransportMode.DIRECT -> {
                 // The direct URL lives in DataStore as plain text (it is not a secret).
                 DirectProvider(
-                    baseUrl = settings.directUrl.ifBlank { "http://10.0.2.2:8765" },
+                    baseUrl = settings.directUrl.ifBlank { BuildConfig.DEFAULT_DIRECT_URL },
                     bearerToken = {
                         val profile = settings.hostProfiles.firstOrNull { it.id == settings.activeProfileId }
                         profile?.bearerTokenAlias?.let { secrets.get(it) }

@@ -23,8 +23,13 @@ android {
         debug {
             applicationIdSuffix = ".debug"
             versionNameSuffix = "-debug"
+            // Dev default: sandbox daemon via adb reverse (this emulator
+            // image blackholes app traffic to the 10.0.2.2 SLiRP gateway;
+            // localhost+reverse is the reliable dev path).
+            buildConfigField("String", "DEFAULT_DIRECT_URL", "\"http://127.0.0.1:8766\"")
         }
         release {
+            buildConfigField("String", "DEFAULT_DIRECT_URL", "\"http://10.0.2.2:8765\"")
             isMinifyEnabled = true
             isShrinkResources = true
             proguardFiles(
@@ -56,6 +61,7 @@ android {
 
     buildFeatures {
         compose = true
+        buildConfig = true
     }
 
     packaging {
