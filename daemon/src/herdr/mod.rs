@@ -259,6 +259,15 @@ impl HerdrClient {
         Ok(())
     }
 
+    /// Focus a tab. Herdr treats focus as "read": a done agent transitions to
+    /// idle (verified live: focus w1:tX moved w1:pZ done->idle). The mobile
+    /// client calls this when the user OPENS a done pane, replacing the old
+    /// client-side seen-mute with real server state every client agrees on.
+    pub async fn tab_focus(&self, tab_id: &str) -> Result<()> {
+        self.request("tab.focus", json!({"tab_id": tab_id})).await?;
+        Ok(())
+    }
+
     pub async fn tab_rename(&self, tab_id: &str, label: &str) -> Result<()> {
         self.request("tab.rename", json!({"tab_id": tab_id, "label": label})).await?;
         Ok(())

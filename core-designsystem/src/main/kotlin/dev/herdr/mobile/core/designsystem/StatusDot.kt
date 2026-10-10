@@ -27,12 +27,10 @@ fun StatusDot(
     modifier: Modifier = Modifier,
     diameter: Dp = 14.dp,
     describe: Boolean = true,
-    /** Seen done (SeenDots): same hue at reduced alpha, "(seen)" for TalkBack. */
-    muted: Boolean = false,
 ) {
     val colors = HerdrTheme
     val color by animateColorAsState(
-        targetValue = colors.forStatus(status).let { if (muted) it.copy(alpha = 0.4f) else it },
+        targetValue = colors.forStatus(status),
         label = "status-dot",
     )
     Canvas(
@@ -40,10 +38,7 @@ fun StatusDot(
             .size(diameter)
             .then(
                 if (describe) {
-                    Modifier.semantics {
-                        contentDescription = status.contentDescription() +
-                            if (muted) ", seen" else ""
-                    }
+                    Modifier.semantics { contentDescription = status.contentDescription() }
                 } else {
                     Modifier
                 },
@@ -55,7 +50,7 @@ fun StatusDot(
                 drawCircle(color = color)
                 drawCircle(
                     color = Color.Transparent,
-                    radius = size.minDimension / 2 * 0.55f,
+                    radius = size.minDimension / 2 * 0.68f,
                     blendMode = BlendMode.Clear,
                 )
             }

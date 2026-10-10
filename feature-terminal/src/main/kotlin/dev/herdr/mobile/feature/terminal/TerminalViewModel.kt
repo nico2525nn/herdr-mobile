@@ -219,7 +219,19 @@ class TerminalViewModel(
     }
 
     fun openTarget(target: TerminalTarget) {
-        dev.herdr.mobile.core.model.SeenDots.mark(target.paneId)
+        // Read-ack (Herdr behavior): opening a DONE pane focuses its tab
+        // server-side, which transitions done->idle everywhere (desktop TUI
+        // included). Gated on DONE only — never steal desktop focus for
+        // working/idle opens. Fire-and-forget: ack failure must not break
+        // the attach, and the next snapshot heals any miss.
+        val snapshot = client.state.value.snapshot
+        val paneDone = snapshot?.pane(target.paneId)?.status ==
+            dev.herdr.mobile.core.model.AgentStatus.DONE
+        if (paneDone) {
+            viewModelScope.launch {
+                runCatching { client.focusTab(target.tabId) }
+            }
+        }
         attachJob?.cancel()
         targetFlow.value = target
         attachJob = viewModelScope.launch {

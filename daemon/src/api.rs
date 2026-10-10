@@ -32,6 +32,7 @@ pub fn router(state: AppState) -> Router {
         .route("/v1/agent/report", post(agent_report))
         .route("/v1/tab", post(tab_create))
         .route("/v1/tab/{tab_id}/close", post(tab_close))
+        .route("/v1/tab/{tab_id}/focus", post(tab_focus))
         .route("/v1/tab/{tab_id}/rename", post(tab_rename))
         .with_state(state)
 }
@@ -352,6 +353,20 @@ async fn tab_close(
         return e;
     }
     match state.cache.herdr_client().tab_close(&tab_id).await {
+        Ok(()) => (StatusCode::OK, Json(json!({"ok": true}))).into_response(),
+        Err(e) => herdr_error(e),
+    }
+}
+
+async fn tab_focus(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(tab_id): Path<String>,
+) -> Response {
+    if let Err(e) = check_auth(&state, &headers) {
+        return e;
+    }
+    match state.cache.herdr_client().tab_focus(&tab_id).await {
         Ok(()) => (StatusCode::OK, Json(json!({"ok": true}))).into_response(),
         Err(e) => herdr_error(e),
     }

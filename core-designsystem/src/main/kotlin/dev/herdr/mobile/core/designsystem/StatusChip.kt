@@ -45,7 +45,6 @@ fun StatusChip(
     enabled: Boolean = true,
     onLongClick: ((androidx.compose.ui.geometry.Offset) -> Unit)? = null,
     trailing: (@Composable () -> Unit)? = null,
-    muted: Boolean = false,
 ) {
     val container = if (selected) {
         MaterialTheme.colorScheme.secondaryContainer
@@ -97,10 +96,7 @@ fun StatusChip(
                     )
                 },
             )
-            .semantics {
-            contentDescription = "$label, ${status.contentDescription()}" +
-                if (muted) ", seen" else ""
-        },
+            .semantics { contentDescription = "$label, ${status.contentDescription()}" },
         shape = CircleShape,
         color = container,
         contentColor = content,
@@ -110,7 +106,7 @@ fun StatusChip(
             verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.spacedBy(8.dp),
         ) {
-            StatusDot(status = status, diameter = 14.dp, describe = false, muted = muted)
+            StatusDot(status = status, diameter = 14.dp, describe = false)
             Text(
                 text = label,
                 style = MaterialTheme.typography.labelLarge.copy(fontSize = 11.5.sp),
@@ -136,7 +132,6 @@ fun PeerTabChip(
     modifier: Modifier = Modifier,
     subtitle: String? = null,
     onLongClick: ((androidx.compose.ui.geometry.Offset) -> Unit)? = null,
-    muted: Boolean = false,
 ) {
     StatusChip(
         label = if (subtitle != null) "$label · $subtitle" else label,
@@ -145,6 +140,5 @@ fun PeerTabChip(
         onClick = onClick,
         modifier = modifier,
         onLongClick = onLongClick,
-        muted = muted,
     )
 }

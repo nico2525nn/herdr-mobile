@@ -57,7 +57,6 @@ import dev.herdr.mobile.core.designsystem.contentDescription
 import dev.herdr.mobile.core.model.ConnectionState
 import dev.herdr.mobile.core.model.Tab
 import dev.herdr.mobile.core.model.Workspace
-import dev.herdr.mobile.core.model.isSeenDone
 
 /**
  * Semantic overview: workspace cards with peer tab chips, never a terminal grid.
@@ -76,10 +75,6 @@ fun HomeScreen(
 ) {
     val state by viewModel.uiState.collectAsStateWithLifecycle()
     val message by viewModel.message.collectAsStateWithLifecycle()
-    // Seen-done version: recompose dots when a pane is marked (else Compose
-    // skips — the mark changes no other input).
-    @Suppress("UNUSED_EXPRESSION")
-    dev.herdr.mobile.core.model.SeenDots.version.collectAsStateWithLifecycle().value
     var tabMenu by remember { mutableStateOf<HomeTabMenuTarget?>(null) }
     var renameTarget by remember { mutableStateOf<HomeTabMenuTarget?>(null) }
     // Screen origin in window coords: the anchor Box renders here, so press
@@ -423,7 +418,7 @@ private fun WorkspaceCard(
                 .padding(16.dp),
         ) {
             Row(verticalAlignment = Alignment.CenterVertically) {
-                StatusDot(status = workspace.status, muted = workspace.isSeenDone())
+                StatusDot(status = workspace.status)
                 Column(
                     modifier = Modifier
                         .weight(1f)
@@ -468,7 +463,6 @@ private fun WorkspaceCard(
                             subtitle = tab.harnessNames.joinToString(",").takeIf { it.isNotEmpty() },
                             status = tab.status,
                             onClick = { onOpenTab(tab) },
-                            muted = tab.isSeenDone(),
                             modifier = Modifier.onGloballyPositioned { chipOrigin = it.positionInWindow() },
                             onLongClick = { press ->
                                 onTabLongPress(tab, chipOrigin + press)

@@ -147,6 +147,11 @@ class DaemonApi(
         post("v1/tab/${tabId.url()}/close", "{}")
     }
 
+    /** Focus = read-ack: Herdr clears a done agent to idle on focus. */
+    suspend fun focusTab(tabId: String) {
+        post("v1/tab/${tabId.url()}/focus", "{}")
+    }
+
     suspend fun renameTab(tabId: String, label: String) {
         val body = buildJsonObject { put("label", label) }.toString()
         post("v1/tab/${tabId.url()}/rename", body)

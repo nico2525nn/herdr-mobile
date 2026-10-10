@@ -53,7 +53,6 @@ import dev.herdr.mobile.core.designsystem.StatusChip
 import dev.herdr.mobile.core.designsystem.StatusDot
 import dev.herdr.mobile.core.model.ConnectionState
 import dev.herdr.mobile.core.model.InputPanelPage
-import dev.herdr.mobile.core.model.isSeenDone
 import com.termux.view.TerminalView
 import dev.herdr.mobile.terminal.view.BackendState
 import dev.herdr.mobile.terminal.view.RemoteTermuxSession
@@ -79,10 +78,6 @@ fun TerminalScreen(
     modifier: Modifier = Modifier,
 ) {
     val state by viewModel.uiState.collectAsStateWithLifecycle()
-    // Seen-done version: rails recompose when a mark lands (target switches
-    // recompose anyway, but deep-link opens to the SAME tab would skip).
-    @Suppress("UNUSED_EXPRESSION")
-    dev.herdr.mobile.core.model.SeenDots.version.collectAsStateWithLifecycle().value
     var tabMenu by remember { mutableStateOf<TabMenuTarget?>(null) }
     var renameTarget by remember { mutableStateOf<TabMenuTarget?>(null) }
     // Manual keyboard summon (CJK panel button) / hide (leaving the CJK page
@@ -302,7 +297,6 @@ private fun WorkspaceRail(
                     status = workspace.status,
                     selected = workspace.id == state.target?.workspaceId,
                     onClick = { onSelectWorkspace(workspace.id) },
-                    muted = workspace.isSeenDone(),
                 )
             }
         }
@@ -347,7 +341,6 @@ private fun TabRail(
                     selected = tab.id == state.target?.tabId,
                     modifier = Modifier.onGloballyPositioned { chipOrigin = it.positionInWindow() },
                     onClick = { onSelectTab(workspace.id, tab.id) },
-                    muted = tab.isSeenDone(),
                     onLongClick = { press ->
                         // Menu renders at the Column top (below rails): window
                         // coords minus the rails' height. Rail origin ≈ menu origin.

@@ -431,6 +431,9 @@ class HerdrClient(
     suspend fun closeTab(tabId: String) =
         withContext(Dispatchers.IO) { api().closeTab(tabId) }
 
+    suspend fun focusTab(tabId: String) =
+        withContext(Dispatchers.IO) { api().focusTab(tabId) }
+
     suspend fun renameTab(tabId: String, label: String) =
         withContext(Dispatchers.IO) { api().renameTab(tabId, label) }
 
