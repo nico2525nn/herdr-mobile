@@ -145,7 +145,14 @@ class TermuxViewClient(
         }
     }
 
+    /** Set by the screen: suppresses move-induced long-press (see host). */
+    var host: TermuxTerminalHost? = null
+
     override fun onLongPress(event: MotionEvent): Boolean {
+        // Remote mode eats pre-arm MOVEs, so Termux's long-press timer would
+        // fire on every slow scroll. Consume it when the finger moved (that
+        // touch is a scroll); a truly still finger still selects.
+        if (host?.touchMoved == true) return true
         // False = Termux shows its own selection handles.
         return false
     }

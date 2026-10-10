@@ -554,6 +554,7 @@ private fun TerminalSurface(
             viewClient.view = view
             view.setBackgroundColor(TermuxSchemes.backgroundAndroid(scheme))
             val host = TermuxTerminalHost(view)
+            viewClient.host = host
             host.textSizePx = px
             viewRef = view
             hostRef = host

@@ -139,14 +139,30 @@ class TermuxTerminalHost(
         }
     }
 
+    /**
+     * True once the finger moved in the current stream (remote mode). The host
+     * consumes pre-arm MOVEs so Termux never sees them — without this its
+     * long-press timer (which MOVE cancels) would fire mid-scroll and start a
+     * selection on every slow scroll. The view client consumes long-press
+     * when this is set: stillness = select, motion = scroll.
+     */
+    @Volatile
+    var touchMoved = false
+        private set
+
     private fun onTouch(event: MotionEvent): Boolean {
         if (!remoteEffective) {
             remoteArmed = false
+            touchMoved = false
             return false // Termux handles everything (local history scroll).
         }
         if (event.action == MotionEvent.ACTION_DOWN) {
             scrollRemainder = 0f
             remoteArmed = false
+            touchMoved = false
+        }
+        if (event.action == MotionEvent.ACTION_MOVE) {
+            touchMoved = true
         }
         remoteGestures.onTouchEvent(event)
         if (remoteArmed) return true
@@ -165,6 +181,14 @@ class TermuxTerminalHost(
     }
 
     private fun fireRemote(rows: Int) {
+        // A remote scroll replaces the content (server repaint): any local
+        // selection anchors (buffer coords) would freeze on stale rows, so
+        // the scroll clears the selection first (standard scroll-clears
+        // -selection UX; Termux does the same for local output scroll).
+        try {
+            view.stopTextSelectionMode()
+        } catch (_: Exception) {
+        }
         scrollEvents++
         scrolledRows += kotlin.math.abs(rows)
         remoteScrolls++
