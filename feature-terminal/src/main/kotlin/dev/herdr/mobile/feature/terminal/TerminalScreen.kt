@@ -278,10 +278,10 @@ private fun WorkspaceRail(
     modifier: Modifier = Modifier,
 ) {
     val snapshot = state.snapshot ?: return
+    // Home stays pinned left while the workspace chips scroll under it.
     Row(
         modifier = modifier
             .fillMaxWidth()
-            .horizontalScroll(rememberScrollState())
             .padding(horizontal = 16.dp, vertical = 4.dp),
         horizontalArrangement = Arrangement.spacedBy(8.dp),
         verticalAlignment = Alignment.CenterVertically,
@@ -289,14 +289,22 @@ private fun WorkspaceRail(
         IconButton(onClick = onNavigateHome, modifier = Modifier.size(40.dp)) {
             Icon(Icons.Filled.Home, contentDescription = "Back to Home")
         }
-        snapshot.workspaces.forEach { workspace ->
-            StatusChip(
-                label = workspace.label,
-                status = workspace.status,
-                selected = workspace.id == state.target?.workspaceId,
-                onClick = { onSelectWorkspace(workspace.id) },
-                muted = workspace.isSeenDone(),
-            )
+        Row(
+            modifier = Modifier
+                .weight(1f)
+                .horizontalScroll(rememberScrollState()),
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            snapshot.workspaces.forEach { workspace ->
+                StatusChip(
+                    label = workspace.label,
+                    status = workspace.status,
+                    selected = workspace.id == state.target?.workspaceId,
+                    onClick = { onSelectWorkspace(workspace.id) },
+                    muted = workspace.isSeenDone(),
+                )
+            }
         }
     }
 }
@@ -313,35 +321,44 @@ private fun TabRail(
     // Rail origin in window coordinates: chip-local press offsets are summed
     // with it so the menu anchor lands on the pressed chip.
     var railOrigin by remember { mutableStateOf(androidx.compose.ui.geometry.Offset.Zero) }
+    // + stays pinned right while the tab chips scroll under it. The anchor
+    // math uses window coords, so the extra nesting changes nothing.
     Row(
         modifier = modifier
             .fillMaxWidth()
             .onGloballyPositioned { railOrigin = it.positionInWindow() }
-            .horizontalScroll(rememberScrollState())
             .padding(horizontal = 16.dp, vertical = 4.dp),
         horizontalArrangement = Arrangement.spacedBy(8.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
-        workspace.tabs.forEach { tab ->
-            val harness = tab.harnessNames.joinToString(",").takeIf { it.isNotEmpty() }
-            var chipOrigin by remember(tab.id) { mutableStateOf(androidx.compose.ui.geometry.Offset.Zero) }
-            StatusChip(
-                label = if (harness != null) "${tab.displayLabel} · $harness" else tab.displayLabel,
-                status = tab.status,
-                selected = tab.id == state.target?.tabId,
-                modifier = Modifier.onGloballyPositioned { chipOrigin = it.positionInWindow() },
-                onClick = { onSelectTab(workspace.id, tab.id) },
-                muted = tab.isSeenDone(),
-                onLongClick = { press ->
-                    // Menu renders at the Column top (below rails): window
-                    // coords minus the rails' height. Rail origin ≈ menu origin.
-                    val anchor = androidx.compose.ui.unit.IntOffset(
-                        (chipOrigin.x + press.x).toInt(),
-                        (chipOrigin.y + press.y - railOrigin.y).toInt(),
-                    )
-                    onTabLongPress(workspace.id, tab.id, tab.displayLabel, anchor)
-                },
-            )
+        Row(
+            modifier = Modifier
+                .weight(1f)
+                .horizontalScroll(rememberScrollState()),
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            workspace.tabs.forEach { tab ->
+                val harness = tab.harnessNames.joinToString(",").takeIf { it.isNotEmpty() }
+                var chipOrigin by remember(tab.id) { mutableStateOf(androidx.compose.ui.geometry.Offset.Zero) }
+                StatusChip(
+                    label = if (harness != null) "${tab.displayLabel} · $harness" else tab.displayLabel,
+                    status = tab.status,
+                    selected = tab.id == state.target?.tabId,
+                    modifier = Modifier.onGloballyPositioned { chipOrigin = it.positionInWindow() },
+                    onClick = { onSelectTab(workspace.id, tab.id) },
+                    muted = tab.isSeenDone(),
+                    onLongClick = { press ->
+                        // Menu renders at the Column top (below rails): window
+                        // coords minus the rails' height. Rail origin ≈ menu origin.
+                        val anchor = androidx.compose.ui.unit.IntOffset(
+                            (chipOrigin.x + press.x).toInt(),
+                            (chipOrigin.y + press.y - railOrigin.y).toInt(),
+                        )
+                        onTabLongPress(workspace.id, tab.id, tab.displayLabel, anchor)
+                    },
+                )
+            }
         }
         IconButton(onClick = onAddTab, modifier = Modifier.size(40.dp)) {
             Icon(Icons.Filled.Add, contentDescription = "New tab in ${workspace.label}")
