@@ -34,6 +34,9 @@ pub fn router(state: AppState) -> Router {
         .route("/v1/tab/{tab_id}/close", post(tab_close))
         .route("/v1/tab/{tab_id}/focus", post(tab_focus))
         .route("/v1/tab/{tab_id}/rename", post(tab_rename))
+        .route("/v1/workspace", post(workspace_create))
+        .route("/v1/workspace/{workspace_id}/rename", post(workspace_rename))
+        .route("/v1/workspace/{workspace_id}/close", post(workspace_close))
         .with_state(state)
 }
 
@@ -388,6 +391,57 @@ async fn tab_rename(
         return api_error(StatusCode::BAD_REQUEST, "bad_request", "label must not be blank");
     }
     match state.cache.herdr_client().tab_rename(&tab_id, label).await {
+        Ok(()) => (StatusCode::OK, Json(json!({"ok": true}))).into_response(),
+        Err(e) => herdr_error(e),
+    }
+}
+
+async fn workspace_create(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Json(body): Json<Value>,
+) -> Response {
+    if let Err(e) = check_auth(&state, &headers) {
+        return e;
+    }
+    let label = body.get("label").and_then(|v| v.as_str()).map(str::trim).filter(|l| !l.is_empty());
+    let cwd = body.get("cwd").and_then(|v| v.as_str()).map(str::trim).filter(|c| !c.is_empty());
+    match state.cache.herdr_client().workspace_create(label, cwd).await {
+        Ok(workspace_id) => (StatusCode::OK, Json(json!({"ok": true, "workspaceId": workspace_id}))).into_response(),
+        Err(e) => herdr_error(e),
+    }
+}
+
+async fn workspace_rename(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(workspace_id): Path<String>,
+    Json(body): Json<Value>,
+) -> Response {
+    if let Err(e) = check_auth(&state, &headers) {
+        return e;
+    }
+    let Some(label) = body.get("label").and_then(|v| v.as_str()).map(str::trim) else {
+        return api_error(StatusCode::BAD_REQUEST, "bad_request", "missing label");
+    };
+    if label.is_empty() {
+        return api_error(StatusCode::BAD_REQUEST, "bad_request", "label must not be blank");
+    }
+    match state.cache.herdr_client().workspace_rename(&workspace_id, label).await {
+        Ok(()) => (StatusCode::OK, Json(json!({"ok": true}))).into_response(),
+        Err(e) => herdr_error(e),
+    }
+}
+
+async fn workspace_close(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(workspace_id): Path<String>,
+) -> Response {
+    if let Err(e) = check_auth(&state, &headers) {
+        return e;
+    }
+    match state.cache.herdr_client().workspace_close(&workspace_id).await {
         Ok(()) => (StatusCode::OK, Json(json!({"ok": true}))).into_response(),
         Err(e) => herdr_error(e),
     }

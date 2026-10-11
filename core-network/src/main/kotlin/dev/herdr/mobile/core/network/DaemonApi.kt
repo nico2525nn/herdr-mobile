@@ -157,6 +157,25 @@ class DaemonApi(
         post("v1/tab/${tabId.url()}/rename", body)
     }
 
+    suspend fun createWorkspace(label: String?, cwd: String?): String {
+        val body = buildJsonObject {
+            if (label != null) put("label", label)
+            if (cwd != null) put("cwd", cwd)
+        }.toString()
+        val obj = post("v1/workspace", body)
+        return obj["workspaceId"]?.jsonPrimitive?.contentOrNull
+            ?: throw DaemonException("bad_response", "workspace.create returned no workspaceId")
+    }
+
+    suspend fun renameWorkspace(workspaceId: String, label: String) {
+        val body = buildJsonObject { put("label", label) }.toString()
+        post("v1/workspace/${workspaceId.url()}/rename", body)
+    }
+
+    suspend fun closeWorkspace(workspaceId: String) {
+        post("v1/workspace/${workspaceId.url()}/close", "{}")
+    }
+
     private fun String.url(): String = URLEncoder.encode(this, "UTF-8")
 }
 

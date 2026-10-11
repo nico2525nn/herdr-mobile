@@ -437,6 +437,15 @@ class HerdrClient(
     suspend fun renameTab(tabId: String, label: String) =
         withContext(Dispatchers.IO) { api().renameTab(tabId, label) }
 
+    suspend fun createWorkspace(label: String?, cwd: String?): String =
+        withContext(Dispatchers.IO) { api().createWorkspace(label, cwd) }
+
+    suspend fun renameWorkspace(workspaceId: String, label: String) =
+        withContext(Dispatchers.IO) { api().renameWorkspace(workspaceId, label) }
+
+    suspend fun closeWorkspace(workspaceId: String) =
+        withContext(Dispatchers.IO) { api().closeWorkspace(workspaceId) }
+
     suspend fun resizePane(paneId: String, cols: Int, rows: Int) =
         withContext(Dispatchers.IO) { api().resizePane(paneId, cols, rows) }
 

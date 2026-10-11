@@ -259,6 +259,34 @@ impl HerdrClient {
         Ok(())
     }
 
+    pub async fn workspace_create(&self, label: Option<&str>, cwd: Option<&str>) -> Result<String> {
+        let mut params = serde_json::Map::new();
+        if let Some(label) = label {
+            params.insert("label".into(), Value::String(label.to_string()));
+        }
+        if let Some(cwd) = cwd {
+            params.insert("cwd".into(), Value::String(cwd.to_string()));
+        }
+        params.insert("focus".into(), Value::Bool(true));
+        let result = self.request("workspace.create", Value::Object(params)).await?;
+        result
+            .get("workspace")
+            .and_then(|w| w.get("workspace_id"))
+            .and_then(|i| i.as_str())
+            .map(str::to_string)
+            .context("workspace.create response has no workspace.workspace_id")
+    }
+
+    pub async fn workspace_rename(&self, workspace_id: &str, label: &str) -> Result<()> {
+        self.request("workspace.rename", json!({"workspace_id": workspace_id, "label": label})).await?;
+        Ok(())
+    }
+
+    pub async fn workspace_close(&self, workspace_id: &str) -> Result<()> {
+        self.request("workspace.close", json!({"workspace_id": workspace_id})).await?;
+        Ok(())
+    }
+
     /// Focus a tab. Herdr treats focus as "read": a done agent transitions to
     /// idle (verified live: focus w1:tX moved w1:pZ done->idle). The mobile
     /// client calls this when the user OPENS a done pane, replacing the old

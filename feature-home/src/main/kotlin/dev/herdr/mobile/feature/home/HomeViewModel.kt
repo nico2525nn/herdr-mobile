@@ -49,6 +49,31 @@ class HomeViewModel(
         }
     }
 
+    // Workspace ops sync like tabs: the daemon emits a structural event and
+    // every client refetches authoritatively. No local patching, no fake
+    // optimistic card — the created workspace appears on the next snapshot
+    // (same path as a workspace created on desktop or another phone).
+    fun createWorkspace(label: String?, cwd: String?) {
+        viewModelScope.launch {
+            runCatching { client.createWorkspace(label?.trim()?.ifEmpty { null }, cwd?.trim()?.ifEmpty { null }) }
+                .onFailure { _message.value = "Cannot create workspace: ${it.message}" }
+        }
+    }
+
+    fun renameWorkspace(workspaceId: String, label: String) {
+        viewModelScope.launch {
+            runCatching { client.renameWorkspace(workspaceId, label.trim()) }
+                .onFailure { _message.value = "Cannot rename workspace: ${it.message}" }
+        }
+    }
+
+    fun closeWorkspace(workspaceId: String) {
+        viewModelScope.launch {
+            runCatching { client.closeWorkspace(workspaceId) }
+                .onFailure { _message.value = "Cannot close workspace: ${it.message}" }
+        }
+    }
+
     fun clearMessage() {
         _message.value = null
     }

@@ -2,6 +2,9 @@ package dev.herdr.mobile.feature.home
 
 import androidx.compose.animation.animateContentSize
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.combinedClickable
+import androidx.compose.foundation.interaction.MutableInteractionSource
+import androidx.compose.foundation.interaction.PressInteraction
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
@@ -24,6 +27,7 @@ import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.lazy.grid.items
 import androidx.compose.foundation.lazy.items
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.ChevronRight
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Card
@@ -33,6 +37,7 @@ import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.SmallFloatingActionButton
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
@@ -77,12 +82,17 @@ fun HomeScreen(
     val message by viewModel.message.collectAsStateWithLifecycle()
     var tabMenu by remember { mutableStateOf<HomeTabMenuTarget?>(null) }
     var renameTarget by remember { mutableStateOf<HomeTabMenuTarget?>(null) }
+    var wsMenu by remember { mutableStateOf<HomeWsMenuTarget?>(null) }
+    var wsRenameTarget by remember { mutableStateOf<HomeWsMenuTarget?>(null) }
+    var wsCloseTarget by remember { mutableStateOf<HomeWsMenuTarget?>(null) }
+    var showCreate by remember { mutableStateOf(false) }
     // Screen origin in window coords: the anchor Box renders here, so press
     // points (window coords) are offset back by this to land on the chip.
     var screenOrigin by remember { mutableStateOf(androidx.compose.ui.geometry.Offset.Zero) }
 
+    Box(modifier = modifier.fillMaxSize()) {
     Column(
-        modifier = modifier
+        modifier = Modifier
             .fillMaxSize()
             .onGloballyPositioned { screenOrigin = it.positionInWindow() },
     ) {
@@ -137,7 +147,9 @@ fun HomeScreen(
                                     onOpenWorkspace,
                                     onOpenTab,
                                     screenOrigin,
-                                ) { tabMenu = it }
+                                    { tabMenu = it },
+                                    { wsMenu = it },
+                                )
                             }
                             item(key = "bottom-space") { Spacer(Modifier.height(8.dp)) }
                         }
@@ -167,7 +179,9 @@ fun HomeScreen(
                                     onOpenWorkspace,
                                     onOpenTab,
                                     screenOrigin,
-                                ) { tabMenu = it }
+                                    { tabMenu = it },
+                                    { wsMenu = it },
+                                )
                             }
                         }
                     }
@@ -183,6 +197,19 @@ fun HomeScreen(
             )
         }
     }
+
+        // New workspace: small (rounded-square) FAB, bottom-end. Always
+        // visible — while offline the create call fails with a surfaced
+        // message instead of a dead button.
+        SmallFloatingActionButton(
+            onClick = { showCreate = true },
+            modifier = Modifier
+                .align(Alignment.BottomEnd)
+                .padding(16.dp),
+        ) {
+            Icon(Icons.Filled.Add, contentDescription = "New workspace")
+        }
+    } // Box
 
     tabMenu?.let { target ->
         HomeTabActionsMenu(
@@ -208,6 +235,172 @@ fun HomeScreen(
             },
         )
     }
+    wsMenu?.let { target ->
+        HomeWsActionsMenu(
+            target = target,
+            onDismiss = { wsMenu = null },
+            onRename = {
+                wsRenameTarget = target
+                wsMenu = null
+            },
+            onClose = {
+                wsCloseTarget = target
+                wsMenu = null
+            },
+        )
+    }
+    wsRenameTarget?.let { target ->
+        HomeWsRenameDialog(
+            target = target,
+            onDismiss = { wsRenameTarget = null },
+            onConfirm = { label ->
+                viewModel.renameWorkspace(target.workspaceId, label)
+                wsRenameTarget = null
+            },
+        )
+    }
+    wsCloseTarget?.let { target ->
+        HomeWsCloseDialog(
+            target = target,
+            onDismiss = { wsCloseTarget = null },
+            onConfirm = {
+                viewModel.closeWorkspace(target.workspaceId)
+                wsCloseTarget = null
+            },
+        )
+    }
+    if (showCreate) {
+        HomeWsCreateDialog(
+            onDismiss = { showCreate = false },
+            onConfirm = { label, cwd ->
+                viewModel.createWorkspace(label, cwd)
+                showCreate = false
+            },
+        )
+    }
+}
+
+/** Which Home workspace a long-press menu refers to. */
+private data class HomeWsMenuTarget(
+    val workspaceId: String,
+    val label: String,
+    val anchor: androidx.compose.ui.unit.IntOffset,
+)
+
+@Composable
+private fun HomeWsActionsMenu(
+    target: HomeWsMenuTarget,
+    onDismiss: () -> Unit,
+    onRename: () -> Unit,
+    onClose: () -> Unit,
+) {
+    Box(
+        modifier = Modifier
+            .offset { target.anchor }
+            .size(1.dp),
+    ) {
+        DropdownMenu(expanded = true, onDismissRequest = onDismiss) {
+            DropdownMenuItem(
+                text = { Text("Rename \"${target.label}\"") },
+                onClick = onRename,
+            )
+            DropdownMenuItem(
+                text = { Text("Close \"${target.label}\"") },
+                onClick = onClose,
+            )
+        }
+    }
+}
+
+@Composable
+private fun HomeWsRenameDialog(
+    target: HomeWsMenuTarget,
+    onDismiss: () -> Unit,
+    onConfirm: (String) -> Unit,
+) {
+    var label by remember(target.workspaceId) { mutableStateOf(target.label) }
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("Rename workspace") },
+        text = {
+            OutlinedTextField(
+                value = label,
+                onValueChange = { label = it },
+                label = { Text("Workspace name") },
+                singleLine = true,
+            )
+        },
+        confirmButton = {
+            TextButton(
+                onClick = { onConfirm(label) },
+                enabled = label.trim().isNotEmpty(),
+            ) {
+                Text("Rename")
+            }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss) { Text("Cancel") }
+        },
+    )
+}
+
+@Composable
+private fun HomeWsCloseDialog(
+    target: HomeWsMenuTarget,
+    onDismiss: () -> Unit,
+    onConfirm: () -> Unit,
+) {
+    // Unlike a tab, a workspace holds every tab — closing stops all its
+    // agents. Confirm explicitly; there is no undo.
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("Close workspace?") },
+        text = { Text("\"${target.label}\" and all its tabs will be closed. Running agents stop.") },
+        confirmButton = {
+            TextButton(onClick = onConfirm) { Text("Close") }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss) { Text("Cancel") }
+        },
+    )
+}
+
+@Composable
+private fun HomeWsCreateDialog(
+    onDismiss: () -> Unit,
+    onConfirm: (label: String?, cwd: String?) -> Unit,
+) {
+    var label by remember { mutableStateOf("") }
+    var cwd by remember { mutableStateOf("") }
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("New workspace") },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                OutlinedTextField(
+                    value = label,
+                    onValueChange = { label = it },
+                    label = { Text("Name (optional)") },
+                    singleLine = true,
+                )
+                OutlinedTextField(
+                    value = cwd,
+                    onValueChange = { cwd = it },
+                    label = { Text("Directory (optional)") },
+                    placeholder = { Text("~/project") },
+                    singleLine = true,
+                )
+            }
+        },
+        confirmButton = {
+            TextButton(onClick = { onConfirm(label.ifBlank { null }, cwd.ifBlank { null }) }) {
+                Text("Create")
+            }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss) { Text("Cancel") }
+        },
+    )
 }
 
 @Composable
@@ -217,11 +410,19 @@ private fun workspaceCard(
     onOpenTab: (workspaceId: String, tabId: String) -> Unit,
     screenOrigin: androidx.compose.ui.geometry.Offset,
     onMenu: (HomeTabMenuTarget) -> Unit,
+    onWsMenu: (HomeWsMenuTarget) -> Unit,
 ) {
     WorkspaceCard(
         workspace = workspace,
         onOpenWorkspace = { onOpenWorkspace(workspace.id, workspace.activeTabId) },
         onOpenTab = { tab -> onOpenTab(workspace.id, tab.id) },
+        onWorkspaceLongPress = { pressWindow ->
+            val anchor = androidx.compose.ui.unit.IntOffset(
+                (pressWindow.x - screenOrigin.x).toInt(),
+                (pressWindow.y - screenOrigin.y).toInt(),
+            )
+            onWsMenu(HomeWsMenuTarget(workspace.id, workspace.label, anchor))
+        },
         onTabLongPress = { tab, pressWindow ->
             // Window point minus our origin = anchor-box offset.
             val anchor = androidx.compose.ui.unit.IntOffset(
@@ -396,6 +597,7 @@ private fun WorkspaceCard(
     onOpenWorkspace: () -> Unit,
     onOpenTab: (Tab) -> Unit,
     onTabLongPress: (Tab, androidx.compose.ui.geometry.Offset) -> Unit,
+    onWorkspaceLongPress: (androidx.compose.ui.geometry.Offset) -> Unit,
     modifier: Modifier = Modifier,
 ) {
     Card(
@@ -417,7 +619,29 @@ private fun WorkspaceCard(
                 )
                 .padding(16.dp),
         ) {
-            Row(verticalAlignment = Alignment.CenterVertically) {
+            var headerOrigin by remember(workspace.id) { mutableStateOf(androidx.compose.ui.geometry.Offset.Zero) }
+            val headerInteractions = remember(workspace.id) { MutableInteractionSource() }
+            var headerPress by remember(workspace.id) { mutableStateOf(androidx.compose.ui.geometry.Offset.Zero) }
+            androidx.compose.runtime.LaunchedEffect(headerInteractions) {
+                headerInteractions.interactions.collect { interaction ->
+                    if (interaction is PressInteraction.Press) {
+                        headerPress = interaction.pressPosition
+                    }
+                }
+            }
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                modifier = Modifier
+                    .onGloballyPositioned { headerOrigin = it.positionInWindow() }
+                    .combinedClickable(
+                        interactionSource = headerInteractions,
+                        indication = null,
+                        onClickLabel = "Open ${workspace.label} in terminal",
+                        onLongClickLabel = "${workspace.label} actions",
+                        onLongClick = { onWorkspaceLongPress(headerOrigin + headerPress) },
+                        onClick = onOpenWorkspace,
+                    ),
+            ) {
                 StatusDot(status = workspace.status)
                 Column(
                     modifier = Modifier
