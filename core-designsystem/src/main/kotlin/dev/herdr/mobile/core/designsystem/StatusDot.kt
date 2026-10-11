@@ -6,8 +6,7 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.graphics.BlendMode
-import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.unit.Dp
@@ -46,12 +45,18 @@ fun StatusDot(
     ) {
         when (status) {
             AgentStatus.IDLE -> {
-                // Hollow ring: outer circle plus background-coloured centre.
-                drawCircle(color = color)
+                // Hollow ring as a stroke: true transparency (whatever is
+                // behind shows through). The old BlendMode.Clear punch
+                // rendered BLACK without a saved layer (classic Compose
+                // pitfall — Clear on the window canvas has nothing to
+                // composite against). Geometry preserved: outer edge at R,
+                // inner at 0.68R.
+                val outer = size.minDimension / 2
+                val width = outer * 0.32f
                 drawCircle(
-                    color = Color.Transparent,
-                    radius = size.minDimension / 2 * 0.68f,
-                    blendMode = BlendMode.Clear,
+                    color = color,
+                    radius = outer - width / 2,
+                    style = Stroke(width = width),
                 )
             }
 
