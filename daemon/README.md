@@ -53,7 +53,7 @@ Wants=network-online.target
 [Service]
 ExecStart=%h/path/to/herdr-mobile-daemon --bind 127.0.0.1:8765
 Environment=HERDR_MOBILE_TOKEN=replace-with-print-token-output
-Restart=on-failure
+Restart=always
 RestartSec=2
 
 [Install]
