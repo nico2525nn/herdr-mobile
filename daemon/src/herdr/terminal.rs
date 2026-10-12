@@ -38,6 +38,11 @@ impl TerminalChild {
         rows: u32,
     ) -> Result<TerminalChild> {
         let mut cmd = tokio::process::Command::new(&herdr.herdr_bin);
+        // The child resolves Herdr through its own env, NOT our --herdr-socket
+        // flag: without this a daemon pointed at a non-default session (dev /
+        // sandbox) spawns children into the DEFAULT session and every attach
+        // fails with "terminal target not found".
+        cmd.env("HERDR_SOCKET_PATH", herdr.socket_path());
         cmd.arg("terminal")
             .arg("session")
             .arg("control")
