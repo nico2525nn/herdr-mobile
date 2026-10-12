@@ -108,4 +108,21 @@ object TerminalKeyEncoder {
 
     /** CTRL-C / interrupt as raw byte, the fastest path that needs no round trip. */
     fun interrupt(): ByteArray = byteArrayOf(0x03)
+
+    /**
+     * Termux `paste()` normalization for atomic multi-char commits (CJK panel):
+     * strip ESC + C1 controls (escape injection), map every newline to CR
+     * (what Enter sends; LF would Ctrl-J in TUIs instead of submitting).
+     *
+     * Deliberately NOT the full Termux paste: no 2004 bracket wrap. The commit
+     * field is single-line and the direct path is per-char (Termux typing,
+     * never bracketed there either), so the remote's 2004 state is untracked
+     * by design — bracketing would need pump-output parsing for a case that
+     * barely exists. Shells treat the result identically to before (CR and LF
+     * both accept-line); TUIs get the safer CR.
+     */
+    fun pasteNormalize(text: String): String {
+        val stripped = text.filter { c -> c != '\u001B' && (c.code < 0x80 || c.code > 0x9F) }
+        return stripped.replace(Regex("\r?\n"), "\r")
+    }
 }

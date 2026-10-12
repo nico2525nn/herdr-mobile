@@ -79,6 +79,23 @@ class TerminalKeyEncoderTest {
     }
 
     @Test
+    fun `pasteNormalize maps newlines to CR`() {
+        // Termux paste(): \n and CRLF both become what Enter sends.
+        assertEquals("a\rb", TerminalKeyEncoder.pasteNormalize("a\nb"))
+        assertEquals("a\rb", TerminalKeyEncoder.pasteNormalize("a\r\nb"))
+        assertEquals("a\rb\r", TerminalKeyEncoder.pasteNormalize("a\nb\n"))
+        assertEquals("plain", TerminalKeyEncoder.pasteNormalize("plain"))
+    }
+
+    @Test
+    fun `pasteNormalize strips ESC and C1`() {
+        assertEquals("ab", TerminalKeyEncoder.pasteNormalize("a\u001Bb"))
+        assertEquals("ab", TerminalKeyEncoder.pasteNormalize("a\u0085b"))
+        // CJK passes through untouched.
+        assertEquals("あい", TerminalKeyEncoder.pasteNormalize("あい"))
+    }
+
+    @Test
     fun `withModifiers rejects meaningless ctrl combo`() {
         // CTRL+TAB has no control byte: null keeps the latch armed.
         assertEquals(

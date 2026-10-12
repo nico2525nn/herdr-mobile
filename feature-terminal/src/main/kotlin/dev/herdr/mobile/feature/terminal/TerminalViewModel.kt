@@ -453,6 +453,11 @@ class TerminalViewModel(
         if (chord != null) {
             stickyFlow.value = emptySet()
             enqueueOrSend({ backend -> backend.send(chord) })
+        } else if (text.length > 1) {
+            // Atomic multi-char commit (CJK panel): Termux paste normalization
+            // (strip ESC/C1, newlines to CR). Single chars stay verbatim —
+            // Termux typing parity (per-char commits are never normalized).
+            enqueueOrSend({ backend -> backend.sendText(TerminalKeyEncoder.pasteNormalize(text)) })
         } else {
             enqueueOrSend({ backend -> backend.sendText(text) })
         }
