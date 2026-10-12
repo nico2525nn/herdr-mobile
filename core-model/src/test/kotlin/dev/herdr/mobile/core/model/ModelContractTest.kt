@@ -151,4 +151,39 @@ class ModelContractTest {
         assertEquals("a/b", PathDisplay.fallback("/x/y/a/b"))
         assertNull(PathDisplay.fallback(null))
     }
+
+    @Test
+    fun `fnv vectors match daemon twin`() {
+        assertEquals("cbf29ce484222325", fnv1a64Hex(ByteArray(0)))
+        assertEquals("af63dc4c8601ec8c", fnv1a64Hex("a".toByteArray()))
+        assertEquals("d45c43e692645000", fnv1a64Hex("w1:p1=idle;".toByteArray()))
+    }
+
+    @Test
+    fun `status hash is order independent and status sensitive`() {
+        fun snap(panes: List<Pair<String, AgentStatus>>) = SessionSnapshot(
+            revision = 1,
+            seq = 1,
+            workspaces = listOf(
+                Workspace(
+                    id = "w1",
+                    label = "w",
+                    tabs = listOf(
+                        Tab(
+                            id = "w1:t1",
+                            workspaceId = "w1",
+                            panes = panes.map { (id, st) ->
+                                Pane(id = id, tabId = "w1:t1", workspaceId = "w1", status = st)
+                            },
+                        ),
+                    ),
+                ),
+            ),
+        )
+        val a = snap(listOf("w1:p1" to AgentStatus.IDLE, "w1:p2" to AgentStatus.WORKING))
+        val b = snap(listOf("w1:p2" to AgentStatus.WORKING, "w1:p1" to AgentStatus.IDLE))
+        assertEquals(a.statusHash(), b.statusHash())
+        val c = snap(listOf("w1:p1" to AgentStatus.DONE, "w1:p2" to AgentStatus.WORKING))
+        assertTrue(a.statusHash() != c.statusHash())
+    }
 }

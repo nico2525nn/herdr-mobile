@@ -130,4 +130,30 @@ data class SessionSnapshot(
             w.tabs.firstNotNullOfOrNull { t -> t.panes.firstOrNull { it.id == id } }
         }
     }
+
+    /**
+     * Canonical status hash over every pane. Byte-identical twin of the
+     * daemon's `status_hash_of`: `paneId=status;` sorted by pane id,
+     * FNV-1a-64, lowercase hex. The 60s `snapshot.tick` carries the server
+     * value; equality proves the local fold matches without transferring
+     * the snapshot (replaces the old blind 90s re-GET).
+     */
+    fun statusHash(): String {
+        val canonical = workspaces
+            .flatMap { it.tabs }
+            .flatMap { it.panes }
+            .sortedBy { it.id }
+            .joinToString(separator = "") { "${it.id}=${it.status.wire};" }
+        return fnv1a64Hex(canonical.toByteArray(Charsets.UTF_8))
+    }
+}
+
+/** FNV-1a-64, lowercase hex16. Test vectors shared with the daemon. */
+fun fnv1a64Hex(bytes: ByteArray): String {
+    var hash = -0x340d631b7bdddcdbL // 0xcbf29ce484222325
+    for (b in bytes) {
+        hash = hash xor (b.toLong() and 0xFF)
+        hash *= 0x100000001b3L
+    }
+    return hash.toULong().toString(16).padStart(16, '0')
 }

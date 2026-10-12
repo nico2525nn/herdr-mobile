@@ -49,6 +49,8 @@ data class SemanticEvent(
     companion object {
         const val TYPE_STREAM_READY = "stream.ready"
         const val TYPE_SNAPSHOT_REQUIRED = "snapshot.required"
+        /** 60s consistency tick carrying `detail.hash` (see `statusHash`). */
+        const val TYPE_SNAPSHOT_TICK = "snapshot.tick"
 
         const val TYPE_WORKSPACE_CREATED = "workspace.created"
         const val TYPE_WORKSPACE_CLOSED = "workspace.closed"

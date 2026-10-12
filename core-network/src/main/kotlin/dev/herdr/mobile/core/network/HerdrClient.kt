@@ -117,16 +117,22 @@ class HerdrClient(
 
     private val kickQueue = kotlinx.coroutines.channels.Channel<LoopCommand>(capacity = Channel.CONFLATED)
 
+    /** Last tick or event observed: the idle fallback below keys off it. */
+    @Volatile
+    private var lastTickOrEventAt: Long = 0
+
     init {
-        // Status backstop: re-GET the snapshot every 90s on a healthy link. The
-        // daemon reconciles itself every 60s and emits catch-up events, but a
-        // client-side fold divergence (dropped WS frame, reducer edge) would
-        // otherwise freeze dots with no signal. One cheap REST GET; refresh()
-        // never tears down the SSE.
+        // Idle fallback: one refetch after 5 silent minutes on a healthy link.
+        // The 60s server tick normally proves the fold (see applyEvent), so
+        // this only fires against old daemons (no ticks) or a wedged stream —
+        // never on a chatty link. Replaces the old blind 90s re-GET (~5MB/day
+        // on a large session); refresh() never tears down the SSE.
         scope.launch {
             while (true) {
-                kotlinx.coroutines.delay(90_000)
-                if (_state.value.connection == ConnectionState.CONNECTED) {
+                kotlinx.coroutines.delay(60_000)
+                if (_state.value.connection == ConnectionState.CONNECTED &&
+                    System.currentTimeMillis() - lastTickOrEventAt > 300_000
+                ) {
                     runCatching { refresh() }
                 }
             }
@@ -353,6 +359,7 @@ class HerdrClient(
         // snapshot, but its transition (working->done) still happened and
         // notifications must fire exactly once for it.
         _events.tryEmit(event)
+        lastTickOrEventAt = System.currentTimeMillis()
         val current = _state.value.snapshot ?: run {
             refetch("event without snapshot")
             return
@@ -365,6 +372,17 @@ class HerdrClient(
                         stale = false,
                         lastSyncAt = System.currentTimeMillis(),
                     )
+                }
+                // Consistency tick: the reducer already advanced the cursor
+                // (ticks fold as no-ops), so a hash mismatch means the fold
+                // diverged despite contiguous seqs — refetch authoritatively.
+                // Match = proof, zero bytes beyond the ~70B tick.
+                if (event.type == dev.herdr.mobile.core.model.SemanticEvent.TYPE_SNAPSHOT_TICK) {
+                    val want = (event.detail?.get("hash") as? kotlinx.serialization.json.JsonPrimitive)?.content
+                    val have = outcome.snapshot.statusHash()
+                    if (want != null && want != have) {
+                        refetch("tick hash drift (want $want, have $have)")
+                    }
                 }
             }
 

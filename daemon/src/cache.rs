@@ -435,6 +435,40 @@ impl SessionCache {
         Ok(out)
     }
 
+    /// Canonical status hash over every pane (`paneId=status;` sorted by
+    /// pane id, FNV-1a-64, hex). The client recomputes the identical string
+    /// over its folded snapshot; equality proves the fold matches the server
+    /// without transferring the snapshot. Keep in lockstep with the Kotlin
+    /// `statusHash()` (same field order, same wire strings, same FNV).
+    pub fn status_hash(&self) -> String {
+        let inner = self.inner.read().expect("cache lock");
+        let Some(snapshot) = inner.snapshot.as_ref() else {
+            return String::from("0000000000000000");
+        };
+        status_hash_of(snapshot)
+    }
+
+    /// The 60s consistency tick: carries only the status hash. Clients
+    /// compare instead of blindly re-GETting the snapshot (the old 90s poll
+    /// moved ~5MB/day on a large session; the tick is ~70B/min). Emitted
+    /// AFTER any reconcile catch-up events so the hash covers them.
+    pub fn tick_event(&self) -> SemanticEvent {
+        let revision = self.revision.load(Ordering::SeqCst);
+        let ev = self.emit(
+            "snapshot.tick",
+            None,
+            None,
+            None,
+            None,
+            None,
+            revision,
+            Some(serde_json::json!({"hash": self.status_hash()})),
+            None,
+        );
+        self.sync_snapshot_seq();
+        ev
+    }
+
     fn apply_tab_rename(&self, event: &HerdrEvent) -> Vec<SemanticEvent> {
         let tab_id = event.data.get("tab_id").and_then(|v| v.as_str()).unwrap_or("");
         let workspace_id = event.data.get("workspace_id").and_then(|v| v.as_str()).unwrap_or("");
@@ -728,6 +762,9 @@ pub async fn run_resync_loop(cache: Arc<SessionCache>, bus: Arc<EventBus>) {
                             for e in events {
                                 bus.broadcast(e);
                             }
+                            // Consistency tick last: the hash covers the
+                            // catch-up events above (if any).
+                            bus.broadcast(cache.tick_event());
                         }
                         Err(e) => {
                             warn!("reconcile failed ({e:#}); breaking to resubscribe");
@@ -866,6 +903,34 @@ fn all_subscriptions(pane_ids: &[String]) -> Vec<serde_json::Value> {
 // ---------------------------------------------------------------------------
 // Snapshot construction
 // ---------------------------------------------------------------------------
+
+fn fnv1a64(bytes: &[u8]) -> u64 {
+    let mut hash: u64 = 0xcbf29ce484222325;
+    for b in bytes {
+        hash ^= *b as u64;
+        hash = hash.wrapping_mul(0x100000001b3);
+    }
+    hash
+}
+
+fn status_hash_of(snapshot: &SessionSnapshot) -> String {
+    let mut panes: Vec<(&str, &str)> = snapshot
+        .workspaces
+        .iter()
+        .flat_map(|w| w.tabs.iter())
+        .flat_map(|t| t.panes.iter())
+        .map(|p| (p.id.as_str(), p.status.as_wire()))
+        .collect();
+    panes.sort_by(|a, b| a.0.cmp(b.0));
+    let mut canonical = String::new();
+    for (id, status) in panes {
+        canonical.push_str(id);
+        canonical.push('=');
+        canonical.push_str(status);
+        canonical.push(';');
+    }
+    format!("{:016x}", fnv1a64(canonical.as_bytes()))
+}
 
 pub fn build_snapshot(
     raw: HerdrSnapshot,
@@ -1121,6 +1186,67 @@ mod tests {
         .unwrap();
         let snap = build_snapshot(raw, 1, 0, None, None).unwrap();
         assert_eq!(snap.workspaces[0].status, AgentStatus::Unknown);
+    }
+
+    #[test]
+    fn fnv_test_vectors() {
+        // Standard FNV-1a-64 vectors: the Kotlin twin must match these.
+        assert_eq!(format!("{:016x}", fnv1a64(b"")), "cbf29ce484222325");
+        assert_eq!(format!("{:016x}", fnv1a64(b"a")), "af63dc4c8601ec8c");
+        assert_eq!(format!("{:016x}", fnv1a64(b"w1:p1=idle;")), "d45c43e692645000");
+    }
+
+    #[test]
+    fn status_hash_canonical() {
+        // Order-independent (sorted by pane id), status-sensitive.
+        let snap = |panes: Vec<(&str, AgentStatus)>| SessionSnapshot {
+            revision: 1,
+            seq: 1,
+            captured_at: None,
+            herdr: HerdrInfo { version: None, protocol: None, binary: None },
+            focus: Focus { workspace_id: None, tab_id: None, pane_id: None },
+            workspaces: vec![Workspace {
+                id: "w1".into(),
+                label: "w".into(),
+                path: None,
+                home: None,
+                number: 1,
+                status: AgentStatus::Idle,
+                focused: false,
+                active_tab_id: None,
+                tabs: vec![Tab {
+                    id: "w1:t1".into(),
+                    workspace_id: "w1".into(),
+                    label: String::new(),
+                    number: 1,
+                    status: AgentStatus::Idle,
+                    focused: false,
+                    panes: panes
+                        .into_iter()
+                        .map(|(id, status)| Pane {
+                            id: id.into(),
+                            tab_id: "w1:t1".into(),
+                            workspace_id: "w1".into(),
+                            label: None,
+                            title: None,
+                            agent: None,
+                            status,
+                            cwd: None,
+                            terminal_id: None,
+                            focused: false,
+                            revision: 0,
+                            tokens: Default::default(),
+                        })
+                        .collect(),
+                }],
+                tokens: Default::default(),
+            }],
+        };
+        let a = snap(vec![("w1:p1", AgentStatus::Idle), ("w1:p2", AgentStatus::Working)]);
+        let b = snap(vec![("w1:p2", AgentStatus::Working), ("w1:p1", AgentStatus::Idle)]);
+        assert_eq!(status_hash_of(&a), status_hash_of(&b));
+        let c = snap(vec![("w1:p1", AgentStatus::Done), ("w1:p2", AgentStatus::Working)]);
+        assert_ne!(status_hash_of(&a), status_hash_of(&c));
     }
 
     #[test]
