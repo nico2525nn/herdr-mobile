@@ -1,8 +1,11 @@
 package dev.herdr.mobile.core.designsystem
 
 import androidx.compose.foundation.gestures.Orientation
-import androidx.compose.foundation.gestures.detectDragGesturesAfterLongPress
+import androidx.compose.foundation.gestures.awaitEachGesture
+import androidx.compose.foundation.gestures.awaitFirstDown
+import androidx.compose.foundation.gestures.awaitLongPressOrCancellation
 import androidx.compose.foundation.gestures.scrollBy
+import androidx.compose.ui.input.pointer.changedToUpIgnoreConsumed
 import androidx.compose.foundation.lazy.LazyListState
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.runtime.Composable
@@ -13,6 +16,7 @@ import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import kotlinx.coroutines.launch
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.hapticfeedback.HapticFeedbackType
@@ -50,6 +54,7 @@ fun <T> rememberReorderState(
 ): ReorderState<T> {
     val listState = rememberLazyListState()
     val haptics = LocalHapticFeedback.current
+    val scope = androidx.compose.runtime.rememberCoroutineScope()
     // Stable identity (NO key): the bag holds this object forever. Keying it
     // would orphan the UI on the old object after every resync — the list
     // would freeze on stale order while the state moved on.
@@ -79,7 +84,6 @@ fun <T> rememberReorderState(
         }
     }
     val vertical = remember { mutableStateOf(true) }
-    val scrollEnabled = remember { androidx.compose.runtime.derivedStateOf { draggingKey.value == null } }
     return remember {
         ReorderState(
             listState = listState,
@@ -87,52 +91,61 @@ fun <T> rememberReorderState(
             draggingKey = draggingKey,
             dragOffsetPx = dragOffsetPx,
             vertical = vertical,
-            scrollEnabled = scrollEnabled,
+            scrollBlocker = object : androidx.compose.ui.input.nestedscroll.NestedScrollConnection {
+                override fun onPreScroll(
+                    available: androidx.compose.ui.geometry.Offset,
+                    source: androidx.compose.ui.input.nestedscroll.NestedScrollSource,
+                ): androidx.compose.ui.geometry.Offset =
+                    if (draggingKey.value != null) available else androidx.compose.ui.geometry.Offset.Zero
+            },
             handleModifier = { item ->
                 val itemKey = key(item)
                 Modifier.pointerInput(itemKey) {
-                    detectDragGesturesAfterLongPress(
-                        onDragStart = {
-                            lastDragAt.value = System.currentTimeMillis()
-                            vertical.value = listState.layoutInfo.orientation == Orientation.Vertical
-                            movedPastSlop.value = false
-                            draggingKey.value = itemKey
-                            dragOffsetPx.floatValue = 0f
-                            scrollDir.intValue = 0
-                            haptics.performHapticFeedback(HapticFeedbackType.LongPress)
-                        },
-                        onDragCancel = {
-                            // No motion = plain long-press (release): menu. Real
-                            // mid-drag interruption also lands here: reset, no menu.
-                            val wasPress = !movedPastSlop.value
-                            draggingKey.value = null
-                            scrollDir.intValue = 0
-                            dragOffsetPx.floatValue = 0f
-                            if (wasPress) {
-                                onLongPressWithoutMove?.invoke(item)
-                            } else {
-                                order.value = items
+                    // Manual long-press-drag (NOT detectDragGesturesAfterLongPress):
+                    // the stock helper cancels when moves arrive consumed in the
+                    // Main pass, which scrollable parents do to rail drags
+                    // (observed: arm then instant cancel, zero motion). This loop
+                    // reads RAW deltas (consumption flags ignored) and claims
+                    // leftovers itself; the outer pre-scroll blocker starves the
+                    // parent scroll so nothing double-moves.
+                    val slop = viewConfiguration.touchSlop
+                    awaitEachGesture {
+                        val down = awaitFirstDown(requireUnconsumed = false)
+                        // Waits the long-press timeout itself; null on early
+                        // move/UP (plain tap/scroll — not ours).
+                        if (awaitLongPressOrCancellation(down.id) == null) {
+                            return@awaitEachGesture
+                        }
+                        lastDragAt.value = System.currentTimeMillis()
+                        vertical.value = listState.layoutInfo.orientation == Orientation.Vertical
+                        movedPastSlop.value = false
+                        draggingKey.value = itemKey
+                        dragOffsetPx.floatValue = 0f
+                        scrollDir.intValue = 0
+                        haptics.performHapticFeedback(HapticFeedbackType.LongPress)
+                        var slopAccum = 0f
+                        var done = false
+                        while (!done) {
+                            val event = awaitPointerEvent()
+                            val change = event.changes.firstOrNull { it.id == down.id }
+                            if (change == null || change.changedToUpIgnoreConsumed()) {
+                                done = true
+                                break
                             }
-                        },
-                        onDragEnd = {
-                            // End runs only after real motion (press-without-move
-                            // takes the cancel path above, never lands here).
-                            val to = order.value.indexOfFirst { key(it) == itemKey }
-                            draggingKey.value = null
-                            scrollDir.intValue = 0
-                            dragOffsetPx.floatValue = 0f
-                            if (to >= 0) onDrop(item, to)
-                        },
-                        onDrag = { change, dragAmount ->
-                            change.consume()
-                            val main = if (vertical.value) dragAmount.y else dragAmount.x
-                            dragOffsetPx.floatValue += main
-                            lastDragAt.value = System.currentTimeMillis()
-                            if (!movedPastSlop.value &&
-                                kotlin.math.abs(dragOffsetPx.floatValue) > 24f
-                            ) {
+                            // Raw delta even if an ancestor consumed it.
+                            val pos = change.position
+                            val prev = change.previousPosition
+                            val dy = pos.y - prev.y
+                            val dx = pos.x - prev.x
+                            val main = if (vertical.value) dy else dx
+                            if (!movedPastSlop.value) {
+                                slopAccum += main
+                                if (kotlin.math.abs(slopAccum) < slop) continue
                                 movedPastSlop.value = true
                             }
+                            dragOffsetPx.floatValue += main
+                            lastDragAt.value = System.currentTimeMillis()
+                            change.consume()
                             val info = listState.layoutInfo.visibleItemsInfo
                                 .firstOrNull { it.key == itemKey }
                             if (info != null) {
@@ -161,8 +174,26 @@ fun <T> rememberReorderState(
                                     else -> 0
                                 }
                             }
-                        },
-                    )
+                        }
+                        val moved = movedPastSlop.value
+                        val to = order.value.indexOfFirst { key(it) == itemKey }
+                        draggingKey.value = null
+                        scrollDir.intValue = 0
+                        dragOffsetPx.floatValue = 0f
+                        if (moved) {
+                            if (to >= 0) onDrop(item, to)
+                        } else if (onLongPressWithoutMove != null) {
+                            // Deferred past the gesture: opening a menu
+                            // synchronously inside UP-handling lets the
+                            // in-flight UP interact with the newborn UI
+                            // (instant suicide-dismiss or phantom clicks).
+                            val cb = onLongPressWithoutMove
+                            scope.launch {
+                                kotlinx.coroutines.delay(50)
+                                cb?.invoke(item)
+                            }
+                        }
+                    }
                 }
             },
         )
@@ -177,12 +208,14 @@ class ReorderState<T>(
     val dragOffsetPx: State<Float>,
     val vertical: State<Boolean>,
     /**
-     * False while a drag is armed: pass to the lazy container's
-     * `userScrollEnabled`. Without the lock the parent wins the nested-scroll
-     * race, consumes the moves, and the detector cancels instantly (observed:
-     * arm → cancel in 277ms, zero motion delivered).
+     * Attach to the lazy container via `Modifier.nestedScroll`. While a drag
+     * is armed it swallows pre-scroll so the parent never sees (or consumes)
+     * the moves. A plain boolean flag — no recomposition on arm, so it can't
+     * cancel the very gesture it protects (unlike flipping
+     * `userScrollEnabled`, which reconfigures the row mid-gesture and kills
+     * working drags — observed).
      */
-    val scrollEnabled: State<Boolean>,
+    val scrollBlocker: androidx.compose.ui.input.nestedscroll.NestedScrollConnection,
     /** Gesture modifier for the item's drag handle (or whole item). */
     val handleModifier: (T) -> Modifier,
 ) {

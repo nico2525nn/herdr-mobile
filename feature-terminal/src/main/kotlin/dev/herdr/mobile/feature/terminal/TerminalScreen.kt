@@ -2,6 +2,7 @@ package dev.herdr.mobile.feature.terminal
 
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.lazy.items
+import androidx.compose.ui.input.nestedscroll.nestedScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -295,8 +296,9 @@ private fun WorkspaceRail(
         )
         androidx.compose.foundation.lazy.LazyRow(
             state = reorder.listState,
-            userScrollEnabled = reorder.scrollEnabled.value,
-            modifier = Modifier.weight(1f),
+            modifier = Modifier
+                .weight(1f)
+                .nestedScroll(reorder.scrollBlocker),
             horizontalArrangement = Arrangement.spacedBy(8.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
@@ -334,6 +336,7 @@ private fun TabRail(
     modifier: Modifier = Modifier,
 ) {
     val workspace = state.workspace ?: return
+
     // Rail origin in window coordinates: chip-local press offsets are summed
     // with it so the menu anchor lands on the pressed chip.
     var railOrigin by remember { mutableStateOf(androidx.compose.ui.geometry.Offset.Zero) }
@@ -370,8 +373,9 @@ private fun TabRail(
         )
         androidx.compose.foundation.lazy.LazyRow(
             state = reorder.listState,
-            userScrollEnabled = reorder.scrollEnabled.value,
-            modifier = Modifier.weight(1f),
+            modifier = Modifier
+                .weight(1f)
+                .nestedScroll(reorder.scrollBlocker),
             horizontalArrangement = Arrangement.spacedBy(8.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
