@@ -82,7 +82,9 @@ class HomeViewModel(
                     workspaceId,
                     dev.herdr.mobile.core.model.Reorder.insertIndex(from, toIndex, workspaces.size),
                 )
-            }.onFailure { _message.value = "Cannot move workspace: ${it.message}" }
+            }.onFailure {
+                _message.value = "Cannot move workspace: ${it.message}"
+            }
         }
     }
 

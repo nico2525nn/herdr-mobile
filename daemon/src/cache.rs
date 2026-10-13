@@ -450,6 +450,63 @@ impl SessionCache {
         status_hash_of(snapshot)
     }
 
+    /// Apply the authoritative tab order from a move RPC response (the
+    /// response lists the affected workspace's tabs post-commit, so our own
+    /// moves land instantly and exactly — no race with the moved event's
+    /// refresh). Unknown ids are ignored; tabs the response omits keep their
+    /// relative order at the end.
+    pub fn apply_tab_order(&self, tab_id: &str, ordered_ids: &[String]) {
+        if ordered_ids.is_empty() {
+            return;
+        }
+        self.mutate(|snapshot| {
+            for workspace in &mut snapshot.workspaces {
+                if !workspace.tabs.iter().any(|t| t.id == tab_id) {
+                    continue;
+                }
+                let mut remaining: Vec<Tab> =
+                    std::mem::take(&mut workspace.tabs);
+                let mut tabs: Vec<Tab> = Vec::with_capacity(remaining.len());
+                for id in ordered_ids {
+                    if let Some(pos) = remaining.iter().position(|t| &t.id == id) {
+                        tabs.push(remaining.remove(pos));
+                    }
+                }
+                tabs.append(&mut remaining);
+                workspace.tabs = tabs;
+            }
+        });
+    }
+
+    /// Apply the authoritative workspace order + numbers from a move response.
+    pub fn apply_workspace_order(&self, ordered: &[(String, i64)]) {
+        if ordered.is_empty() {
+            return;
+        }
+        self.mutate(|snapshot| {
+            let rank: std::collections::HashMap<&str, (usize, i64)> = ordered
+                .iter()
+                .enumerate()
+                .map(|(i, (id, n))| (id.as_str(), (i, *n)))
+                .collect();
+            for workspace in &mut snapshot.workspaces {
+                if let Some((_, n)) = rank.get(workspace.id.as_str()) {
+                    workspace.number = *n as i64;
+                }
+            }
+            snapshot.workspaces.sort_by(|a, b| {
+                let ra = rank.get(a.id.as_str()).map(|r| r.0);
+                let rb = rank.get(b.id.as_str()).map(|r| r.0);
+                match (ra, rb) {
+                    (Some(x), Some(y)) => x.cmp(&y),
+                    (Some(_), None) => std::cmp::Ordering::Less,
+                    (None, Some(_)) => std::cmp::Ordering::Greater,
+                    (None, None) => a.number.cmp(&b.number),
+                }
+            });
+        });
+    }
+
     /// The 60s consistency tick: carries only the status hash. Clients
     /// compare instead of blindly re-GETting the snapshot (the old 90s poll
     /// moved ~5MB/day on a large session; the tick is ~70B/min). Emitted
@@ -926,20 +983,20 @@ fn fnv1a64(bytes: &[u8]) -> u64 {
 }
 
 fn status_hash_of(snapshot: &SessionSnapshot) -> String {
-    let mut panes: Vec<(&str, &str)> = snapshot
-        .workspaces
-        .iter()
-        .flat_map(|w| w.tabs.iter())
-        .flat_map(|t| t.panes.iter())
-        .map(|p| (p.id.as_str(), p.status.as_wire()))
-        .collect();
-    panes.sort_by(|a, b| a.0.cmp(b.0));
+    // Snapshot order, NOT sorted: tab/workspace order must flip the hash so
+    // the 60s tick heals order drift (missed moves) as well as status drift.
+    // Both sides iterate identically (daemon sorts workspaces by number once
+    // at build; tabs/panes keep wire order; the client preserves both).
     let mut canonical = String::new();
-    for (id, status) in panes {
-        canonical.push_str(id);
-        canonical.push('=');
-        canonical.push_str(status);
-        canonical.push(';');
+    for workspace in &snapshot.workspaces {
+        for tab in &workspace.tabs {
+            for pane in &tab.panes {
+                canonical.push_str(&pane.id);
+                canonical.push('=');
+                canonical.push_str(pane.status.as_wire());
+                canonical.push(';');
+            }
+        }
     }
     format!("{:016x}", fnv1a64(canonical.as_bytes()))
 }
@@ -1210,7 +1267,7 @@ mod tests {
 
     #[test]
     fn status_hash_canonical() {
-        // Order-independent (sorted by pane id), status-sensitive.
+        // Order-sensitive (snapshot order) and status-sensitive.
         let snap = |panes: Vec<(&str, AgentStatus)>| SessionSnapshot {
             revision: 1,
             seq: 1,
@@ -1256,7 +1313,7 @@ mod tests {
         };
         let a = snap(vec![("w1:p1", AgentStatus::Idle), ("w1:p2", AgentStatus::Working)]);
         let b = snap(vec![("w1:p2", AgentStatus::Working), ("w1:p1", AgentStatus::Idle)]);
-        assert_eq!(status_hash_of(&a), status_hash_of(&b));
+        assert_ne!(status_hash_of(&a), status_hash_of(&b));
         let c = snap(vec![("w1:p1", AgentStatus::Done), ("w1:p2", AgentStatus::Working)]);
         assert_ne!(status_hash_of(&a), status_hash_of(&c));
     }

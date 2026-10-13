@@ -401,7 +401,9 @@ class HerdrClient(
                 refetch("seq gap: expected ${outcome.expectedSeq}, got ${outcome.receivedSeq}")
             }
 
-            SnapshotReducer.Outcome.Refetch -> refetch("daemon requested refetch (${event.type})")
+            SnapshotReducer.Outcome.Refetch -> {
+                refetch("daemon requested refetch (${event.type})")
+            }
         }
     }
 

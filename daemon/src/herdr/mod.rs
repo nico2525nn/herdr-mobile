@@ -296,14 +296,37 @@ impl HerdrClient {
         Ok(())
     }
 
-    pub async fn tab_move(&self, tab_id: &str, insert_index: i64) -> Result<()> {
-        self.request("tab.move", serde_json::json!({"tab_id": tab_id, "insert_index": insert_index})).await?;
-        Ok(())
+    /// Returns the authoritative ordered tab ids (`tab_list` response).
+    pub async fn tab_move(&self, tab_id: &str, insert_index: i64) -> Result<Vec<String>> {
+        let result = self.request("tab.move", serde_json::json!({"tab_id": tab_id, "insert_index": insert_index})).await?;
+        Ok(result
+            .get("tabs")
+            .and_then(|t| t.as_array())
+            .map(|tabs| {
+                tabs.iter()
+                    .filter_map(|t| t.get("tab_id").and_then(|i| i.as_str()).map(str::to_string))
+                    .collect()
+            })
+            .unwrap_or_default())
     }
 
-    pub async fn workspace_move(&self, workspace_id: &str, insert_index: i64) -> Result<()> {
-        self.request("workspace.move", serde_json::json!({"workspace_id": workspace_id, "insert_index": insert_index})).await?;
-        Ok(())
+    /// Returns the authoritative (workspace_id, number) pairs (`workspace_list`).
+    pub async fn workspace_move(&self, workspace_id: &str, insert_index: i64) -> Result<Vec<(String, i64)>> {
+        let result = self.request("workspace.move", serde_json::json!({"workspace_id": workspace_id, "insert_index": insert_index})).await?;
+        Ok(result
+            .get("workspaces")
+            .and_then(|w| w.as_array())
+            .map(|list| {
+                list.iter()
+                    .filter_map(|w| {
+                        Some((
+                            w.get("workspace_id")?.as_str()?.to_string(),
+                            w.get("number")?.as_i64()?,
+                        ))
+                    })
+                    .collect()
+            })
+            .unwrap_or_default())
     }
 
     pub async fn tab_rename(&self, tab_id: &str, label: &str) -> Result<()> {

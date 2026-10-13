@@ -48,7 +48,10 @@ fun <T> rememberReorderState(
 ): ReorderState<T> {
     val listState = rememberLazyListState()
     val haptics = LocalHapticFeedback.current
-    val order: MutableState<List<T>> = remember(items) { mutableStateOf(items) }
+    // Stable identity (NO key): the bag holds this object forever. Keying it
+    // would orphan the UI on the old object after every resync — the list
+    // would freeze on stale order while the state moved on.
+    val order: MutableState<List<T>> = remember { mutableStateOf(items) }
     val draggingKey: MutableState<Any?> = remember { mutableStateOf(null) }
     LaunchedEffect(items) {
         if (draggingKey.value == null) order.value = items

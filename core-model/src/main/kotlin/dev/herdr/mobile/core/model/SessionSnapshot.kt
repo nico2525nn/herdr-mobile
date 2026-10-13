@@ -133,16 +133,16 @@ data class SessionSnapshot(
 
     /**
      * Canonical status hash over every pane. Byte-identical twin of the
-     * daemon's `status_hash_of`: `paneId=status;` sorted by pane id,
-     * FNV-1a-64, lowercase hex. The 60s `snapshot.tick` carries the server
-     * value; equality proves the local fold matches without transferring
-     * the snapshot (replaces the old blind 90s re-GET).
+     * daemon's `status_hash_of`: `paneId=status;` in snapshot order,
+     * FNV-1a-64, lowercase hex. Order-sensitive on purpose: tab/workspace
+     * order flips the hash so the 60s `snapshot.tick` heals order drift
+     * (missed moves) as well as status drift. Both sides iterate
+     * identically (workspaces by number, tabs/panes in wire order).
      */
     fun statusHash(): String {
         val canonical = workspaces
             .flatMap { it.tabs }
             .flatMap { it.panes }
-            .sortedBy { it.id }
             .joinToString(separator = "") { "${it.id}=${it.status.wire};" }
         return fnv1a64Hex(canonical.toByteArray(Charsets.UTF_8))
     }

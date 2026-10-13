@@ -462,7 +462,10 @@ async fn tab_move(
         return api_error(StatusCode::BAD_REQUEST, "bad_request", "missing insertIndex");
     };
     match state.cache.herdr_client().tab_move(&tab_id, insert_index).await {
-        Ok(()) => (StatusCode::OK, Json(json!({"ok": true}))).into_response(),
+        Ok(ordered) => {
+            state.cache.apply_tab_order(&tab_id, &ordered);
+            (StatusCode::OK, Json(json!({"ok": true}))).into_response()
+        }
         Err(e) => herdr_error(e),
     }
 }
@@ -480,7 +483,10 @@ async fn workspace_move(
         return api_error(StatusCode::BAD_REQUEST, "bad_request", "missing insertIndex");
     };
     match state.cache.herdr_client().workspace_move(&workspace_id, insert_index).await {
-        Ok(()) => (StatusCode::OK, Json(json!({"ok": true}))).into_response(),
+        Ok(ordered) => {
+            state.cache.apply_workspace_order(&ordered);
+            (StatusCode::OK, Json(json!({"ok": true}))).into_response()
+        }
         Err(e) => herdr_error(e),
     }
 }

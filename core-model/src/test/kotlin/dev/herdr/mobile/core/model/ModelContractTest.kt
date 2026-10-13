@@ -189,7 +189,7 @@ class ModelContractTest {
     }
 
     @Test
-    fun `status hash is order independent and status sensitive`() {
+    fun `status hash is order and status sensitive`() {
         fun snap(panes: List<Pair<String, AgentStatus>>) = SessionSnapshot(
             revision = 1,
             seq = 1,
@@ -211,7 +211,7 @@ class ModelContractTest {
         )
         val a = snap(listOf("w1:p1" to AgentStatus.IDLE, "w1:p2" to AgentStatus.WORKING))
         val b = snap(listOf("w1:p2" to AgentStatus.WORKING, "w1:p1" to AgentStatus.IDLE))
-        assertEquals(a.statusHash(), b.statusHash())
+        assertTrue(a.statusHash() != b.statusHash())
         val c = snap(listOf("w1:p1" to AgentStatus.DONE, "w1:p2" to AgentStatus.WORKING))
         assertTrue(a.statusHash() != c.statusHash())
     }
