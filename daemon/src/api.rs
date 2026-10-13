@@ -37,6 +37,8 @@ pub fn router(state: AppState) -> Router {
         .route("/v1/workspace", post(workspace_create))
         .route("/v1/workspace/{workspace_id}/rename", post(workspace_rename))
         .route("/v1/workspace/{workspace_id}/close", post(workspace_close))
+        .route("/v1/tab/{tab_id}/move", post(tab_move))
+        .route("/v1/workspace/{workspace_id}/move", post(workspace_move))
         .with_state(state)
 }
 
@@ -442,6 +444,42 @@ async fn workspace_close(
         return e;
     }
     match state.cache.herdr_client().workspace_close(&workspace_id).await {
+        Ok(()) => (StatusCode::OK, Json(json!({"ok": true}))).into_response(),
+        Err(e) => herdr_error(e),
+    }
+}
+
+async fn tab_move(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(tab_id): Path<String>,
+    Json(body): Json<Value>,
+) -> Response {
+    if let Err(e) = check_auth(&state, &headers) {
+        return e;
+    }
+    let Some(insert_index) = body.get("insertIndex").and_then(|v| v.as_i64()) else {
+        return api_error(StatusCode::BAD_REQUEST, "bad_request", "missing insertIndex");
+    };
+    match state.cache.herdr_client().tab_move(&tab_id, insert_index).await {
+        Ok(()) => (StatusCode::OK, Json(json!({"ok": true}))).into_response(),
+        Err(e) => herdr_error(e),
+    }
+}
+
+async fn workspace_move(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(workspace_id): Path<String>,
+    Json(body): Json<Value>,
+) -> Response {
+    if let Err(e) = check_auth(&state, &headers) {
+        return e;
+    }
+    let Some(insert_index) = body.get("insertIndex").and_then(|v| v.as_i64()) else {
+        return api_error(StatusCode::BAD_REQUEST, "bad_request", "missing insertIndex");
+    };
+    match state.cache.herdr_client().workspace_move(&workspace_id, insert_index).await {
         Ok(()) => (StatusCode::OK, Json(json!({"ok": true}))).into_response(),
         Err(e) => herdr_error(e),
     }

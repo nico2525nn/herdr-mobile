@@ -38,7 +38,9 @@ data class SemanticEvent(
             type == TYPE_TAB_CREATED ||
             type == TYPE_TAB_CLOSED ||
             type == TYPE_PANE_CREATED ||
-            type == TYPE_PANE_CLOSED
+            type == TYPE_PANE_CLOSED ||
+            type == TYPE_TAB_MOVED ||
+            type == TYPE_WORKSPACE_MOVED
 
     /** Status transitions that a user would want to know about while away. */
     val isAlertWorthy: Boolean
@@ -54,11 +56,13 @@ data class SemanticEvent(
 
         const val TYPE_WORKSPACE_CREATED = "workspace.created"
         const val TYPE_WORKSPACE_CLOSED = "workspace.closed"
+        const val TYPE_WORKSPACE_MOVED = "workspace.moved"
         const val TYPE_WORKSPACE_RENAMED = "workspace.renamed"
         const val TYPE_WORKSPACE_STATUS_CHANGED = "workspace.status_changed"
 
         const val TYPE_TAB_CREATED = "tab.created"
         const val TYPE_TAB_CLOSED = "tab.closed"
+        const val TYPE_TAB_MOVED = "tab.moved"
         const val TYPE_TAB_RENAMED = "tab.renamed"
         const val TYPE_TAB_STATUS_CHANGED = "tab.status_changed"
 

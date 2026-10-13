@@ -67,6 +67,25 @@ class HomeViewModel(
         }
     }
 
+    /**
+     * Drag-reorder: move [workspaceId] to visual position [toIndex]. No local
+     * patching — the daemon emits workspace.moved and every client refetches
+     * authoritatively (same path as a desktop reorder).
+     */
+    fun moveWorkspace(workspaceId: String, toIndex: Int) {
+        val workspaces = uiState.value.snapshot?.workspaces ?: return
+        val from = workspaces.indexOfFirst { it.id == workspaceId }
+        if (from < 0 || from == toIndex) return
+        viewModelScope.launch {
+            runCatching {
+                client.moveWorkspace(
+                    workspaceId,
+                    dev.herdr.mobile.core.model.Reorder.insertIndex(from, toIndex, workspaces.size),
+                )
+            }.onFailure { _message.value = "Cannot move workspace: ${it.message}" }
+        }
+    }
+
     fun closeWorkspace(workspaceId: String) {
         viewModelScope.launch {
             runCatching { client.closeWorkspace(workspaceId) }

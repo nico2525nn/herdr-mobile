@@ -296,6 +296,16 @@ impl HerdrClient {
         Ok(())
     }
 
+    pub async fn tab_move(&self, tab_id: &str, insert_index: i64) -> Result<()> {
+        self.request("tab.move", serde_json::json!({"tab_id": tab_id, "insert_index": insert_index})).await?;
+        Ok(())
+    }
+
+    pub async fn workspace_move(&self, workspace_id: &str, insert_index: i64) -> Result<()> {
+        self.request("workspace.move", serde_json::json!({"workspace_id": workspace_id, "insert_index": insert_index})).await?;
+        Ok(())
+    }
+
     pub async fn tab_rename(&self, tab_id: &str, label: &str) -> Result<()> {
         self.request("tab.rename", json!({"tab_id": tab_id, "label": label})).await?;
         Ok(())

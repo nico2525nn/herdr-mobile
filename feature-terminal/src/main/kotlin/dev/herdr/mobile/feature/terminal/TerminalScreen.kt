@@ -1,6 +1,7 @@
 package dev.herdr.mobile.feature.terminal
 
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -121,6 +122,7 @@ fun TerminalScreen(
                 val pane = tab.activePane ?: return@WorkspaceRail
                 viewModel.openTarget(TerminalTarget(workspaceId, tab.id, pane.id))
             },
+            onMoveWorkspace = { workspaceId, to -> viewModel.moveWorkspace(workspaceId, to) },
         )
         TabRail(
             state = state,
@@ -132,6 +134,10 @@ fun TerminalScreen(
             },
             onTabLongPress = { workspaceId, tabId, label, anchor ->
                 tabMenu = TabMenuTarget(workspaceId, tabId, label, anchor)
+            },
+            onMoveTab = { tabId, to ->
+                val workspaceId = state.target?.workspaceId ?: return@TabRail
+                viewModel.moveTab(workspaceId, tabId, to)
             },
         )
         state.statusMessage?.let { message ->
@@ -269,6 +275,7 @@ private fun WorkspaceRail(
     state: TerminalUiState,
     onNavigateHome: () -> Unit,
     onSelectWorkspace: (String) -> Unit,
+    onMoveWorkspace: (workspaceId: String, toIndex: Int) -> Unit,
     modifier: Modifier = Modifier,
 ) {
     val snapshot = state.snapshot ?: return
@@ -283,20 +290,33 @@ private fun WorkspaceRail(
         IconButton(onClick = onNavigateHome, modifier = Modifier.size(40.dp)) {
             Icon(Icons.Filled.Home, contentDescription = "Back to Home")
         }
-        Row(
-            modifier = Modifier
-                .weight(1f)
-                .horizontalScroll(rememberScrollState()),
+        val reorder = dev.herdr.mobile.core.designsystem.rememberReorderState(
+            items = snapshot.workspaces,
+            key = { it.id },
+            onDrop = { ws, to -> onMoveWorkspace(ws.id, to) },
+        )
+        androidx.compose.foundation.lazy.LazyRow(
+            state = reorder.listState,
+            modifier = Modifier.weight(1f),
             horizontalArrangement = Arrangement.spacedBy(8.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
-            snapshot.workspaces.forEach { workspace ->
-                StatusChip(
-                    label = workspace.label,
-                    status = workspace.status,
-                    selected = workspace.id == state.target?.workspaceId,
-                    onClick = { onSelectWorkspace(workspace.id) },
-                )
+            items(
+                items = reorder.order.value,
+                key = { it.id },
+            ) { workspace ->
+                androidx.compose.foundation.layout.Box(
+                    modifier = Modifier.animateItem() then
+                        reorder.draggedModifier(workspace) { it.id },
+                ) {
+                    StatusChip(
+                        label = workspace.label,
+                        status = workspace.status,
+                        selected = workspace.id == state.target?.workspaceId,
+                        modifier = reorder.handleModifier(workspace),
+                        onClick = { onSelectWorkspace(workspace.id) },
+                    )
+                }
             }
         }
     }
@@ -309,6 +329,7 @@ private fun TabRail(
     onSummonKeyboard: () -> Unit,
     onAddTab: () -> Unit,
     onTabLongPress: (workspaceId: String, tabId: String, label: String, androidx.compose.ui.unit.IntOffset) -> Unit,
+    onMoveTab: (tabId: String, toIndex: Int) -> Unit,
     modifier: Modifier = Modifier,
 ) {
     val workspace = state.workspace ?: return
@@ -325,32 +346,61 @@ private fun TabRail(
         horizontalArrangement = Arrangement.spacedBy(8.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
-        Row(
-            modifier = Modifier
-                .weight(1f)
-                .horizontalScroll(rememberScrollState()),
+        // Chip geometry for center-anchored menus (menu opens on UP, see below).
+        var chipFrames by remember(workspace.id) {
+            mutableStateOf(mapOf<String, androidx.compose.ui.geometry.Rect>())
+        }
+        val reorder = dev.herdr.mobile.core.designsystem.rememberReorderState(
+            items = workspace.tabs,
+            key = { it.id },
+            onDrop = { tab, to -> onMoveTab(tab.id, to) },
+            // Menu opens on UP-after-press, not on press: an open popup steals
+            // the gesture stream and drag-takeover becomes impossible.
+            onLongPressWithoutMove = { tab ->
+                val frame = chipFrames[tab.id]
+                if (frame != null) {
+                    val anchor = androidx.compose.ui.unit.IntOffset(
+                        (frame.left + frame.width / 2).toInt(),
+                        (frame.top + frame.height / 2 - railOrigin.y).toInt(),
+                    )
+                    onTabLongPress(workspace.id, tab.id, tab.displayLabel, anchor)
+                }
+            },
+        )
+        androidx.compose.foundation.lazy.LazyRow(
+            state = reorder.listState,
+            modifier = Modifier.weight(1f),
             horizontalArrangement = Arrangement.spacedBy(8.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
-            workspace.tabs.forEach { tab ->
+            items(
+                items = reorder.order.value,
+                key = { it.id },
+            ) { tab ->
                 val harness = tab.harnessNames.joinToString(",").takeIf { it.isNotEmpty() }
-                var chipOrigin by remember(tab.id) { mutableStateOf(androidx.compose.ui.geometry.Offset.Zero) }
-                StatusChip(
-                    label = if (harness != null) "${tab.displayLabel} · $harness" else tab.displayLabel,
-                    status = tab.status,
-                    selected = tab.id == state.target?.tabId,
-                    modifier = Modifier.onGloballyPositioned { chipOrigin = it.positionInWindow() },
-                    onClick = { onSelectTab(workspace.id, tab.id) },
-                    onLongClick = { press ->
-                        // Menu renders at the Column top (below rails): window
-                        // coords minus the rails' height. Rail origin ≈ menu origin.
-                        val anchor = androidx.compose.ui.unit.IntOffset(
-                            (chipOrigin.x + press.x).toInt(),
-                            (chipOrigin.y + press.y - railOrigin.y).toInt(),
-                        )
-                        onTabLongPress(workspace.id, tab.id, tab.displayLabel, anchor)
-                    },
-                )
+                androidx.compose.foundation.layout.Box(
+                    modifier = Modifier.animateItem() then
+                        reorder.draggedModifier(tab) { it.id },
+                ) {
+                    StatusChip(
+                        label = if (harness != null) "${tab.displayLabel} · $harness" else tab.displayLabel,
+                        status = tab.status,
+                        selected = tab.id == state.target?.tabId,
+                        modifier = Modifier
+                            .onGloballyPositioned {
+                                val pos = it.positionInWindow()
+                                chipFrames = chipFrames + (tab.id to androidx.compose.ui.geometry.Rect(
+                                    pos,
+                                    androidx.compose.ui.geometry.Size(
+                                        it.size.width.toFloat(),
+                                        it.size.height.toFloat(),
+                                    ),
+                                ))
+                            }
+                            .then(reorder.handleModifier(tab)),
+                        onClick = { onSelectTab(workspace.id, tab.id) },
+                    )
+                }
             }
         }
         IconButton(onClick = onSummonKeyboard, modifier = Modifier.size(40.dp)) {

@@ -29,6 +29,7 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.ChevronRight
+import androidx.compose.material.icons.filled.DragHandle
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
@@ -124,35 +125,15 @@ fun HomeScreen(
                         else -> 3
                     }
                     if (columns == 1) {
-                        LazyColumn(
-                            modifier = Modifier.fillMaxSize(),
-                            contentPadding = PaddingValues(horizontal = 16.dp),
-                            verticalArrangement = Arrangement.spacedBy(12.dp),
-                        ) {
-                            if (state.showOfflineBanner || state.stale) {
-                                item(key = "banner") {
-                                    OfflineBanner(
-                                        connection = state.connection,
-                                        stale = state.stale,
-                                        error = state.error,
-                                    )
-                                }
-                            }
-                            items(
-                                items = state.snapshot!!.workspaces,
-                                key = { it.id },
-                            ) { workspace ->
-                                workspaceCard(
-                                    workspace,
-                                    onOpenWorkspace,
-                                    onOpenTab,
-                                    screenOrigin,
-                                    { tabMenu = it },
-                                    { wsMenu = it },
-                                )
-                            }
-                            item(key = "bottom-space") { Spacer(Modifier.height(8.dp)) }
-                        }
+                        ReorderableWorkspaceList(
+                            state = state,
+                            viewModel = viewModel,
+                            onOpenWorkspace = onOpenWorkspace,
+                            onOpenTab = onOpenTab,
+                            screenOrigin = screenOrigin,
+                            onTabMenu = { tabMenu = it },
+                            onWsMenu = { wsMenu = it },
+                        )
                     } else {
                         LazyVerticalGrid(
                             columns = GridCells.Fixed(columns),
@@ -411,11 +392,13 @@ private fun workspaceCard(
     screenOrigin: androidx.compose.ui.geometry.Offset,
     onMenu: (HomeTabMenuTarget) -> Unit,
     onWsMenu: (HomeWsMenuTarget) -> Unit,
+    handleModifier: (Workspace) -> Modifier = { Modifier },
 ) {
     WorkspaceCard(
         workspace = workspace,
         onOpenWorkspace = { onOpenWorkspace(workspace.id, workspace.activeTabId) },
         onOpenTab = { tab -> onOpenTab(workspace.id, tab.id) },
+        handleModifier = handleModifier(workspace),
         onWorkspaceLongPress = { pressWindow ->
             val anchor = androidx.compose.ui.unit.IntOffset(
                 (pressWindow.x - screenOrigin.x).toInt(),
@@ -432,6 +415,65 @@ private fun workspaceCard(
             onMenu(HomeTabMenuTarget(workspace.id, tab.id, tab.displayLabel, anchor))
         },
     )
+}
+
+/**
+ * Phone list with drag-reorder (handle in each card header). Local-visual
+ * drag, single server move on drop — see [rememberReorderState]. Grid
+ * (tablet) stays static — 2D drag needs its own geometry.
+ */
+@Composable
+private fun ReorderableWorkspaceList(
+    state: HomeUiState,
+    viewModel: HomeViewModel,
+    onOpenWorkspace: (workspaceId: String, tabId: String?) -> Unit,
+    onOpenTab: (workspaceId: String, tabId: String) -> Unit,
+    screenOrigin: androidx.compose.ui.geometry.Offset,
+    onTabMenu: (HomeTabMenuTarget) -> Unit,
+    onWsMenu: (HomeWsMenuTarget) -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    val snapshot = state.snapshot ?: return
+    val reorder = dev.herdr.mobile.core.designsystem.rememberReorderState(
+        items = snapshot.workspaces,
+        key = { it.id },
+        onDrop = { ws, to -> viewModel.moveWorkspace(ws.id, to) },
+    )
+    LazyColumn(
+        state = reorder.listState,
+        modifier = modifier.fillMaxSize(),
+        contentPadding = PaddingValues(horizontal = 16.dp),
+        verticalArrangement = Arrangement.spacedBy(12.dp),
+    ) {
+        if (state.showOfflineBanner || state.stale) {
+            item(key = "banner") {
+                OfflineBanner(
+                    connection = state.connection,
+                    stale = state.stale,
+                    error = state.error,
+                )
+            }
+        }
+        items(
+            items = reorder.order.value,
+            key = { it.id },
+        ) { workspace ->
+            Box(
+                modifier = Modifier.animateItem() then reorder.draggedModifier(workspace) { it.id },
+            ) {
+                workspaceCard(
+                    workspace,
+                    onOpenWorkspace,
+                    onOpenTab,
+                    screenOrigin,
+                    onTabMenu,
+                    onWsMenu,
+                    handleModifier = { reorder.handleModifier(it) },
+                )
+            }
+        }
+        item(key = "bottom-space") { Spacer(Modifier.height(8.dp)) }
+    }
 }
 
 /** Which Home tab a long-press menu refers to. */
@@ -599,6 +641,8 @@ private fun WorkspaceCard(
     onTabLongPress: (Tab, androidx.compose.ui.geometry.Offset) -> Unit,
     onWorkspaceLongPress: (androidx.compose.ui.geometry.Offset) -> Unit,
     modifier: Modifier = Modifier,
+    /** Drag-reorder handle gesture (Home list builds it; grid passes empty). */
+    handleModifier: Modifier = Modifier,
 ) {
     Card(
         modifier = modifier
@@ -620,6 +664,8 @@ private fun WorkspaceCard(
                 .padding(16.dp),
         ) {
             var headerOrigin by remember(workspace.id) { mutableStateOf(androidx.compose.ui.geometry.Offset.Zero) }
+            var headerWidthPx by remember(workspace.id) { mutableStateOf(0) }
+            val density = androidx.compose.ui.platform.LocalDensity.current
             val headerInteractions = remember(workspace.id) { MutableInteractionSource() }
             var headerPress by remember(workspace.id) { mutableStateOf(androidx.compose.ui.geometry.Offset.Zero) }
             androidx.compose.runtime.LaunchedEffect(headerInteractions) {
@@ -632,13 +678,25 @@ private fun WorkspaceCard(
             Row(
                 verticalAlignment = Alignment.CenterVertically,
                 modifier = Modifier
-                    .onGloballyPositioned { headerOrigin = it.positionInWindow() }
+                    .onGloballyPositioned {
+                        headerOrigin = it.positionInWindow()
+                        headerWidthPx = it.size.width
+                    }
                     .combinedClickable(
                         interactionSource = headerInteractions,
                         indication = null,
                         onClickLabel = "Open ${workspace.label} in terminal",
                         onLongClickLabel = "${workspace.label} actions",
-                        onLongClick = { onWorkspaceLongPress(headerOrigin + headerPress) },
+                        onLongClick = {
+                            // Presses starting on the drag handle (trailing 40dp
+                            // icon + 24dp chevron) belong to reorder, not the menu:
+                            // both detectors see the long-press, so the menu must
+                            // yield its strip or every drag also opens it.
+                            val handleStripPx = with(density) { 64.dp.toPx() }
+                            if (headerPress.x < headerWidthPx - handleStripPx) {
+                                onWorkspaceLongPress(headerOrigin + headerPress)
+                            }
+                        },
                         onClick = onOpenWorkspace,
                     ),
             ) {
@@ -668,6 +726,15 @@ private fun WorkspaceCard(
                         )
                     }
                 }
+                Icon(
+                    imageVector = Icons.Filled.DragHandle,
+                    contentDescription = "Reorder ${workspace.label}",
+                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier
+                        .size(40.dp)
+                        .padding(8.dp)
+                        .then(handleModifier),
+                )
                 Icon(
                     imageVector = Icons.Filled.ChevronRight,
                     contentDescription = null,

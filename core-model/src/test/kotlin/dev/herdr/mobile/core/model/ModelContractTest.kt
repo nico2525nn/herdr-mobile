@@ -160,6 +160,35 @@ class ModelContractTest {
     }
 
     @Test
+    fun `insertIndex moves up exactly`() {
+        // [a,b,c] move c(2) to 0 -> request 0.
+        assertEquals(0L, Reorder.insertIndex(2, 0, 3))
+    }
+
+    @Test
+    fun `insertIndex compensates down shift`() {
+        // Verified live: [w3,w1,w2] move w3(0) to 2 landed at 1; requesting
+        // 3 reaches the end. to is the VISUAL position, not the wire index.
+        assertEquals(3L, Reorder.insertIndex(0, 2, 3))
+        assertEquals(2L, Reorder.insertIndex(0, 1, 3))
+    }
+
+    @Test
+    fun `insertIndex clamps and no-ops`() {
+        assertEquals(1L, Reorder.insertIndex(1, 1, 3))
+        assertEquals(0L, Reorder.insertIndex(1, -5, 3))
+        assertEquals(3L, Reorder.insertIndex(0, 99, 3))
+    }
+
+    @Test
+    fun `moved events are structural`() {
+        val tick = SemanticEvent(seq = 1, type = SemanticEvent.TYPE_TAB_MOVED)
+        assertTrue(tick.isStructural)
+        val wtick = SemanticEvent(seq = 1, type = SemanticEvent.TYPE_WORKSPACE_MOVED)
+        assertTrue(wtick.isStructural)
+    }
+
+    @Test
     fun `status hash is order independent and status sensitive`() {
         fun snap(panes: List<Pair<String, AgentStatus>>) = SessionSnapshot(
             revision = 1,

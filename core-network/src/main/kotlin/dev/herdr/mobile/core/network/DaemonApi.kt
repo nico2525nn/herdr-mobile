@@ -176,6 +176,16 @@ class DaemonApi(
         post("v1/workspace/${workspaceId.url()}/close", "{}")
     }
 
+    suspend fun moveTab(tabId: String, insertIndex: Long) {
+        val body = buildJsonObject { put("insertIndex", insertIndex) }.toString()
+        post("v1/tab/${tabId.url()}/move", body)
+    }
+
+    suspend fun moveWorkspace(workspaceId: String, insertIndex: Long) {
+        val body = buildJsonObject { put("insertIndex", insertIndex) }.toString()
+        post("v1/workspace/${workspaceId.url()}/move", body)
+    }
+
     private fun String.url(): String = URLEncoder.encode(this, "UTF-8")
 }
 

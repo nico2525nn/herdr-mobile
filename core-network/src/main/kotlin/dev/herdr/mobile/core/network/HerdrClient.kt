@@ -121,19 +121,28 @@ class HerdrClient(
     @Volatile
     private var lastTickOrEventAt: Long = 0
 
+    /** True once any tick arrived: distinguishes dead streams from old daemons. */
+    @Volatile
+    private var tickSeen: Boolean = false
+
     init {
-        // Idle fallback: one refetch after 5 silent minutes on a healthy link.
-        // The 60s server tick normally proves the fold (see applyEvent), so
-        // this only fires against old daemons (no ticks) or a wedged stream —
-        // never on a chatty link. Replaces the old blind 90s re-GET (~5MB/day
-        // on a large session); refresh() never tears down the SSE.
+        // Stream watchdog: ticks arrive every 60s on a healthy link, so 90s
+        // of silence means a wedged stream (half-open TCP neither side
+        // detects — infinite readTimeout + NAT-only pings never fire) and
+        // the ONLY cure is a full redial: a REST refetch would heal the data
+        // but leave the dead SSE in place. Against tickless old daemons
+        // (tickSeen false) a quiet link is normal — refetch data only.
         scope.launch {
             while (true) {
                 kotlinx.coroutines.delay(60_000)
                 if (_state.value.connection == ConnectionState.CONNECTED &&
-                    System.currentTimeMillis() - lastTickOrEventAt > 300_000
+                    System.currentTimeMillis() - lastTickOrEventAt > 90_000
                 ) {
-                    runCatching { refresh() }
+                    if (tickSeen) {
+                        restartLink()
+                    } else {
+                        runCatching { refresh() }
+                    }
                 }
             }
         }
@@ -378,6 +387,7 @@ class HerdrClient(
                 // diverged despite contiguous seqs — refetch authoritatively.
                 // Match = proof, zero bytes beyond the ~70B tick.
                 if (event.type == dev.herdr.mobile.core.model.SemanticEvent.TYPE_SNAPSHOT_TICK) {
+                    tickSeen = true
                     val want = (event.detail?.get("hash") as? kotlinx.serialization.json.JsonPrimitive)?.content
                     val have = outcome.snapshot.statusHash()
                     if (want != null && want != have) {
@@ -463,6 +473,12 @@ class HerdrClient(
 
     suspend fun closeWorkspace(workspaceId: String) =
         withContext(Dispatchers.IO) { api().closeWorkspace(workspaceId) }
+
+    suspend fun moveTab(tabId: String, insertIndex: Long) =
+        withContext(Dispatchers.IO) { api().moveTab(tabId, insertIndex) }
+
+    suspend fun moveWorkspace(workspaceId: String, insertIndex: Long) =
+        withContext(Dispatchers.IO) { api().moveWorkspace(workspaceId, insertIndex) }
 
     suspend fun resizePane(paneId: String, cols: Int, rows: Int) =
         withContext(Dispatchers.IO) { api().resizePane(paneId, cols, rows) }

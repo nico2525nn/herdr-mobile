@@ -562,6 +562,38 @@ class TerminalViewModel(
         }
     }
 
+    /**
+     * Rail drag-reorder. Server-authoritative like everything else: no local
+     * patch, the moved event refetches all clients (desktop included).
+     */
+    fun moveTab(workspaceId: String, tabId: String, toIndex: Int) {
+        val tabs = client.state.value.snapshot?.workspace(workspaceId)?.tabs ?: return
+        val from = tabs.indexOfFirst { it.id == tabId }
+        if (from < 0 || from == toIndex) return
+        viewModelScope.launch {
+            runCatching {
+                client.moveTab(
+                    tabId,
+                    dev.herdr.mobile.core.model.Reorder.insertIndex(from, toIndex, tabs.size),
+                )
+            }.onFailure { messageFlow.value = "Cannot move tab: ${it.message}" }
+        }
+    }
+
+    fun moveWorkspace(workspaceId: String, toIndex: Int) {
+        val workspaces = client.state.value.snapshot?.workspaces ?: return
+        val from = workspaces.indexOfFirst { it.id == workspaceId }
+        if (from < 0 || from == toIndex) return
+        viewModelScope.launch {
+            runCatching {
+                client.moveWorkspace(
+                    workspaceId,
+                    dev.herdr.mobile.core.model.Reorder.insertIndex(from, toIndex, workspaces.size),
+                )
+            }.onFailure { messageFlow.value = "Cannot move workspace: ${it.message}" }
+        }
+    }
+
     override fun onCleared() {
         attachJob?.cancel()
         val backend = backendFlow.value

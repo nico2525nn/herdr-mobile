@@ -140,7 +140,9 @@ impl SessionCache {
             "tab_renamed" => Ok(self.apply_tab_rename(event)),
             "workspace_renamed" => Ok(self.apply_workspace_rename(event)),
             "pane_created" | "pane_closed" | "tab_created" | "tab_closed" | "workspace_created"
-            | "workspace_closed" => self.apply_structural(event).await,
+            | "workspace_closed" | "tab_moved" | "workspace_moved" | "workspace_reordered" => {
+                self.apply_structural(event).await
+            }
             _ => {
                 // Focus, layout, metadata, output-changed and other passive events invalidate
                 // nothing we render; the next structural event or resync heals any drift.
@@ -587,12 +589,22 @@ impl SessionCache {
             "pane_closed" => "pane.closed",
             "tab_created" => "tab.created",
             "tab_closed" => "tab.closed",
+            "tab_moved" => "tab.moved",
             "workspace_created" => "workspace.created",
+            "workspace_moved" => "workspace.moved",
+            "workspace_reordered" => "workspace.moved",
             _ => "workspace.closed",
         };
         let workspace_id = event.data.get("workspace_id").and_then(|v| v.as_str()).map(str::to_string);
         let tab_id = event.data.get("tab_id").and_then(|v| v.as_str()).map(str::to_string);
         let pane_id = event.data.get("pane_id").and_then(|v| v.as_str()).map(str::to_string);
+        // Moved events refetch the client: the herdr payload (full ordered
+        // lists, KBs) is dead weight on the wire — drop it.
+        let detail = if kind == "tab.moved" || kind == "workspace.moved" {
+            None
+        } else {
+            Some(event.data.clone())
+        };
         let ev = self.emit(
             kind,
             workspace_id,
@@ -601,7 +613,7 @@ impl SessionCache {
             None,
             None,
             summary.revision,
-            Some(event.data.clone()),
+            detail,
             None,
         );
         self.sync_snapshot_seq();
@@ -859,11 +871,8 @@ fn is_passive(name: &str) -> bool {
             | "pane_moved"
             | "pane_output_changed"
             | "tab_focused"
-            | "tab_moved"
             | "workspace_updated"
             | "workspace_metadata_updated"
-            | "workspace_moved"
-            | "workspace_reordered"
             | "workspace_focused"
             | "layout_updated"
     )
@@ -881,6 +890,9 @@ fn all_subscriptions(pane_ids: &[String]) -> Vec<serde_json::Value> {
         "tab.created",
         "tab.renamed",
         "tab.closed",
+        "tab.moved",
+        "workspace.moved",
+        "workspace.reordered",
         "pane.created",
         "pane.closed",
         "pane.exited",
