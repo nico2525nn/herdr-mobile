@@ -295,6 +295,7 @@ private fun WorkspaceRail(
         )
         androidx.compose.foundation.lazy.LazyRow(
             state = reorder.listState,
+            userScrollEnabled = reorder.scrollEnabled.value,
             modifier = Modifier.weight(1f),
             horizontalArrangement = Arrangement.spacedBy(8.dp),
             verticalAlignment = Alignment.CenterVertically,
@@ -369,6 +370,7 @@ private fun TabRail(
         )
         androidx.compose.foundation.lazy.LazyRow(
             state = reorder.listState,
+            userScrollEnabled = reorder.scrollEnabled.value,
             modifier = Modifier.weight(1f),
             horizontalArrangement = Arrangement.spacedBy(8.dp),
             verticalAlignment = Alignment.CenterVertically,

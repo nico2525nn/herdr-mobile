@@ -441,6 +441,7 @@ private fun ReorderableWorkspaceList(
     )
     LazyColumn(
         state = reorder.listState,
+        userScrollEnabled = reorder.scrollEnabled.value,
         modifier = modifier.fillMaxSize(),
         contentPadding = PaddingValues(horizontal = 16.dp),
         verticalArrangement = Arrangement.spacedBy(12.dp),

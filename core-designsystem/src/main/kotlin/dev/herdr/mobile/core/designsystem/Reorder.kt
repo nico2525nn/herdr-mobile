@@ -39,10 +39,12 @@ fun <T> rememberReorderState(
     key: (T) -> Any,
     onDrop: (item: T, toIndex: Int) -> Unit,
     /**
-     * Fires on release when the press never moved past slop (a plain
-     * long-press). Rails use it to open the long-press menu on UP instead of
-     * on press: opening on press steals the gesture stream into the popup and
-     * makes drag-takeover impossible.
+     * Fires when a press ends without moving past slop (a plain long-press).
+     * Rails use it to open the long-press menu on UP instead of on press:
+     * opening on press steals the gesture stream into the popup and makes
+     * drag-takeover impossible. Note it fires from the cancel path, not the
+     * end path: the detector reports press-without-drag as a drag that never
+     * started (cancel), and end runs only after real motion.
      */
     onLongPressWithoutMove: ((item: T) -> Unit)? = null,
 ): ReorderState<T> {
@@ -77,6 +79,7 @@ fun <T> rememberReorderState(
         }
     }
     val vertical = remember { mutableStateOf(true) }
+    val scrollEnabled = remember { androidx.compose.runtime.derivedStateOf { draggingKey.value == null } }
     return remember {
         ReorderState(
             listState = listState,
@@ -84,6 +87,7 @@ fun <T> rememberReorderState(
             draggingKey = draggingKey,
             dragOffsetPx = dragOffsetPx,
             vertical = vertical,
+            scrollEnabled = scrollEnabled,
             handleModifier = { item ->
                 val itemKey = key(item)
                 Modifier.pointerInput(itemKey) {
@@ -98,21 +102,26 @@ fun <T> rememberReorderState(
                             haptics.performHapticFeedback(HapticFeedbackType.LongPress)
                         },
                         onDragCancel = {
-                            draggingKey.value = null
-                            scrollDir.intValue = 0
-                            order.value = items
-                        },
-                        onDragEnd = {
-                            val to = order.value.indexOfFirst { key(it) == itemKey }
-                            val moved = movedPastSlop.value
+                            // No motion = plain long-press (release): menu. Real
+                            // mid-drag interruption also lands here: reset, no menu.
+                            val wasPress = !movedPastSlop.value
                             draggingKey.value = null
                             scrollDir.intValue = 0
                             dragOffsetPx.floatValue = 0f
-                            if (moved) {
-                                if (to >= 0) onDrop(item, to)
-                            } else {
+                            if (wasPress) {
                                 onLongPressWithoutMove?.invoke(item)
+                            } else {
+                                order.value = items
                             }
+                        },
+                        onDragEnd = {
+                            // End runs only after real motion (press-without-move
+                            // takes the cancel path above, never lands here).
+                            val to = order.value.indexOfFirst { key(it) == itemKey }
+                            draggingKey.value = null
+                            scrollDir.intValue = 0
+                            dragOffsetPx.floatValue = 0f
+                            if (to >= 0) onDrop(item, to)
                         },
                         onDrag = { change, dragAmount ->
                             change.consume()
@@ -167,6 +176,13 @@ class ReorderState<T>(
     val draggingKey: State<Any?>,
     val dragOffsetPx: State<Float>,
     val vertical: State<Boolean>,
+    /**
+     * False while a drag is armed: pass to the lazy container's
+     * `userScrollEnabled`. Without the lock the parent wins the nested-scroll
+     * race, consumes the moves, and the detector cancels instantly (observed:
+     * arm → cancel in 277ms, zero motion delivered).
+     */
+    val scrollEnabled: State<Boolean>,
     /** Gesture modifier for the item's drag handle (or whole item). */
     val handleModifier: (T) -> Modifier,
 ) {
