@@ -74,6 +74,12 @@ fun <T> rememberReorderState(
         }
     }
     val dragOffsetPx = remember { mutableFloatStateOf(0f) }
+    // Slot geometry captured once at arm time. Hop detection and the
+    // follow offset derive from these + finger travel only — never from the
+    // live layout offset, which shifts on every hop and would cascade.
+    val anchorOffsetPx = remember { mutableFloatStateOf(0f) }
+    val anchorSizePx = remember { mutableFloatStateOf(0f) }
+    val anchorViewportPx = remember { mutableFloatStateOf(0f) }
     val movedPastSlop = remember { mutableStateOf(false) }
     val scrollDir = remember { mutableIntStateOf(0) }
     LaunchedEffect(draggingKey.value) {
@@ -91,6 +97,9 @@ fun <T> rememberReorderState(
             draggingKey = draggingKey,
             dragOffsetPx = dragOffsetPx,
             vertical = vertical,
+            anchorOffsetPx = anchorOffsetPx,
+            anchorSizePx = anchorSizePx,
+            anchorViewportPx = anchorViewportPx,
             scrollBlocker = object : androidx.compose.ui.input.nestedscroll.NestedScrollConnection {
                 override fun onPreScroll(
                     available: androidx.compose.ui.geometry.Offset,
@@ -121,6 +130,17 @@ fun <T> rememberReorderState(
                         movedPastSlop.value = false
                         draggingKey.value = itemKey
                         dragOffsetPx.floatValue = 0f
+                        // Anchor the dragged slot's geometry now: layout offsets
+                        // below are live (they shift on every hop + animation),
+                        // so all drag math keys off this frozen snapshot.
+                        // Fall back to zeros (target math degrades to raw travel,
+                        // still monotonic) if the item isn't laid out.
+                        val anchor = listState.layoutInfo.visibleItemsInfo
+                            .firstOrNull { it.key == itemKey }
+                        anchorOffsetPx.floatValue = anchor?.offset?.toFloat() ?: 0f
+                        anchorSizePx.floatValue = anchor?.size?.toFloat() ?: 0f
+                        anchorViewportPx.floatValue =
+                            listState.layoutInfo.viewportStartOffset.toFloat()
                         scrollDir.intValue = 0
                         haptics.performHapticFeedback(HapticFeedbackType.LongPress)
                         var slopAccum = 0f
@@ -146,28 +166,65 @@ fun <T> rememberReorderState(
                             dragOffsetPx.floatValue += main
                             lastDragAt.value = System.currentTimeMillis()
                             change.consume()
-                            val info = listState.layoutInfo.visibleItemsInfo
-                                .firstOrNull { it.key == itemKey }
-                            if (info != null) {
-                                val center = info.offset + dragOffsetPx.floatValue + info.size / 2f
-                                val target = listState.layoutInfo.visibleItemsInfo
-                                    .firstOrNull {
-                                        center in it.offset.toFloat()..(it.offset + it.size).toFloat()
-                                    }
-                                val fromIdx = order.value.indexOfFirst { key(it) == itemKey }
-                                val toIdx = target?.let { t ->
-                                    order.value.indexOfFirst { key(it) == t.key }
-                                } ?: -1
-                                if (toIdx >= 0 && toIdx != fromIdx) {
-                                    order.value = order.value.toMutableList().apply {
-                                        add(toIdx, removeAt(fromIdx))
-                                    }
-                                    haptics.performHapticFeedback(HapticFeedbackType.TextHandleMove)
+                            // Finger center in list coords: frozen anchor plus finger
+                            // travel, corrected for list scroll since arming (auto-
+                            // scroll shifts every layout offset under us). The
+                            // dragged item's LIVE layout offset must not enter
+                            // here: it jumps on every hop (and animates between),
+                            // which used to cascade hops to the end on one fling.
+                            val layout = listState.layoutInfo
+                            val scrollDelta = layout.viewportStartOffset -
+                                anchorViewportPx.floatValue
+                            val center = anchorOffsetPx.floatValue + dragOffsetPx.floatValue +
+                                anchorSizePx.floatValue / 2f + scrollDelta
+                            val infos = layout.visibleItemsInfo
+                            val self = infos.firstOrNull { it.key == itemKey }
+                            // Hop only into the immediate neighbor the center has
+                            // crossed past the midpoint between the two slots.
+                            // Long jumps resolve one hop per move event — no
+                            // teleporting, no cascade.
+                            val fromIdx = order.value.indexOfFirst { key(it) == itemKey }
+                            var toIdx = -1
+                            if (self != null && fromIdx >= 0) {
+                                val dir = if (dragOffsetPx.floatValue >= 0) 1 else -1
+                                val neighborIdx = fromIdx + dir
+                                val neighbor = order.value.getOrNull(neighborIdx)
+                                val neighborInfo = neighbor?.let { n ->
+                                    infos.firstOrNull { it.key == key(n) }
                                 }
+                                if (neighbor != null) {
+                                    if (neighborInfo != null) {
+                                        val boundary = if (dir > 0) {
+                                            (self.offset + self.size + neighborInfo.offset) / 2f
+                                        } else {
+                                            (neighborInfo.offset + neighborInfo.size + self.offset) / 2f
+                                        }
+                                        val crossed = if (dir > 0) center >= boundary else center <= boundary
+                                        if (crossed) toIdx = neighborIdx
+                                    } else {
+                                        // Neighbor scrolled out of view: hop once
+                                        // the finger drags past the viewport edge
+                                        // toward it (it must be there — order says so).
+                                        val edge = if (dir > 0) {
+                                            layout.viewportEndOffset.toFloat()
+                                        } else {
+                                            layout.viewportStartOffset.toFloat()
+                                        }
+                                        val past = if (dir > 0) center >= edge else center <= edge
+                                        if (past) toIdx = neighborIdx
+                                    }
+                                }
+                            }
+                            if (toIdx >= 0 && toIdx != fromIdx) {
+                                order.value = order.value.toMutableList().apply {
+                                    add(toIdx, removeAt(fromIdx))
+                                }
+                                haptics.performHapticFeedback(HapticFeedbackType.TextHandleMove)
+                            }
+                            run {
                                 val viewport = listState.layoutInfo.viewportEndOffset -
                                     listState.layoutInfo.viewportStartOffset
-                                val absCenter = info.offset + dragOffsetPx.floatValue + info.size / 2f -
-                                    listState.layoutInfo.viewportStartOffset
+                                val absCenter = center - listState.layoutInfo.viewportStartOffset
                                 scrollDir.intValue = when {
                                     absCenter < 120 -> -1
                                     absCenter > viewport - 120 -> 1
@@ -207,6 +264,9 @@ class ReorderState<T>(
     val draggingKey: State<Any?>,
     val dragOffsetPx: State<Float>,
     val vertical: State<Boolean>,
+    val anchorOffsetPx: State<Float>,
+    val anchorSizePx: State<Float>,
+    val anchorViewportPx: State<Float>,
     /**
      * Attach to the lazy container via `Modifier.nestedScroll`. While a drag
      * is armed it swallows pre-scroll so the parent never sees (or consumes)
@@ -222,17 +282,35 @@ class ReorderState<T>(
     /** True while [item] is the dragged one. */
     fun isDragging(item: T, key: (T) -> Any): Boolean = draggingKey.value == key(item)
 
-    /** Follows-the-finger elevation for the dragged item (axis-aware). */
-    fun draggedModifier(item: T, key: (T) -> Any): Modifier =
-        if (!isDragging(item, key)) {
-            Modifier
-        } else {
-            Modifier
-                .graphicsLayer {
-                    if (vertical.value) translationY = dragOffsetPx.value else translationX = dragOffsetPx.value
-                    scaleX = 1.02f
-                    scaleY = 1.02f
+    /**
+     * Follows-the-finger elevation for the dragged item (axis-aware). The
+     * translation is finger-travel minus slot displacement, so the item stays
+     * glued to the finger across hops instead of drifting by a slot per hop.
+     */
+    fun draggedModifier(item: T, key: (T) -> Any): Modifier {
+        if (!isDragging(item, key)) return Modifier
+        val itemKey = key(item)
+        return Modifier
+            .graphicsLayer {
+                val info = listState.layoutInfo.visibleItemsInfo
+                    .firstOrNull { it.key == itemKey }
+                // Finger center (list coords) minus live slot center. Live
+                // layout is safe here (rendering only — hop logic never reads
+                // it) and keeps the glide smooth during settle animations.
+                // Scroll-corrected like the hop math (auto-scroll shifts slots).
+                val fingerCenter = anchorOffsetPx.value + dragOffsetPx.value +
+                    anchorSizePx.value / 2f +
+                    (listState.layoutInfo.viewportStartOffset - anchorViewportPx.value)
+                val slotCenter = if (info != null) {
+                    info.offset + info.size / 2f
+                } else {
+                    anchorOffsetPx.value + anchorSizePx.value / 2f
                 }
-                .zIndex(1f)
-        }
+                val follow = fingerCenter - slotCenter
+                if (vertical.value) translationY = follow else translationX = follow
+                scaleX = 1.02f
+                scaleY = 1.02f
+            }
+            .zIndex(1f)
+    }
 }
