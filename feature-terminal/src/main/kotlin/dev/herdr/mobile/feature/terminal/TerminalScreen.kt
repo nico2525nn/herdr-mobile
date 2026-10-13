@@ -313,6 +313,8 @@ private fun WorkspaceRail(
                         selected = workspace.id == state.target?.workspaceId,
                         modifier = reorder.handleModifier(workspace),
                         onClick = { onSelectWorkspace(workspace.id) },
+                        // Consume long-presses (see tab rail above).
+                        onLongClick = {},
                     )
                 }
             }
@@ -397,6 +399,10 @@ private fun TabRail(
                             }
                             .then(reorder.handleModifier(tab)),
                         onClick = { onSelectTab(workspace.id, tab.id) },
+                        // Consume long-presses (menu opens on UP via the drag
+                        // detector instead): without this a dwell falls through
+                        // to tap and the UP races the drag-end callback.
+                        onLongClick = {},
                     )
                 }
             }

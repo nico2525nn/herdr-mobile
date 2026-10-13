@@ -53,8 +53,18 @@ fun <T> rememberReorderState(
     // would freeze on stale order while the state moved on.
     val order: MutableState<List<T>> = remember { mutableStateOf(items) }
     val draggingKey: MutableState<Any?> = remember { mutableStateOf(null) }
+    // Last arming/motion instant. The resync gate must not trust the gesture
+    // lifecycle alone: if end/cancel never run (UP stolen by a nested
+    // clickable), a stuck arm would freeze resync forever.
+    val lastDragAt = remember { mutableStateOf(0L) }
     LaunchedEffect(items) {
-        if (draggingKey.value == null) order.value = items
+        // Resync when idle — or when the arm is older than 2s without motion
+        // (stuck arm self-heals; a live drag moves faster than that).
+        if (draggingKey.value == null ||
+            System.currentTimeMillis() - lastDragAt.value > 2_000
+        ) {
+            order.value = items
+        }
     }
     val dragOffsetPx = remember { mutableFloatStateOf(0f) }
     val movedPastSlop = remember { mutableStateOf(false) }
@@ -79,6 +89,7 @@ fun <T> rememberReorderState(
                 Modifier.pointerInput(itemKey) {
                     detectDragGesturesAfterLongPress(
                         onDragStart = {
+                            lastDragAt.value = System.currentTimeMillis()
                             vertical.value = listState.layoutInfo.orientation == Orientation.Vertical
                             movedPastSlop.value = false
                             draggingKey.value = itemKey
@@ -107,6 +118,7 @@ fun <T> rememberReorderState(
                             change.consume()
                             val main = if (vertical.value) dragAmount.y else dragAmount.x
                             dragOffsetPx.floatValue += main
+                            lastDragAt.value = System.currentTimeMillis()
                             if (!movedPastSlop.value &&
                                 kotlin.math.abs(dragOffsetPx.floatValue) > 24f
                             ) {
