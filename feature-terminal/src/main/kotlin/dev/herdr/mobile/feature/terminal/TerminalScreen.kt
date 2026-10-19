@@ -560,6 +560,16 @@ private fun TerminalSurface(
                         clipboard.setText(AnnotatedString(text))
                     }
                 },
+                // Termux toolbar PASTE: clipboard text goes through the same
+                // paste normalization as CJK commits (strip ESC/C1, newlines
+                // to CR), then to the network. Stock Termux pastes into its
+                // local PTY at this exact hook.
+                onPasteRequest = {
+                    val clip = clipboard.getText()?.text.orEmpty()
+                    if (clip.isNotEmpty()) {
+                        onSendText(dev.herdr.mobile.terminal.view.TerminalKeyEncoder.pasteNormalize(clip))
+                    }
+                },
             )
             created.sessionClient.cursorStyle = settings.cursorStyle
             created.emulator.mColors.reset()
@@ -582,6 +592,7 @@ private fun TerminalSurface(
     // silently dropped by runCatching.
     fun bindTermuxCallbacks(viewClient: TermuxViewClient, host: TermuxTerminalHost) {
         viewClient.onDirectInput = { text -> onSendText(text) }
+        viewClient.onDirectBytes = { bytes -> onSendBytes(bytes) }
         viewClient.onDirectDelete = { onSendBytes(byteArrayOf(0x7F)) }
         viewClient.onTapCell = { col, row ->
             // Mouse-mode apps (vim, less, tmux): forward the tap as a
@@ -594,6 +605,7 @@ private fun TerminalSurface(
         viewClient.onZoomFont = { _ ->
             // Font zoom is applied through settings; the host clamps it.
         }
+        viewClient.onPageScroll = { up -> host.pageRemote(up) }
         host.onRemoteScroll = { lines ->
             bridgeRef.value?.scrollRemote(lines)
         }

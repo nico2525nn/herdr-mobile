@@ -40,6 +40,8 @@ class RemoteTermuxSession(
     scrollbackLimit: Int,
     /** OSC-52 / selection copy sink (screen clipboard). */
     onCopyText: ((String) -> Unit)? = null,
+    /** Termux toolbar PASTE request sink (screen pastes networked). */
+    onPasteRequest: (() -> Unit)? = null,
 ) {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
 
@@ -98,6 +100,7 @@ class RemoteTermuxSession(
         output.onCopyText = onCopyText
         sessionClient.onColorsChanged = { view.postInvalidate() }
         sessionClient.onCopyText = onCopyText
+        sessionClient.onPasteRequest = onPasteRequest
     }
 
     /**

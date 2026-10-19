@@ -1,6 +1,7 @@
 package dev.herdr.mobile.terminal.view
 
 import android.util.Log
+import android.view.KeyCharacterMap
 import android.view.KeyEvent
 import android.view.MotionEvent
 import com.termux.terminal.TerminalSession
@@ -25,8 +26,18 @@ import dev.herdr.mobile.core.model.CursorStyle
  *   selected text is copied via `copyModeChanged` + clipboard.
  */
 class TermuxViewClient(
-    /** Direct text to the backend (soft-keyboard commits, mapped keys). */
+    /**
+     * Direct text to the backend (soft-keyboard commits ONLY — the VM applies
+     * the sticky latch and paste-normalizes multi-char chunks here).
+     */
     var onDirectInput: ((String) -> Unit)? = null,
+    /**
+     * Pre-encoded hardware-key bytes (KeyHandler port output, CTRL table):
+     * travel as raw bytes, bypassing the text path's paste normalization
+     * (which would strip their ESC leaders and corrupt every CSI sequence
+     * into visible "[A"-style garbage — observed live).
+     */
+    var onDirectBytes: ((ByteArray) -> Unit)? = null,
     /** DEL key (sent as 0x7F by the screen). */
     var onDirectDelete: (() -> Unit)? = null,
     /** Tap cell, live-screen 0-based coords (screen forwards as mouse click). */
@@ -57,6 +68,10 @@ class TermuxViewClient(
 
     override fun onSingleTapUp(e: MotionEvent) {
         val v = view ?: return
+        // Termux parity: a tap focuses the view (hardware keys route to the
+        // focused view — without this, BT/USB keyboards silently go nowhere
+        // until something else grabs focus).
+        v.requestFocus()
         // Bypass sendMouseEvent (would emit SGR/X10 wire bytes into the dead
         // local session): the screen forwards as a terminal.mouse record and
         // Herdr routes it server-side (ghostty knows the real mouse state).
@@ -79,70 +94,150 @@ class TermuxViewClient(
         // double-copy on every selection exit.
     }
 
+    /** Combining-accent state for the unicode path (Termux parity). */
+    private var combiningAccent = 0
+
+    /** Page-scroll paging (shift+PgUp/PgDn on remote panes). Set by the screen. */
+    var onPageScroll: ((up: Boolean) -> Unit)? = null
+
+    private fun keyModeOf(e: KeyEvent): Int {
+        var mode = 0
+        if (e.isCtrlPressed || ctrlDown) mode = mode or TerminalKeyEncoder.KEYMOD_CTRL
+        if (e.isAltPressed || altDown) mode = mode or TerminalKeyEncoder.KEYMOD_ALT
+        if (e.isShiftPressed) mode = mode or TerminalKeyEncoder.KEYMOD_SHIFT
+        if (e.isNumLockOn) mode = mode or TerminalKeyEncoder.KEYMOD_NUM_LOCK
+        // Termux ignores Fn-held keys here (function key remapping upstream).
+        return mode
+    }
+
+    private fun cursorApp(): Boolean {
+        return try {
+            view?.currentSession?.emulator?.isCursorKeysApplicationMode == true
+        } catch (_: Exception) {
+            false
+        }
+    }
+
+    private fun keypadApp(): Boolean {
+        return try {
+            view?.currentSession?.emulator?.isKeypadApplicationMode == true
+        } catch (_: Exception) {
+            false
+        }
+    }
+
     override fun onKeyDown(keyCode: Int, e: KeyEvent, session: TerminalSession): Boolean {
-        // Same mapping as the old handleHardwareKey: DEL/arrows/TAB/ESC/Enter
-        // plus Ctrl chords synthesized from keycodes.
-        when (keyCode) {
-            KeyEvent.KEYCODE_DEL -> {
-                onDirectDelete?.invoke()
-                return true
-            }
-            KeyEvent.KEYCODE_ENTER -> {
-                onDirectInput?.invoke("\r")
-                return true
-            }
-            KeyEvent.KEYCODE_DPAD_UP -> {
-                onDirectInput?.invoke("\u001B[A")
-                return true
-            }
-            KeyEvent.KEYCODE_DPAD_DOWN -> {
-                onDirectInput?.invoke("\u001B[B")
-                return true
-            }
-            KeyEvent.KEYCODE_DPAD_LEFT -> {
-                onDirectInput?.invoke("\u001B[D")
-                return true
-            }
-            KeyEvent.KEYCODE_DPAD_RIGHT -> {
-                onDirectInput?.invoke("\u001B[C")
-                return true
-            }
-            KeyEvent.KEYCODE_TAB -> {
-                onDirectInput?.invoke("\t")
-                return true
-            }
-            KeyEvent.KEYCODE_ESCAPE -> {
-                onDirectInput?.invoke("\u001B")
-                return true
-            }
-        }
-        val c = e.unicodeChar
-        if (c != 0) {
-            onDirectInput?.invoke(String(Character.toChars(c)))
+        // Termux TerminalView.onKeyDown order, remote-adapted: ACTION_MULTIPLE
+        // chars, shift+PgUp/PgDn paging, KeyHandler mapping (full modifiers),
+        // then the unicode path (meta-cleared, combining accents, CTRL table,
+        // BT quirks, ALT prefix). Anything unclaimed returns false so Termux's
+        // own handler runs — but that writes into the dead local session, so
+        // the port above must stay complete (see TerminalKeyEncoder).
+        if (e.action == KeyEvent.ACTION_MULTIPLE && keyCode == KeyEvent.KEYCODE_UNKNOWN) {
+            val chars = e.characters ?: return false
+            if (chars.isEmpty()) return false
+            onDirectBytes?.invoke(chars.toByteArray(Charsets.UTF_8))
             return true
-        } else if (e.isCtrlPressed) {
-            val ctrl = keyCodeToCtrlByte(keyCode)
-            if (ctrl != null) {
-                onDirectInput?.invoke(String(byteArrayOf(ctrl), Charsets.ISO_8859_1))
+        }
+        if ((keyCode == KeyEvent.KEYCODE_PAGE_UP || keyCode == KeyEvent.KEYCODE_PAGE_DOWN) &&
+            e.isShiftPressed
+        ) {
+            // Termux scrolls local scrollback here; remote panes have none
+            // (server owns history), so page remotely instead. Local panes
+            // (plain shells) fall through to Termux's own doScroll.
+            val remote = host?.let { it.remoteScrollHost || it.altActive } == true
+            if (remote) {
+                onPageScroll?.invoke(keyCode == KeyEvent.KEYCODE_PAGE_UP)
+                return true
+            }
+            return false
+        }
+        if (!e.isFunctionPressed) {
+            val code = TerminalKeyEncoder.termuxKey(keyCode, keyModeOf(e), cursorApp(), keypadApp())
+            if (code != null) {
+                // DEL travels the delete path (screen sends 0x7F verbatim);
+                // everything else goes as raw bytes (bypassing text-path
+                // normalization, which eats ESC leaders).
+                if (keyCode == KeyEvent.KEYCODE_DEL && code == "\u007F") {
+                    onDirectDelete?.invoke()
+                } else {
+                    onDirectBytes?.invoke(code.toByteArray(Charsets.ISO_8859_1))
+                }
                 return true
             }
         }
-        return false
+        // Unicode path: clear CTRL (handled below), let right-Alt compose.
+        val meta = e.metaState
+        val rightAlt = meta and KeyEvent.META_ALT_RIGHT_ON != 0
+        var bitsToClear = KeyEvent.META_CTRL_MASK
+        if (!rightAlt) {
+            bitsToClear = bitsToClear or KeyEvent.META_ALT_ON or KeyEvent.META_ALT_LEFT_ON
+        }
+        var effectiveMeta = meta and bitsToClear.inv()
+        if (e.isShiftPressed) {
+            effectiveMeta = effectiveMeta or KeyEvent.META_SHIFT_ON or KeyEvent.META_SHIFT_LEFT_ON
+        }
+        val result = e.getUnicodeChar(effectiveMeta)
+        if (result == 0) {
+            // No character and no mapping: last resort is the CTRL table for
+            // keycodes whose unicode is 0 under CTRL (Termux inputCodePoint
+            // covers this via onCodePoint; hardware path synthesizes here).
+            if (e.isCtrlPressed || ctrlDown) {
+                val ctrl = keyCodeToCtrlByte(keyCode)
+                if (ctrl != null) {
+                    onDirectBytes?.invoke(byteArrayOf(ctrl))
+                    return true
+                }
+            }
+            return false
+        }
+        val codePoint: Int
+        if (result and KeyCharacterMap.COMBINING_ACCENT != 0) {
+            if (combiningAccent != 0) {
+                emitCodePoint(combiningAccent, e)
+            }
+            combiningAccent = result and KeyCharacterMap.COMBINING_ACCENT_MASK
+            return true
+        } else {
+            codePoint = if (combiningAccent != 0) {
+                val combined = KeyCharacterMap.getDeadChar(combiningAccent, result)
+                combiningAccent = 0
+                if (combined > 0) combined else result
+            } else {
+                result
+            }
+        }
+        emitCodePoint(codePoint, e)
+        return true
+    }
+
+    private fun emitCodePoint(codePoint: Int, e: KeyEvent) {
+        val ctrl = e.isCtrlPressed || ctrlDown
+        val alt = (e.metaState and KeyEvent.META_ALT_LEFT_ON) != 0 || altDown
+        // Bytes, not text: NUL (ctrl-space) and C1 controls survive byte
+        // transport exactly; the text path is for IME commits only.
+        onDirectBytes?.invoke(TerminalKeyEncoder.termuxCodePoint(codePoint, ctrl, alt))
     }
 
     override fun onKeyUp(keyCode: Int, e: KeyEvent): Boolean {
-        // Consume exactly what onKeyDown consumed; the framework owns the rest.
-        return when (keyCode) {
-            KeyEvent.KEYCODE_DEL,
-            KeyEvent.KEYCODE_ENTER,
-            KeyEvent.KEYCODE_DPAD_UP,
-            KeyEvent.KEYCODE_DPAD_DOWN,
-            KeyEvent.KEYCODE_DPAD_LEFT,
-            KeyEvent.KEYCODE_DPAD_RIGHT,
-            KeyEvent.KEYCODE_TAB,
-            KeyEvent.KEYCODE_ESCAPE -> true
-            else -> e.unicodeChar != 0 || e.isCtrlPressed
+        // Consume exactly what onKeyDown consumed: recompute the same
+        // decision (mapping hit, unicode nonzero, or CTRL fallback).
+        if (e.action == KeyEvent.ACTION_MULTIPLE && keyCode == KeyEvent.KEYCODE_UNKNOWN) {
+            return !(e.characters.isNullOrEmpty())
         }
+        if ((keyCode == KeyEvent.KEYCODE_PAGE_UP || keyCode == KeyEvent.KEYCODE_PAGE_DOWN) &&
+            e.isShiftPressed
+        ) {
+            return host?.let { it.remoteScrollHost || it.altActive } == true
+        }
+        if (!e.isFunctionPressed &&
+            TerminalKeyEncoder.termuxKey(keyCode, keyModeOf(e), cursorApp(), keypadApp()) != null
+        ) {
+            return true
+        }
+        if (e.getUnicodeChar(e.metaState) != 0) return true
+        if ((e.isCtrlPressed || ctrlDown) && keyCodeToCtrlByte(keyCode) != null) return true
+        return false
     }
 
     /** Set by the screen: suppresses move-induced long-press (see host). */

@@ -21,6 +21,12 @@ class TermuxSessionClient(
     var onColorsChanged: (() -> Unit)? = null,
     /** OSC-52 copy sink (screen clipboard). */
     var onCopyText: ((String) -> Unit)? = null,
+    /**
+     * Termux toolbar PASTE (selection ActionMode calls
+     * `session.onPasteTextFromClipboard()`). The screen reads the clipboard
+     * and sends it networked — stock Termux pastes into its local PTY here.
+     */
+    var onPasteRequest: (() -> Unit)? = null,
 ) : TerminalSessionClient {
 
     /** Our CursorStyle setting, mapped to Termux's int constants. */
@@ -50,7 +56,7 @@ class TermuxSessionClient(
     }
 
     override fun onPasteTextFromClipboard(session: TerminalSession) {
-        // No-op: see TermuxOutput.
+        onPasteRequest?.invoke()
     }
 
     override fun onBell(session: TerminalSession) {

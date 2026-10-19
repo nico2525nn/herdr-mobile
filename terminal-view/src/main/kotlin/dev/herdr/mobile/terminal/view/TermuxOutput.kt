@@ -42,8 +42,10 @@ class TermuxOutput(
     }
 
     override fun onPasteTextFromClipboard() {
-        // No-op: pasting goes through the CJK panel (explicit user action with
-        // composition), never through an app-initiated bracketed-paste request.
+        // Dead in v0.118.3: nothing invokes the TerminalOutput twin (verified
+        // by source grep — only TerminalSession.onPasteTextFromClipboard
+        // fires, via the selection toolbar). The live path is
+        // TermuxSessionClient.onPasteRequest above.
     }
 
     override fun onBell() {

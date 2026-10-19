@@ -247,6 +247,16 @@ class TermuxTerminalHost(
         return measurePaint.fontSpacing
     }
 
+    /** Shift+PgUp/PgDn page scroll (Termux parity: remote panes page remotely). */
+    fun pageRemote(up: Boolean) {
+        val rows = try {
+            view.currentSession?.emulator?.mRows ?: 0
+        } catch (_: Exception) {
+            0
+        }
+        if (rows > 0) fireRemote(if (up) -rows else rows)
+    }
+
     /** Snap a scrolled viewport home (user input = back at the prompt). */
     fun snapToBottom() {
         view.topRow = 0

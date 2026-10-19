@@ -109,6 +109,254 @@ object TerminalKeyEncoder {
     /** CTRL-C / interrupt as raw byte, the fastest path that needs no round trip. */
     fun interrupt(): ByteArray = byteArrayOf(0x03)
 
+    // ------------------------------------------------------------------
+    // Termux KeyHandler port (terminal-emulator KeyHandler.java v0.118.3 +
+    // TerminalView.onKeyDown inputCodePoint). Hardware keys that this returns
+    // null for fall through to Termux's own handler — which writes into our
+    // dead local session (vanishes). So this must cover everything Termux
+    // covers, or keys silently die.
+    // ------------------------------------------------------------------
+
+    const val KEYMOD_SHIFT = 1
+    const val KEYMOD_CTRL = 2
+    const val KEYMOD_ALT = 4
+    const val KEYMOD_NUM_LOCK = 8
+
+    /**
+     * Termux `KeyHandler.getCode`: keyCode + modifiers to wire bytes, or null
+     * when Termux itself falls through to unicode processing (printables,
+     * SPACE without CTRL). [cursorApp]/[keypadApp] come from the live emulator
+     * (it mirrors the remote PTY's DECCKM/DECKPAM via output replay).
+     */
+    fun termuxKey(
+        keyCode: Int,
+        keyMode: Int,
+        cursorApp: Boolean,
+        keypadApp: Boolean,
+    ): String? {
+        val numLockOn = keyMode and KEYMOD_NUM_LOCK != 0
+        val mode = keyMode and KEYMOD_NUM_LOCK.inv()
+        when (keyCode) {
+            android.view.KeyEvent.KEYCODE_DPAD_CENTER -> return "\r"
+            android.view.KeyEvent.KEYCODE_DPAD_UP ->
+                return if (mode == 0) {
+                    if (cursorApp) "\u001BOA" else "\u001B[A"
+                } else {
+                    transformForModifiers("\u001B[1", mode, 'A')
+                }
+            android.view.KeyEvent.KEYCODE_DPAD_DOWN ->
+                return if (mode == 0) {
+                    if (cursorApp) "\u001BOB" else "\u001B[B"
+                } else {
+                    transformForModifiers("\u001B[1", mode, 'B')
+                }
+            android.view.KeyEvent.KEYCODE_DPAD_RIGHT ->
+                return if (mode == 0) {
+                    if (cursorApp) "\u001BOC" else "\u001B[C"
+                } else {
+                    transformForModifiers("\u001B[1", mode, 'C')
+                }
+            android.view.KeyEvent.KEYCODE_DPAD_LEFT ->
+                return if (mode == 0) {
+                    if (cursorApp) "\u001BOD" else "\u001B[D"
+                } else {
+                    transformForModifiers("\u001B[1", mode, 'D')
+                }
+            android.view.KeyEvent.KEYCODE_MOVE_HOME ->
+                return if (mode == 0) {
+                    if (cursorApp) "\u001BOH" else "\u001B[H"
+                } else {
+                    transformForModifiers("\u001B[1", mode, 'H')
+                }
+            android.view.KeyEvent.KEYCODE_MOVE_END ->
+                return if (mode == 0) {
+                    if (cursorApp) "\u001BOF" else "\u001B[F"
+                } else {
+                    transformForModifiers("\u001B[1", mode, 'F')
+                }
+            android.view.KeyEvent.KEYCODE_F1 ->
+                return if (mode == 0) "\u001BOP" else transformForModifiers("\u001B[1", mode, 'P')
+            android.view.KeyEvent.KEYCODE_F2 ->
+                return if (mode == 0) "\u001BOQ" else transformForModifiers("\u001B[1", mode, 'Q')
+            android.view.KeyEvent.KEYCODE_F3 ->
+                return if (mode == 0) "\u001BOR" else transformForModifiers("\u001B[1", mode, 'R')
+            android.view.KeyEvent.KEYCODE_F4 ->
+                return if (mode == 0) "\u001BOS" else transformForModifiers("\u001B[1", mode, 'S')
+            android.view.KeyEvent.KEYCODE_F5 -> return transformForModifiers("\u001B[15", mode, '~')
+            android.view.KeyEvent.KEYCODE_F6 -> return transformForModifiers("\u001B[17", mode, '~')
+            android.view.KeyEvent.KEYCODE_F7 -> return transformForModifiers("\u001B[18", mode, '~')
+            android.view.KeyEvent.KEYCODE_F8 -> return transformForModifiers("\u001B[19", mode, '~')
+            android.view.KeyEvent.KEYCODE_F9 -> return transformForModifiers("\u001B[20", mode, '~')
+            android.view.KeyEvent.KEYCODE_F10 -> return transformForModifiers("\u001B[21", mode, '~')
+            android.view.KeyEvent.KEYCODE_F11 -> return transformForModifiers("\u001B[23", mode, '~')
+            android.view.KeyEvent.KEYCODE_F12 -> return transformForModifiers("\u001B[24", mode, '~')
+            android.view.KeyEvent.KEYCODE_SYSRQ -> return "\u001B[32~"
+            android.view.KeyEvent.KEYCODE_BREAK -> return "\u001B[34~"
+            android.view.KeyEvent.KEYCODE_ESCAPE, android.view.KeyEvent.KEYCODE_BACK -> return "\u001B"
+            android.view.KeyEvent.KEYCODE_INSERT -> return transformForModifiers("\u001B[2", mode, '~')
+            android.view.KeyEvent.KEYCODE_FORWARD_DEL -> return transformForModifiers("\u001B[3", mode, '~')
+            android.view.KeyEvent.KEYCODE_PAGE_UP -> return "\u001B[5~"
+            android.view.KeyEvent.KEYCODE_PAGE_DOWN -> return "\u001B[6~"
+            android.view.KeyEvent.KEYCODE_DEL -> {
+                val prefix = if (mode and KEYMOD_ALT == 0) "" else "\u001B"
+                return prefix + if (mode and KEYMOD_CTRL == 0) "\u007F" else "\u0008"
+            }
+            android.view.KeyEvent.KEYCODE_SPACE ->
+                return if (mode and KEYMOD_CTRL == 0) null else "\u0000"
+            android.view.KeyEvent.KEYCODE_TAB ->
+                return if (mode and KEYMOD_SHIFT == 0) "\u0009" else "\u001B[Z"
+            android.view.KeyEvent.KEYCODE_ENTER ->
+                return if (mode and KEYMOD_ALT == 0) "\r" else "\u001B\r"
+            android.view.KeyEvent.KEYCODE_NUMPAD_ENTER ->
+                return if (keypadApp) transformForModifiers("\u001BO", mode, 'M') else "\n"
+            android.view.KeyEvent.KEYCODE_NUMPAD_MULTIPLY ->
+                return if (keypadApp) transformForModifiers("\u001BO", mode, 'j') else "*"
+            android.view.KeyEvent.KEYCODE_NUMPAD_ADD ->
+                return if (keypadApp) transformForModifiers("\u001BO", mode, 'k') else "+"
+            android.view.KeyEvent.KEYCODE_NUMPAD_COMMA -> return ","
+            android.view.KeyEvent.KEYCODE_NUMPAD_DOT ->
+                return if (numLockOn) {
+                    if (keypadApp) "\u001BOn" else "."
+                } else {
+                    transformForModifiers("\u001B[3", mode, '~')
+                }
+            android.view.KeyEvent.KEYCODE_NUMPAD_SUBTRACT ->
+                return if (keypadApp) transformForModifiers("\u001BO", mode, 'm') else "-"
+            android.view.KeyEvent.KEYCODE_NUMPAD_DIVIDE ->
+                return if (keypadApp) transformForModifiers("\u001BO", mode, 'o') else "/"
+            android.view.KeyEvent.KEYCODE_NUMPAD_0 ->
+                return if (numLockOn) {
+                    if (keypadApp) transformForModifiers("\u001BO", mode, 'p') else "0"
+                } else {
+                    transformForModifiers("\u001B[2", mode, '~')
+                }
+            android.view.KeyEvent.KEYCODE_NUMPAD_1 ->
+                return if (numLockOn) {
+                    if (keypadApp) transformForModifiers("\u001BO", mode, 'q') else "1"
+                } else {
+                    if (mode == 0) {
+                        if (cursorApp) "\u001BOF" else "\u001B[F"
+                    } else {
+                        transformForModifiers("\u001B[1", mode, 'F')
+                    }
+                }
+            android.view.KeyEvent.KEYCODE_NUMPAD_2 ->
+                return if (numLockOn) {
+                    if (keypadApp) transformForModifiers("\u001BO", mode, 'r') else "2"
+                } else {
+                    if (mode == 0) {
+                        if (cursorApp) "\u001BOB" else "\u001B[B"
+                    } else {
+                        transformForModifiers("\u001B[1", mode, 'B')
+                    }
+                }
+            android.view.KeyEvent.KEYCODE_NUMPAD_3 ->
+                return if (numLockOn) {
+                    if (keypadApp) transformForModifiers("\u001BO", mode, 's') else "3"
+                } else {
+                    "\u001B[6~"
+                }
+            android.view.KeyEvent.KEYCODE_NUMPAD_4 ->
+                return if (numLockOn) {
+                    if (keypadApp) transformForModifiers("\u001BO", mode, 't') else "4"
+                } else {
+                    if (mode == 0) {
+                        if (cursorApp) "\u001BOD" else "\u001B[D"
+                    } else {
+                        transformForModifiers("\u001B[1", mode, 'D')
+                    }
+                }
+            android.view.KeyEvent.KEYCODE_NUMPAD_5 ->
+                return if (keypadApp) transformForModifiers("\u001BO", mode, 'u') else "5"
+            android.view.KeyEvent.KEYCODE_NUMPAD_6 ->
+                return if (numLockOn) {
+                    if (keypadApp) transformForModifiers("\u001BO", mode, 'v') else "6"
+                } else {
+                    if (mode == 0) {
+                        if (cursorApp) "\u001BOC" else "\u001B[C"
+                    } else {
+                        transformForModifiers("\u001B[1", mode, 'C')
+                    }
+                }
+            android.view.KeyEvent.KEYCODE_NUMPAD_7 ->
+                return if (numLockOn) {
+                    if (keypadApp) transformForModifiers("\u001BO", mode, 'w') else "7"
+                } else {
+                    if (mode == 0) {
+                        if (cursorApp) "\u001BOH" else "\u001B[H"
+                    } else {
+                        transformForModifiers("\u001B[1", mode, 'H')
+                    }
+                }
+            android.view.KeyEvent.KEYCODE_NUMPAD_8 ->
+                return if (numLockOn) {
+                    if (keypadApp) transformForModifiers("\u001BO", mode, 'x') else "8"
+                } else {
+                    if (mode == 0) {
+                        if (cursorApp) "\u001BOA" else "\u001B[A"
+                    } else {
+                        transformForModifiers("\u001B[1", mode, 'A')
+                    }
+                }
+            android.view.KeyEvent.KEYCODE_NUMPAD_9 ->
+                return if (numLockOn) {
+                    if (keypadApp) transformForModifiers("\u001BO", mode, 'y') else "9"
+                } else {
+                    "\u001B[5~"
+                }
+            android.view.KeyEvent.KEYCODE_NUMPAD_EQUALS ->
+                return if (keypadApp) transformForModifiers("\u001BO", mode, 'X') else "="
+        }
+        return null
+    }
+
+    private fun transformForModifiers(start: String, keymod: Int, lastChar: Char): String {
+        val modifier = when (keymod) {
+            KEYMOD_SHIFT -> 2
+            KEYMOD_ALT -> 3
+            KEYMOD_SHIFT or KEYMOD_ALT -> 4
+            KEYMOD_CTRL -> 5
+            KEYMOD_SHIFT or KEYMOD_CTRL -> 6
+            KEYMOD_ALT or KEYMOD_CTRL -> 7
+            KEYMOD_SHIFT or KEYMOD_ALT or KEYMOD_CTRL -> 8
+            else -> return start + lastChar
+        }
+        return start + (";" + modifier) + lastChar
+    }
+
+    /**
+     * Termux `inputCodePoint` transform for hardware-key unicode: full CTRL
+     * table, bluetooth-keyboard quirks, left-ALT ESC prefix. Soft commits
+     * never reach here (the VM applies the sticky latch to those instead —
+     * routing both through here would double-apply).
+     */
+    fun termuxCodePoint(codePoint: Int, ctrlDown: Boolean, altDown: Boolean): ByteArray {
+        var cp = codePoint
+        if (ctrlDown) {
+            cp = when {
+                cp in 'a'.code..'z'.code -> cp - 'a'.code + 1
+                cp in 'A'.code..'Z'.code -> cp - 'A'.code + 1
+                cp == ' '.code || cp == '2'.code -> 0
+                cp == '['.code || cp == '3'.code -> 27
+                cp == '\\'.code || cp == '4'.code -> 28
+                cp == ']'.code || cp == '5'.code -> 29
+                cp == '^'.code || cp == '6'.code -> 30
+                cp == '_'.code || cp == '7'.code || cp == '/'.code -> 31
+                cp == '8'.code -> 127
+                else -> cp
+            }
+        }
+        // Bluetooth keyboards sending modifier-letter variants instead of ASCII.
+        when (cp) {
+            0x02DC -> cp = 0x007E
+            0x02CB -> cp = 0x0060
+            0x02C6 -> cp = 0x005E
+        }
+        val text = String(Character.toChars(cp))
+        val bytes = text.toByteArray(Charsets.UTF_8)
+        return if (altDown) byteArrayOf(ESC) + bytes else bytes
+    }
+
     /**
      * Termux `paste()` normalization for atomic multi-char commits (CJK panel):
      * strip ESC + C1 controls (escape injection), map every newline to CR
