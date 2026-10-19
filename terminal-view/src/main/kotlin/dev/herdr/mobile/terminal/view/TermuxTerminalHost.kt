@@ -123,7 +123,11 @@ class TermuxTerminalHost(
             ): Boolean {
                 // Fling continues the drag direction: finger-up fling
                 // (velocityY < 0) heads live-ward = positive lines.
-                val rows = (-velocityY / 2000f).toInt().coerceIn(-30, 30)
+                // Single small request, not Termux's animated decay: each
+                // remote request repaints the whole screen, so a decaying
+                // sequence would stutter through full repaints. Scaled to
+                // feel like the START of a Termux fling, not a teleport.
+                val rows = (-velocityY / 4000f).toInt().coerceIn(-12, 12)
                 if (rows != 0) {
                     remoteArmed = true
                     fireRemote(rows)
@@ -226,9 +230,17 @@ class TermuxTerminalHost(
     }
 
     private fun rowHeightPx(): Float {
-        // Termux's renderer uses Paint.getFontSpacing() with no multiplier;
-        // reproduce it from the size we set (mFontLineSpacing is
-        // package-private and unreachable from here).
+        // Live-exact: the renderer's row pitch is view height over rows (it lays
+        // out exactly mRows rows). The old fontSpacing guess ran ~14% small
+        // (typeface metrics), overscrolling every remote drag. Falls back to
+        // the guess only before attach (rows unknown — never scrolled then).
+        val em = try {
+            view.currentSession?.emulator
+        } catch (_: Exception) {
+            null
+        }
+        val rows = em?.mRows ?: 0
+        if (rows > 0 && view.height > 0) return view.height.toFloat() / rows
         val px = textSizePx
         if (px <= 0) return 0f
         measurePaint.textSize = px.toFloat()
