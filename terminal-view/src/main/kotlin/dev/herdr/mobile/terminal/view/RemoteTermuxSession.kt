@@ -171,6 +171,27 @@ class RemoteTermuxSession(
     }
 
     /**
+     * SGR wheel notches for mouse-aware apps (codex: page_key PgUp/PgDn binds
+     * jump full transcript pages). Raw SGR bytes via the normal send path —
+     * herdr's terminal.mouse only accepts left/right/middle, so wheel never
+     * goes through it. Positive = live-ward (wheel-down 65), negative =
+     * older-ward (wheel-up 64). Center-grid coords (proven live).
+     */
+    fun scrollWheel(notches: Int) {
+        if (notches == 0) return
+        scope.launch {
+            runCatching {
+                val button = if (notches > 0) 65 else 64
+                val col = 45
+                val row = 15
+                val one = "\u001b[<$button;$col;${row}M".toByteArray(Charsets.UTF_8)
+                // One message per notch (matches the proven single-event step).
+                repeat(kotlin.math.abs(notches)) { backend.send(one) }
+            }
+        }
+    }
+
+    /**
      * Release the backend connection. Suspends until the release frame has been
      * handed to the backend — never fire-and-forget on a scope that dies with us,
      * or the release never reaches Herdr and the direct-attach resize lock leaks.

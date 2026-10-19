@@ -609,6 +609,9 @@ private fun TerminalSurface(
         host.onRemoteScroll = { lines ->
             bridgeRef.value?.scrollRemote(lines)
         }
+        host.onRemoteWheel = { notches ->
+            bridgeRef.value?.scrollWheel(notches)
+        }
     }
 
     AndroidView(
@@ -661,6 +664,7 @@ private fun TerminalSurface(
             // local history). Alt-screen is OR-ed live by the pump.
             // Plain shells keep instant local scroll.
             hostRef?.remoteScrollHost = state.pane?.agent?.isNotBlank() == true
+            hostRef?.agentWheel = state.pane?.agent?.lowercase() == "codex"
             val vc = viewClientRef
             val h = hostRef
             if (vc != null && h != null) bindTermuxCallbacks(vc, h)

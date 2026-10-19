@@ -29,6 +29,8 @@ class TermuxTerminalHost(
 ) {
     /** Alt-screen scroll: lines>0 finger-up (live-ward), lines<0 older. Host forwards. */
     var onRemoteScroll: ((lines: Int) -> Unit)? = null
+    /** SGR wheel notches for mouse-aware apps (signed; positive = live-ward). */
+    var onRemoteWheel: ((notches: Int) -> Unit)? = null
 
     /**
      * Host part of remote-scroll routing: true when the pane runs an agent
@@ -52,6 +54,18 @@ class TermuxTerminalHost(
     /** Mouse-tracking flag of the latest pump (diagnostics). */
     @Volatile
     var mouseTracking: Boolean = false
+
+    /**
+     * Codex routes to SGR wheel (not page_key): it binds PgUp/PgDn to full
+     * transcript-page steps (18-19 rows, lines ignored — verified on a long
+     * transcript) but honors SGR wheel at ~3 rows/event. Other agent panes
+     * (omp: line-precise page_key) stay on the probed/live mouse flag.
+     */
+    @Volatile
+    var agentWheel: Boolean = false
+
+    /** Fractional-row carry across gestures (Termux-remainder-style). */
+    private var wheelRemainder = 0.0
 
     /** Effective routing: host (agent) OR live alt-screen flag. */
     private val remoteEffective: Boolean
@@ -226,7 +240,18 @@ class TermuxTerminalHost(
         scrollEvents++
         scrolledRows += kotlin.math.abs(rows)
         remoteScrolls++
-        onRemoteScroll?.invoke(rows)
+        if (mouseTracking || agentWheel) {
+            // ~3 rows per SGR wheel event (measured on a long codex
+            // transcript, both directions, from live and mid-scroll).
+            wheelRemainder += rows / 3.0
+            val notches = wheelRemainder.toInt()
+            if (notches != 0) {
+                wheelRemainder -= notches
+                onRemoteWheel?.invoke(notches)
+            }
+        } else {
+            onRemoteScroll?.invoke(rows)
+        }
     }
 
     private fun rowHeightPx(): Float {
