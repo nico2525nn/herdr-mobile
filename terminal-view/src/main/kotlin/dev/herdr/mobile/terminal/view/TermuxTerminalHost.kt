@@ -240,9 +240,14 @@ class TermuxTerminalHost(
         scrollEvents++
         scrolledRows += kotlin.math.abs(rows)
         remoteScrolls++
-        if (mouseTracking || agentWheel) {
-            // ~3 rows per SGR wheel event (measured on a long codex
-            // transcript, both directions, from live and mid-scroll).
+        if (agentWheel) {
+            // Codex scrolls exactly one row per SGR wheel event (measured 6
+            // events = 6 rows, both directions, from live and mid-scroll), so
+            // one event per requested row — no divisor, no carry, no tuning.
+            if (rows != 0) onRemoteWheel?.invoke(rows)
+        } else if (mouseTracking) {
+            // Conventional mouse apps (vim/less) scroll 3 lines per wheel
+            // notch (xterm default): accumulate fractional rows across events.
             wheelRemainder += rows / 3.0
             val notches = wheelRemainder.toInt()
             if (notches != 0) {
