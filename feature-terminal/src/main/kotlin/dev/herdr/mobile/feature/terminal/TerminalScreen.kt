@@ -529,11 +529,25 @@ private fun TerminalSurface(
     // the keyboard back to the terminal. Otherwise the hidden CJK TextField
     // keeps the input connection, so Gboard's arrows/caret keys edit the
     // off-screen draft instead of reaching the terminal (whose DPAD mapping
-    // is already implemented).
+    // is already implemented). Transition-only: mounting or recomposing must
+    // not clear focus (it would dismiss an open tab menu / steal focus).
     val focusManager = androidx.compose.ui.platform.LocalFocusManager.current
+    var lastInputPage by remember { mutableStateOf(state.inputPage) }
     LaunchedEffect(state.inputPage) {
-        if (state.inputPage != dev.herdr.mobile.core.model.InputPanelPage.CJK_INPUT) {
+        val previous = lastInputPage
+        lastInputPage = state.inputPage
+        if (previous == dev.herdr.mobile.core.model.InputPanelPage.CJK_INPUT &&
+            state.inputPage != dev.herdr.mobile.core.model.InputPanelPage.CJK_INPUT
+        ) {
             focusManager.clearFocus(force = true)
+            viewRef?.requestFocus()
+        }
+    }
+    // Tab switch/close swaps the backend under the same view; the view can be
+    // left without input focus, so typing (hardware keys, IME arrows) goes
+    // nowhere until a tap. Hand it focus explicitly when the pane changes.
+    LaunchedEffect(state.pane?.id) {
+        if (state.inputPage != dev.herdr.mobile.core.model.InputPanelPage.CJK_INPUT) {
             viewRef?.requestFocus()
         }
     }
@@ -832,8 +846,20 @@ private fun BottomInputPanel(
             pagerState.scrollToPage(0)
         }
     }
+    val cjkFocus = remember { androidx.compose.ui.focus.FocusRequester() }
+    var lastPanelPage by remember { mutableStateOf<InputPanelPage?>(null) }
+    // The pager also reports the page; focus the CJK field when the user
+    // slides to it (that gesture means "type here"), but never on mount or a
+    // plain recomposition.
     LaunchedEffect(pagerState.currentPage, pages.size) {
-        pages.getOrNull(pagerState.currentPage)?.let { onPageChange(it) }
+        val page = pages.getOrNull(pagerState.currentPage) ?: return@LaunchedEffect
+        onPageChange(page)
+        if (page == InputPanelPage.CJK_INPUT &&
+            lastPanelPage != null && lastPanelPage != InputPanelPage.CJK_INPUT
+        ) {
+            runCatching { cjkFocus.requestFocus() }
+        }
+        lastPanelPage = page
     }
     Surface(
         tonalElevation = 3.dp,
@@ -863,6 +889,7 @@ private fun BottomInputPanel(
                                     viewModel.clearCjkDraft(tabId)
                                 },
                                 onBackspace = { onSendBytes(byteArrayOf(0x7F)) },
+                                focusRequester = cjkFocus,
                             )
                         }
                     }
@@ -919,6 +946,7 @@ private fun BottomInputPanel(
                                 viewModel.clearCjkDraft(tabId)
                             },
                             onBackspace = { onSendBytes(byteArrayOf(0x7F)) },
+                            focusRequester = cjkFocus,
                         )
                     }
                 }
