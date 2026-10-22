@@ -620,7 +620,8 @@ private fun TerminalSurface(
             // (updateSize derefs the renderer), then the view client (updateSize
             // calls onEmulatorSet), then attach (in the session effect above).
             val viewClient = TermuxViewClient()
-            val view = TerminalView(context, null)
+            val container = dev.herdr.mobile.terminal.view.HerdrTerminalContainer(context)
+            val view = container.terminalView
             // Termux sets these in layout XML; programmatically-created views
             // are NOT focusable by default, and without focus the IME never
             // binds (manual keyboard summon silently no-ops) and hardware keys
@@ -641,9 +642,10 @@ private fun TerminalSurface(
             viewClientRef = viewClient
             bindTermuxCallbacks(viewClient, host)
             view.post { viewLaidOut = true }
-            view
+            container
         },
-        update = { view ->
+        update = { container ->
+            val view = container.terminalView
             // Scheme/font/cursor follow settings live (Termux has no line-height
             // multiplier: terminalLineHeight is accepted as unsupported).
             TermuxSchemes.apply(scheme)

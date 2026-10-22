@@ -41,3 +41,14 @@
 -keepclassmembers class com.termux.terminal.TerminalSession {
     com.termux.terminal.TerminalEmulator mEmulator;
 }
+
+# Box-drawing overlay reads the renderer's scroll offset / cell pitch and the
+# view's selection state reflectively (Termux exposes no getters). Keep the
+# names or release builds silently fall back to the font's dashed glyphs.
+-keepclassmembers class com.termux.view.TerminalView {
+    int mTopRow;
+    int[] mDefaultSelectors;
+}
+-keepclassmembers class com.termux.view.TerminalRenderer {
+    int mFontLineSpacingAndAscent;
+}
