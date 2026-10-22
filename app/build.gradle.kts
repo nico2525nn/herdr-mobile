@@ -13,8 +13,8 @@ android {
         applicationId = "dev.herdr.mobile"
         minSdk = 26
         targetSdk = 37
-        versionCode = 27
-        versionName = "1.3.15"
+        versionCode = 28
+        versionName = "1.3.16"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }

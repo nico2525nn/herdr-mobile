@@ -88,6 +88,11 @@ fun TerminalScreen(
     // hide it either: Extra Keys + soft keyboard is the sticky-chord flow
     // (arm CTRL, type C), and auto-hide broke it.
     var keyboardShowRequest by remember { mutableStateOf(0) }
+    // Highest request already delivered to the view. The surface subtree is
+    // recreated on every pane switch (new backend), so its LaunchedEffect
+    // restarts with the old counter value still > 0 — without this ledger a
+    // tab switch re-summoned the keyboard forever after the first summon.
+    var keyboardShowHandled by remember { mutableStateOf(0) }
 
     // App backgrounded (Home button, task switch) does NOT dispose this screen,
     // so neither DisposableEffect nor onCleared runs. Release the controller or
@@ -162,6 +167,8 @@ fun TerminalScreen(
                     onSendText = { viewModel.sendText(it) },
                     onRetry = { viewModel.retryAttach() },
                     keyboardShowRequest = keyboardShowRequest,
+                    keyboardShowHandled = keyboardShowHandled,
+                    onKeyboardShowHandled = { keyboardShowHandled = it },
                     inputTick = viewModel.inputTick.collectAsStateWithLifecycle().value,
                     onGridChanged = { cols, rows -> viewModel.setAttachGrid(cols, rows) },
                 )
@@ -468,6 +475,8 @@ private fun TerminalSurface(
     onSendText: (String) -> Unit,
     onRetry: () -> Unit,
     keyboardShowRequest: Int,
+    keyboardShowHandled: Int,
+    onKeyboardShowHandled: (Int) -> Unit,
     inputTick: Int,
     onGridChanged: (cols: Int, rows: Int) -> Unit,
 ) {
@@ -519,7 +528,8 @@ private fun TerminalSurface(
     // Manual summon: the CJK keyboard button. Guard 0 so composition
     // doesn't steal focus on first mount.
     LaunchedEffect(keyboardShowRequest) {
-        if (keyboardShowRequest > 0) {
+        if (keyboardShowRequest > keyboardShowHandled) {
+            onKeyboardShowHandled(keyboardShowRequest)
             hostRef?.showKeyboard()
         }
     }
