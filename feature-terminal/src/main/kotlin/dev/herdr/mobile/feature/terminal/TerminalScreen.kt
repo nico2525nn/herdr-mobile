@@ -525,6 +525,19 @@ private fun TerminalSurface(
     val density = LocalDensity.current
     val scope = rememberCoroutineScope()
 
+    // IME ownership follows the panel page: leaving the CJK page must hand
+    // the keyboard back to the terminal. Otherwise the hidden CJK TextField
+    // keeps the input connection, so Gboard's arrows/caret keys edit the
+    // off-screen draft instead of reaching the terminal (whose DPAD mapping
+    // is already implemented).
+    val focusManager = androidx.compose.ui.platform.LocalFocusManager.current
+    LaunchedEffect(state.inputPage) {
+        if (state.inputPage != dev.herdr.mobile.core.model.InputPanelPage.CJK_INPUT) {
+            focusManager.clearFocus(force = true)
+            viewRef?.requestFocus()
+        }
+    }
+
     // Manual summon: the CJK keyboard button. Guard 0 so composition
     // doesn't steal focus on first mount.
     LaunchedEffect(keyboardShowRequest) {
