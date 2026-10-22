@@ -23,8 +23,9 @@ import kotlin.math.min
  * strokes connect across cells regardless of the font — no line-height tuning.
  *
  * Mirrors [TerminalRenderer.render]: same external-row mapping, same style
- * decoding, same palette, same cursor/selection skips. Runs after the terminal
- * view has drawn (see [HerdrTerminalContainer.dispatchDraw]).
+ * decoding, same palette, same cursor/selection skips. Drawn by
+ * [BoxDrawingDrawable] as the terminal view's foreground, so it is recorded
+ * with the same display list as the cells it covers.
  */
 internal object BoxDrawing {
 
@@ -51,6 +52,9 @@ internal object BoxDrawing {
         0x020, 0x002, 0x080, 0x008, 0x090, 0x009, 0x060, 0x006,
     )
 
+    /** Reused by [resolveColors]: 0 = foreground, 1 = background. */
+    private val colorScratch = IntArray(2)
+
     private val topRowField: Field? = fieldOf(TerminalView::class.java, "mTopRow")
     private val spacingAndAscentField: Field? =
         fieldOf(TerminalRenderer::class.java, "mFontLineSpacingAndAscent")
@@ -63,8 +67,8 @@ internal object BoxDrawing {
     fun draw(canvas: Canvas, view: TerminalView, stroke: Paint, fill: Paint, arc: RectF, path: Path) {
         val emu = view.mEmulator ?: return
         val renderer = view.mRenderer ?: return
-        val topRow = (topRowField?.get(view) as? Int) ?: return
-        val topOffset = (spacingAndAscentField?.get(renderer) as? Int) ?: return
+        val topRow = topRowField?.getInt(view) ?: return
+        val topOffset = spacingAndAscentField?.getInt(renderer) ?: return
         val lineSpacing = renderer.fontLineSpacing
         val fontWidth = renderer.fontWidth
         if (lineSpacing <= 0 || fontWidth <= 0f) return
@@ -113,21 +117,17 @@ internal object BoxDrawing {
                             column <= (if (line == selectors[3]) selectors[2] else columns)
                         val isCursor =
                             cursorVisible && line == cursorRow && column == cursorCol
-                        if (!selected && !isCursor) {
-                            val colors = resolveColors(
-                                lineObject.getStyle(column), palette, reverseVideo,
+                        if (!selected && !isCursor &&
+                            resolveColors(lineObject.getStyle(column), palette, reverseVideo)
+                        ) {
+                            drawCell(
+                                canvas, stroke, fill, arc, path,
+                                column * fontWidth,
+                                cellTop,
+                                (column + width) * fontWidth,
+                                cellBottom,
+                                segments, colorScratch[0], colorScratch[1],
                             )
-                            if (colors != null) {
-                                val (fg, bg) = colors
-                                drawCell(
-                                    canvas, stroke, fill, arc, path,
-                                    column * fontWidth,
-                                    cellTop,
-                                    (column + width) * fontWidth,
-                                    cellBottom,
-                                    segments, fg, bg,
-                                )
-                            }
                         }
                     }
                 }
@@ -137,10 +137,13 @@ internal object BoxDrawing {
         }
     }
 
-    /** Mirrors TerminalRenderer.drawTextRun colour resolution. */
-    private fun resolveColors(style: Long, palette: IntArray, reverseVideo: Boolean): Pair<Int, Int>? {
+    /**
+     * Mirrors TerminalRenderer.drawTextRun colour resolution into
+     * [colorScratch]. Returns false when the cell is invisible.
+     */
+    private fun resolveColors(style: Long, palette: IntArray, reverseVideo: Boolean): Boolean {
         val effect = TextStyle.decodeEffect(style)
-        if (effect and TextStyle.CHARACTER_ATTRIBUTE_INVISIBLE != 0) return null
+        if (effect and TextStyle.CHARACTER_ATTRIBUTE_INVISIBLE != 0) return false
         val bold = effect and (
             TextStyle.CHARACTER_ATTRIBUTE_BOLD or TextStyle.CHARACTER_ATTRIBUTE_BLINK
             ) != 0
@@ -148,11 +151,11 @@ internal object BoxDrawing {
         var back = TextStyle.decodeBackColor(style)
         if (fore and ALPHA_MASK != ALPHA_MASK) {
             if (bold && fore in 0..7) fore += 8
-            if (fore !in palette.indices) return null
+            if (fore !in palette.indices) return false
             fore = palette[fore]
         }
         if (back and ALPHA_MASK != ALPHA_MASK) {
-            if (back !in palette.indices) return null
+            if (back !in palette.indices) return false
             back = palette[back]
         }
         val inverse = effect and TextStyle.CHARACTER_ATTRIBUTE_INVERSE != 0
@@ -167,7 +170,9 @@ internal object BoxDrawing {
             val blue = (fore and 0xff) * 2 / 3
             fore = ALPHA_MASK or (red shl 16) or (green shl 8) or blue
         }
-        return fore to back
+        colorScratch[0] = fore
+        colorScratch[1] = back
+        return true
     }
 
     private fun drawCell(

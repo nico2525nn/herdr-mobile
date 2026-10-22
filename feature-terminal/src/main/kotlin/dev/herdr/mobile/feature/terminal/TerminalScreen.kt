@@ -60,6 +60,7 @@ import dev.herdr.mobile.terminal.view.RemoteTermuxSession
 import dev.herdr.mobile.terminal.view.TermuxSchemes
 import dev.herdr.mobile.terminal.view.TermuxTerminalHost
 import dev.herdr.mobile.terminal.view.TermuxViewClient
+import dev.herdr.mobile.terminal.view.installBoxDrawingOverlay
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -620,8 +621,7 @@ private fun TerminalSurface(
             // (updateSize derefs the renderer), then the view client (updateSize
             // calls onEmulatorSet), then attach (in the session effect above).
             val viewClient = TermuxViewClient()
-            val container = dev.herdr.mobile.terminal.view.HerdrTerminalContainer(context)
-            val view = container.terminalView
+            val view = TerminalView(context, null)
             // Termux sets these in layout XML; programmatically-created views
             // are NOT focusable by default, and without focus the IME never
             // binds (manual keyboard summon silently no-ops) and hardware keys
@@ -641,11 +641,13 @@ private fun TerminalSurface(
             hostRef = host
             viewClientRef = viewClient
             bindTermuxCallbacks(viewClient, host)
+            // Box-drawing bridge: as the view's foreground it is re-recorded
+            // with every terminal redraw (a parent overlay would go stale).
+            view.installBoxDrawingOverlay()
             view.post { viewLaidOut = true }
-            container
+            view
         },
-        update = { container ->
-            val view = container.terminalView
+        update = { view ->
             // Scheme/font/cursor follow settings live (Termux has no line-height
             // multiplier: terminalLineHeight is accepted as unsupported).
             TermuxSchemes.apply(scheme)
