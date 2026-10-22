@@ -82,6 +82,9 @@ fun TerminalScreen(
     val state by viewModel.uiState.collectAsStateWithLifecycle()
     var tabMenu by remember { mutableStateOf<TabMenuTarget?>(null) }
     var renameTarget by remember { mutableStateOf<TabMenuTarget?>(null) }
+    var workspaceMenu by remember { mutableStateOf<WorkspaceMenuTarget?>(null) }
+    var workspaceRenameTarget by remember { mutableStateOf<WorkspaceMenuTarget?>(null) }
+    var workspaceCloseTarget by remember { mutableStateOf<WorkspaceMenuTarget?>(null) }
     // Manual keyboard summon (CJK panel button). Counter, not boolean: two
     // consecutive requests must both fire. Nothing else shows the IME — no
     // tap, no swipe, no focus change (Termux behavior). Page swipes never
@@ -128,6 +131,9 @@ fun TerminalScreen(
                 viewModel.openTarget(TerminalTarget(workspaceId, tab.id, pane.id))
             },
             onMoveWorkspace = { workspaceId, to -> viewModel.moveWorkspace(workspaceId, to) },
+            onWorkspaceLongPress = { workspaceId, label, anchor ->
+                workspaceMenu = WorkspaceMenuTarget(workspaceId, label, anchor)
+            },
         )
         TabRail(
             state = state,
@@ -185,8 +191,9 @@ fun TerminalScreen(
     }
 
     tabMenu?.let { target ->
-        TabActionsMenu(
-            target = target,
+        ActionsMenu(
+            label = target.label,
+            anchor = target.anchor,
             onDismiss = { tabMenu = null },
             onRename = {
                 renameTarget = target
@@ -199,12 +206,49 @@ fun TerminalScreen(
         )
     }
     renameTarget?.let { target ->
-        TabRenameDialog(
-            target = target,
+        RenameDialog(
+            title = "Rename tab",
+            initial = target.label,
             onDismiss = { renameTarget = null },
             onConfirm = { label ->
                 viewModel.renameTab(target.tabId, label)
                 renameTarget = null
+            },
+        )
+    }
+    workspaceMenu?.let { target ->
+        ActionsMenu(
+            label = target.label,
+            anchor = target.anchor,
+            onDismiss = { workspaceMenu = null },
+            onRename = {
+                workspaceRenameTarget = target
+                workspaceMenu = null
+            },
+            onClose = {
+                workspaceCloseTarget = target
+                workspaceMenu = null
+            },
+        )
+    }
+    workspaceRenameTarget?.let { target ->
+        RenameDialog(
+            title = "Rename workspace",
+            initial = target.label,
+            onDismiss = { workspaceRenameTarget = null },
+            onConfirm = { label ->
+                viewModel.renameWorkspace(target.workspaceId, label)
+                workspaceRenameTarget = null
+            },
+        )
+    }
+    workspaceCloseTarget?.let { target ->
+        WorkspaceCloseDialog(
+            label = target.label,
+            onDismiss = { workspaceCloseTarget = null },
+            onConfirm = {
+                viewModel.closeWorkspace(target.workspaceId)
+                workspaceCloseTarget = null
             },
         )
     }
@@ -218,9 +262,17 @@ private data class TabMenuTarget(
     val anchor: androidx.compose.ui.unit.IntOffset,
 )
 
+/** Which workspace a long-press menu refers to. [anchor] is in WorkspaceRail coordinates. */
+private data class WorkspaceMenuTarget(
+    val workspaceId: String,
+    val label: String,
+    val anchor: androidx.compose.ui.unit.IntOffset,
+)
+
 @Composable
-private fun TabActionsMenu(
-    target: TabMenuTarget,
+private fun ActionsMenu(
+    label: String,
+    anchor: androidx.compose.ui.unit.IntOffset,
     onDismiss: () -> Unit,
     onRename: () -> Unit,
     onClose: () -> Unit,
@@ -229,16 +281,16 @@ private fun TabActionsMenu(
     // window origin (the reported "wrong position"). Offset = press point.
     Box(
         modifier = Modifier
-            .offset { target.anchor }
+            .offset { anchor }
             .size(1.dp),
     ) {
         DropdownMenu(expanded = true, onDismissRequest = onDismiss) {
             DropdownMenuItem(
-                text = { Text("Rename \"${target.label}\"") },
+                text = { Text("Rename \"$label\"") },
                 onClick = onRename,
             )
             DropdownMenuItem(
-                text = { Text("Close \"${target.label}\"") },
+                text = { Text("Close \"$label\"") },
                 onClick = onClose,
             )
         }
@@ -246,20 +298,21 @@ private fun TabActionsMenu(
 }
 
 @Composable
-private fun TabRenameDialog(
-    target: TabMenuTarget,
+private fun RenameDialog(
+    title: String,
+    initial: String,
     onDismiss: () -> Unit,
     onConfirm: (String) -> Unit,
 ) {
-    var label by remember(target.tabId) { mutableStateOf(target.label) }
+    var label by remember(initial) { mutableStateOf(initial) }
     androidx.compose.material3.AlertDialog(
         onDismissRequest = onDismiss,
-        title = { Text("Rename tab") },
+        title = { Text(title) },
         text = {
             OutlinedTextField(
                 value = label,
                 onValueChange = { label = it },
-                label = { Text("Tab name") },
+                label = { Text("Name") },
                 singleLine = true,
             )
         },
@@ -278,18 +331,40 @@ private fun TabRenameDialog(
 }
 
 @Composable
+private fun WorkspaceCloseDialog(
+    label: String,
+    onDismiss: () -> Unit,
+    onConfirm: () -> Unit,
+) {
+    androidx.compose.material3.AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("Close workspace") },
+        text = { Text("Close \"$label\" and all of its tabs?") },
+        confirmButton = {
+            TextButton(onClick = onConfirm) { Text("Close") }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss) { Text("Cancel") }
+        },
+    )
+}
+
+@Composable
 private fun WorkspaceRail(
     state: TerminalUiState,
     onNavigateHome: () -> Unit,
     onSelectWorkspace: (String) -> Unit,
     onMoveWorkspace: (workspaceId: String, toIndex: Int) -> Unit,
+    onWorkspaceLongPress: (workspaceId: String, label: String, anchor: androidx.compose.ui.unit.IntOffset) -> Unit,
     modifier: Modifier = Modifier,
 ) {
     val snapshot = state.snapshot ?: return
+    var railOrigin by remember { mutableStateOf(androidx.compose.ui.geometry.Offset.Zero) }
     // Home stays pinned left while the workspace chips scroll under it.
     Row(
         modifier = modifier
             .fillMaxWidth()
+            .onGloballyPositioned { railOrigin = it.positionInWindow() }
             .padding(horizontal = 16.dp, vertical = 4.dp),
         horizontalArrangement = Arrangement.spacedBy(8.dp),
         verticalAlignment = Alignment.CenterVertically,
@@ -297,10 +372,25 @@ private fun WorkspaceRail(
         IconButton(onClick = onNavigateHome, modifier = Modifier.size(40.dp)) {
             Icon(Icons.Filled.Home, contentDescription = "Back to Home")
         }
+        var chipFrames by remember {
+            mutableStateOf(mapOf<String, androidx.compose.ui.geometry.Rect>())
+        }
         val reorder = dev.herdr.mobile.core.designsystem.rememberReorderState(
             items = snapshot.workspaces,
             key = { it.id },
             onDrop = { ws, to -> onMoveWorkspace(ws.id, to) },
+            // Menu opens on UP-after-press (see TabRail): a press-time popup
+            // would steal the gesture stream from the drag takeover.
+            onLongPressWithoutMove = { ws ->
+                val frame = chipFrames[ws.id]
+                if (frame != null) {
+                    val anchor = androidx.compose.ui.unit.IntOffset(
+                        (frame.left + frame.width / 2).toInt(),
+                        (frame.top + frame.height / 2 - railOrigin.y).toInt(),
+                    )
+                    onWorkspaceLongPress(ws.id, ws.label, anchor)
+                }
+            },
         )
         androidx.compose.foundation.lazy.LazyRow(
             state = reorder.listState,
@@ -322,9 +412,21 @@ private fun WorkspaceRail(
                         label = workspace.label,
                         status = workspace.status,
                         selected = workspace.id == state.target?.workspaceId,
-                        modifier = reorder.handleModifier(workspace),
+                        modifier = Modifier
+                            .onGloballyPositioned {
+                                val pos = it.positionInWindow()
+                                chipFrames = chipFrames + (workspace.id to androidx.compose.ui.geometry.Rect(
+                                    pos,
+                                    androidx.compose.ui.geometry.Size(
+                                        it.size.width.toFloat(),
+                                        it.size.height.toFloat(),
+                                    ),
+                                ))
+                            }
+                            .then(reorder.handleModifier(workspace)),
                         onClick = { onSelectWorkspace(workspace.id) },
-                        // Consume long-presses (see tab rail above).
+                        // Consume long-presses: the menu opens on UP via the
+                        // reorder detector, like the tab rail.
                         onLongClick = {},
                     )
                 }

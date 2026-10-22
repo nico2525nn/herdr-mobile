@@ -555,6 +555,31 @@ class TerminalViewModel(
         }
     }
 
+    fun renameWorkspace(workspaceId: String, label: String) {
+        viewModelScope.launch {
+            runCatching { client.renameWorkspace(workspaceId, label.trim()) }
+                .onFailure { messageFlow.value = "Cannot rename workspace: ${it.message}" }
+        }
+    }
+
+    fun closeWorkspace(workspaceId: String) {
+        viewModelScope.launch {
+            runCatching { client.closeWorkspace(workspaceId) }
+                .onSuccess {
+                    // Move to a surviving workspace's active tab, like closeTab.
+                    val snapshot = client.state.value.snapshot ?: return@onSuccess
+                    val remaining = snapshot.workspaces.firstOrNull { it.id != workspaceId }
+                        ?: return@onSuccess
+                    val tab = remaining.tabs.firstOrNull { it.id == remaining.activeTabId }
+                        ?: remaining.tabs.firstOrNull()
+                        ?: return@onSuccess
+                    val pane = tab.activePane ?: return@onSuccess
+                    openTarget(TerminalTarget(remaining.id, tab.id, pane.id))
+                }
+                .onFailure { messageFlow.value = "Cannot close workspace: ${it.message}" }
+        }
+    }
+
     fun renameTab(tabId: String, label: String) {
         viewModelScope.launch {
             runCatching { client.renameTab(tabId, label.trim()) }
