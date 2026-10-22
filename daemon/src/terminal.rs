@@ -284,15 +284,7 @@ async fn run_session(
     info!("attached terminal session for pane {pane_id} ({cols}x{rows})");
     let _ = session.frames_tx.send(SessionFrame::Ready { cols, rows, resumed: false });
     let mut last_resize = tokio::time::Instant::now();
-    let mut last_sent: (u32, u32) = (cols, rows);
     let mut pending_resize: Option<(u32, u32)> = None;
-    // Smallest size seen inside the coalescing window that differs from
-    // `last_sent`. If the window ends where it started (keyboard opens and
-    // closes inside one window), the server would otherwise never see the
-    // shrink: the alt-screen TUI keeps its old grid, never repaints, and the
-    // client's locally resized screen stays blank below the old content.
-    // Replaying the excursion forces the resize cycle and a final repaint.
-    let mut resize_excursion: Option<(u32, u32)> = None;
     // Fixed deadline for the pending flush: a fresh sleep() per select! poll
     // restarts on every arriving command, starving sustained resize streams.
     // The deadline is set once when the first pending resize lands.
@@ -314,22 +306,12 @@ async fn run_session(
                         if child.send_input_text(&text).await.is_err() { break; }
                     }
                     SessionCommand::Resize(c, r) => {
-                        // Coalesce resizes to at most one per 120 ms, but never
-                        // drop a round trip (see resize_excursion).
+                        // Coalesce resizes to at most one per 120 ms.
                         if last_resize.elapsed() >= std::time::Duration::from_millis(120) {
                             if child.send_resize(c, r).await.is_err() { break; }
                             last_resize = tokio::time::Instant::now();
-                            last_sent = (c, r);
-                            pending_resize = None;
-                            resize_excursion = None;
                             let _ = session.frames_tx.send(SessionFrame::Ready { cols: c, rows: r, resumed: false });
                         } else {
-                            if (c, r) != last_sent {
-                                resize_excursion = match resize_excursion {
-                                    Some((ec, er)) if er <= r => Some((ec, er)),
-                                    _ => Some((c, r)),
-                                };
-                            }
                             pending_resize = Some((c, r));
                             if flush_at.is_none() {
                                 flush_at = Some(last_resize + std::time::Duration::from_millis(120));
@@ -373,22 +355,9 @@ async fn run_session(
             }, if pending_resize.is_some() => {
                 flush_at = None;
                 if let Some((c, r)) = pending_resize.take() {
-                    if (c, r) != last_sent {
-                        if child.send_resize(c, r).await.is_err() { break; }
-                        last_sent = (c, r);
-                        let _ = session.frames_tx.send(SessionFrame::Ready { cols: c, rows: r, resumed: false });
-                    } else if let Some((ec, er)) = resize_excursion.take() {
-                        // Window ended where it started: replay the excursion,
-                        // then the settled size, so the server resizes twice
-                        // and its TUI repaints for the final grid.
-                        if child.send_resize(ec, er).await.is_err() { break; }
-                        let _ = session.frames_tx.send(SessionFrame::Ready { cols: ec, rows: er, resumed: false });
-                        if child.send_resize(c, r).await.is_err() { break; }
-                        last_sent = (c, r);
-                        let _ = session.frames_tx.send(SessionFrame::Ready { cols: c, rows: r, resumed: false });
-                    }
+                    if child.send_resize(c, r).await.is_err() { break; }
                     last_resize = tokio::time::Instant::now();
-                    resize_excursion = None;
+                    let _ = session.frames_tx.send(SessionFrame::Ready { cols: c, rows: r, resumed: false });
                 }
             }
         }
