@@ -2,7 +2,6 @@ package dev.herdr.mobile.terminal.view
 
 import android.graphics.Canvas
 import android.graphics.Paint
-import android.graphics.Path
 import android.graphics.RectF
 import com.termux.terminal.TextStyle
 import com.termux.terminal.WcWidth
@@ -64,7 +63,7 @@ internal object BoxDrawing {
         type.getDeclaredField(name).apply { isAccessible = true }
     }.getOrNull()
 
-    fun draw(canvas: Canvas, view: TerminalView, stroke: Paint, fill: Paint, arc: RectF, path: Path) {
+    fun draw(canvas: Canvas, view: TerminalView, stroke: Paint, fill: Paint, arc: RectF) {
         val emu = view.mEmulator ?: return
         val renderer = view.mRenderer ?: return
         val topRow = topRowField?.getInt(view) ?: return
@@ -121,7 +120,7 @@ internal object BoxDrawing {
                             resolveColors(lineObject.getStyle(column), palette, reverseVideo)
                         ) {
                             drawCell(
-                                canvas, stroke, fill, arc, path,
+                                canvas, stroke, fill, arc,
                                 column * fontWidth,
                                 cellTop,
                                 (column + width) * fontWidth,
@@ -180,7 +179,6 @@ internal object BoxDrawing {
         stroke: Paint,
         fill: Paint,
         arc: RectF,
-        path: Path,
         x0: Float,
         y0: Float,
         x1: Float,
@@ -215,7 +213,7 @@ internal object BoxDrawing {
         val horizontalCount = (if (left != 0) 1 else 0) + (if (right != 0) 1 else 0)
 
         if (rounded && verticalCount == 1 && horizontalCount == 1) {
-            drawRoundedCorner(canvas, stroke, arc, path, x0, y0, x1, y1, cx, cy, up, down, left, right, thin)
+            drawRoundedCorner(canvas, stroke, arc, x0, y0, x1, y1, cx, cy, up, down, left, right, thin)
             return
         }
         if (verticalCount == 1 && horizontalCount == 1 &&
@@ -323,7 +321,6 @@ internal object BoxDrawing {
         canvas: Canvas,
         stroke: Paint,
         arc: RectF,
-        path: Path,
         x0: Float,
         y0: Float,
         x1: Float,

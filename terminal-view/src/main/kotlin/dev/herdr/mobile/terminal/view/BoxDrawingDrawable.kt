@@ -3,7 +3,6 @@ package dev.herdr.mobile.terminal.view
 import android.graphics.Canvas
 import android.graphics.ColorFilter
 import android.graphics.Paint
-import android.graphics.Path
 import android.graphics.PixelFormat
 import android.graphics.RectF
 import android.graphics.drawable.Drawable
@@ -24,10 +23,9 @@ internal class BoxDrawingDrawable(private val view: TerminalView) : Drawable() {
     private val stroke = Paint(Paint.ANTI_ALIAS_FLAG)
     private val fill = Paint().apply { style = Paint.Style.FILL }
     private val arc = RectF()
-    private val path = Path()
 
     override fun draw(canvas: Canvas) {
-        BoxDrawing.draw(canvas, view, stroke, fill, arc, path)
+        BoxDrawing.draw(canvas, view, stroke, fill, arc)
     }
 
     override fun setAlpha(alpha: Int) = Unit
