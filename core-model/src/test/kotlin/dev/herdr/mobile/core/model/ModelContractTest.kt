@@ -134,6 +134,7 @@ class ModelContractTest {
             SemanticEvent.TYPE_TAB_CREATED,
             SemanticEvent.TYPE_PANE_CLOSED,
             SemanticEvent.TYPE_WORKSPACE_CREATED,
+            SemanticEvent.TYPE_HERDR_UPDATE,
             SemanticEvent.TYPE_SNAPSHOT_REQUIRED,
             SemanticEvent.TYPE_STREAM_READY,
         )) {

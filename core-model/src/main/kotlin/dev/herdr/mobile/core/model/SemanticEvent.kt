@@ -69,5 +69,8 @@ data class SemanticEvent(
         const val TYPE_PANE_CREATED = "pane.created"
         const val TYPE_PANE_CLOSED = "pane.closed"
         const val TYPE_PANE_STATUS_CHANGED = "pane.status_changed"
+
+        /** Informational, not status: refetch delivers herdr.update. Never alerts. */
+        const val TYPE_HERDR_UPDATE = "herdr.update_available"
     }
 }

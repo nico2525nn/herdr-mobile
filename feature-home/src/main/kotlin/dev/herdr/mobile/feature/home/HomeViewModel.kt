@@ -27,6 +27,24 @@ data class HomeUiState(
         get() = connection == ConnectionState.RECONNECTING ||
             connection == ConnectionState.CONNECTING ||
             (connection == ConnectionState.FAILED && snapshot == null)
+    /** Latest verified Herdr release, when newer than the connected one. */
+    val updateAvailable: String?
+        get() {
+            val update = snapshot?.update ?: return null
+            val latest = update.latestVersion?.trim()?.ifEmpty { null } ?: return null
+            val current = snapshot?.herdr?.version?.trim()?.ifEmpty { null } ?: return latest
+            fun parts(v: String): List<Long> = v.trimStart('v').split('.').map {
+                it.takeWhile(Char::isDigit).toLongOrNull() ?: 0
+            }
+            val a = parts(current)
+            val b = parts(latest)
+            for (i in 0 until maxOf(a.size, b.size)) {
+                val x = a.getOrElse(i) { 0 }
+                val y = b.getOrElse(i) { 0 }
+                if (x != y) return if (y > x) latest else null
+            }
+            return null
+        }
 }
 
 class HomeViewModel(
@@ -92,6 +110,20 @@ class HomeViewModel(
         viewModelScope.launch {
             runCatching { client.closeWorkspace(workspaceId) }
                 .onFailure { _message.value = "Cannot close workspace: ${it.message}" }
+        }
+    }
+
+    private val _updateRunning = kotlinx.coroutines.flow.MutableStateFlow(false)
+    val updateRunning: StateFlow<Boolean> = _updateRunning
+
+    /** Run the host update. Long call; the daemon re-checks and the pill clears on refetch. */
+    fun runHerdrUpdate() {
+        if (_updateRunning.value) return
+        viewModelScope.launch {
+            _updateRunning.value = true
+            runCatching { client.runHerdrUpdate() }
+                .onFailure { _message.value = "Update failed: ${it.message}" }
+            _updateRunning.value = false
         }
     }
 

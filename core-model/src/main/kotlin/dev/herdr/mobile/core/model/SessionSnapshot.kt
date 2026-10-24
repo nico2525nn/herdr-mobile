@@ -97,6 +97,17 @@ data class HerdrInfo(
     val binary: String? = null,
 )
 
+/** Daemon-verified Herdr update state: absent latestVersion means up to date or unknown. */
+@Serializable
+data class HerdrUpdate(
+    val latestVersion: String? = null,
+    val error: String? = null,
+    /** Epoch seconds of the last completed latest.json fetch (0 = never). */
+    val lastCheckedAt: Long = 0,
+    /** Cached manifest notes for [latestVersion], unformatted markdown. */
+    val notes: String? = null,
+)
+
 /**
  * Authoritative state for the whole session at a point in time.
  *
@@ -112,6 +123,8 @@ data class SessionSnapshot(
     val herdr: HerdrInfo = HerdrInfo(),
     val focus: Focus = Focus(),
     val workspaces: List<Workspace> = emptyList(),
+    /** Daemon-verified Herdr update status for the Home pill; default = unknown. */
+    val update: HerdrUpdate = HerdrUpdate(),
 ) {
     val tabCount: Int get() = workspaces.sumOf { it.tabs.size }
 

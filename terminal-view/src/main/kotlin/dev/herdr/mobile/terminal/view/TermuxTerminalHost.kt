@@ -67,6 +67,40 @@ class TermuxTerminalHost(
     /** Fractional-row carry across gestures (Termux-remainder-style). */
     private var wheelRemainder = 0.0
 
+    /**
+     * Scroll-request coalescing: OMP/codex repaints the whole screen per
+     * request, so a drag firing per onScroll callback stutters through full
+     * repaints that race live output frames (the reported judder). Rows
+     * accumulate and flush at most once per 150ms; UP flushes the tail
+     * immediately so short drags never feel eaten. Single-flight: the next
+     * flush waits for the previous repaint round (~RTT), not just the clock.
+     */
+    private var pendingRows = 0
+    private var lastFlushMs = 0L
+    private var flushQueued = false
+    private val flushRunnable = Runnable { flushPending() }
+
+    private fun fireRemoteCoalesced(rows: Int) {
+        pendingRows += rows
+        val now = android.os.SystemClock.uptimeMillis()
+        if (now - lastFlushMs >= 150) {
+            flushPending()
+        } else if (!flushQueued) {
+            flushQueued = true
+            view.postDelayed(flushRunnable, 150 - (now - lastFlushMs))
+        }
+    }
+
+    private fun flushPending() {
+        flushQueued = false
+        view.removeCallbacks(flushRunnable)
+        val rows = pendingRows
+        pendingRows = 0
+        if (rows == 0) return
+        lastFlushMs = android.os.SystemClock.uptimeMillis()
+        fireRemote(rows)
+    }
+
     /** Effective routing: host (agent) OR live alt-screen flag. */
     private val remoteEffective: Boolean
         get() = remoteScrollHost || altActive
@@ -124,7 +158,7 @@ class TermuxTerminalHost(
                 if (rows != 0) {
                     scrollRemainder -= rows * rowPx
                     remoteArmed = true
-                    fireRemote(rows)
+                    fireRemoteCoalesced(rows)
                 }
                 return true
             }
@@ -203,6 +237,9 @@ class TermuxTerminalHost(
             // The delayed retry cannot nuke a NEW selection: starting one
             // needs its own 500ms long-press, past the 350ms retry.
             if (remoteArmed) {
+                // Flush the coalesced tail NOW: the drag's last rows must not
+                // wait for the 150ms timer (that lag reads as an eaten flick).
+                flushPending()
                 try {
                     view.stopTextSelectionMode()
                 } catch (_: Exception) {
@@ -293,7 +330,7 @@ class TermuxTerminalHost(
         view.invalidate()
     }
 
-    /** Manual keyboard summon (CJK panel button). */
+    /** Explicit keyboard summon (TabRail keyboard button only). */
     fun showKeyboard() {
         view.requestFocus()
         val imm = view.context.getSystemService(Context.INPUT_METHOD_SERVICE)

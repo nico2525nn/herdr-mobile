@@ -39,6 +39,8 @@ pub fn router(state: AppState) -> Router {
         .route("/v1/workspace/{workspace_id}/close", post(workspace_close))
         .route("/v1/tab/{tab_id}/move", post(tab_move))
         .route("/v1/workspace/{workspace_id}/move", post(workspace_move))
+        .route("/v1/herdr/update", get(herdr_update_status))
+        .route("/v1/herdr/update/run", post(herdr_update_run))
         .with_state(state)
 }
 
@@ -488,6 +490,37 @@ async fn workspace_move(
             (StatusCode::OK, Json(json!({"ok": true}))).into_response()
         }
         Err(e) => herdr_error(e),
+    }
+}
+
+async fn herdr_update_status(State(state): State<AppState>, headers: HeaderMap) -> Response {
+    if let Err(e) = check_auth(&state, &headers) {
+        return e;
+    }
+    // Fresh check on demand (network failure still returns a body with error
+    // so the client can show "check failed" instead of spinning forever).
+    let status = state.updater.status().await;
+    (
+        StatusCode::OK,
+        Json(json!({
+            "currentVersion": status.current_version,
+            "latestVersion": status.latest_version,
+            "upToDate": status.up_to_date,
+            "running": status.running,
+            "error": status.last_error,
+            "lastCheckedAt": status.last_checked_at,
+        })),
+    )
+        .into_response()
+}
+
+async fn herdr_update_run(State(state): State<AppState>, headers: HeaderMap) -> Response {
+    if let Err(e) = check_auth(&state, &headers) {
+        return e;
+    }
+    match state.updater.run_update().await {
+        Ok(log) => (StatusCode::OK, Json(json!({"ok": true, "log": log}))).into_response(),
+        Err(e) => api_error(StatusCode::BAD_GATEWAY, "update_failed", format!("{e:#}")),
     }
 }
 

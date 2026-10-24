@@ -1,5 +1,16 @@
 # Changelog
 
+## 1.3.21 — 2026-10-24
+
+- IME explicit-only: open/tab-switch/Home always land keyboard-down; only the
+  keyboard button and direct taps summon. Verified via mInputShown on emulator.
+- Home update pill: daemon checks herdr.dev/latest.json (startup + 6h), shows
+  `Update <ver>` when newer; tap runs `herdr update --handoff` on the host.
+- Terminal: pager dots removed (swipes intact); remote-scroll coalescing +
+  inbound burst-merge fix the judder while OMP/codex stream output.
+- Daemon: `/v1/herdr/update` (GET status / POST run), `herdr.update_available`
+  event forces client refetch; `HERDR_MOBILE_FAKE_LATEST` override for E2E.
+
 ## 1.0.0 — 2026-10-06
 
 Initial MVP.

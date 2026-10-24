@@ -23,6 +23,7 @@ object SnapshotReducer {
 
     fun apply(snapshot: SessionSnapshot, event: SemanticEvent): Outcome {
         if (event.isSnapshotInvalidating) return Outcome.Refetch
+        if (event.type == SemanticEvent.TYPE_HERDR_UPDATE) return Outcome.Refetch
         if (event.seq <= snapshot.seq) return Outcome.Applied(snapshot)
         if (event.seq != snapshot.seq + 1) {
             return Outcome.Gap(expectedSeq = snapshot.seq + 1, receivedSeq = event.seq)

@@ -20,6 +20,7 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.grid.GridCells
 import androidx.compose.foundation.lazy.grid.GridItemSpan
@@ -29,6 +30,7 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.ChevronRight
+import androidx.compose.material.icons.filled.Download
 import androidx.compose.material.icons.filled.DragHandle
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Card
@@ -82,6 +84,7 @@ fun HomeScreen(
 ) {
     val state by viewModel.uiState.collectAsStateWithLifecycle()
     val message by viewModel.message.collectAsStateWithLifecycle()
+    val updateRunning by viewModel.updateRunning.collectAsStateWithLifecycle()
     var tabMenu by remember { mutableStateOf<HomeTabMenuTarget?>(null) }
     var renameTarget by remember { mutableStateOf<HomeTabMenuTarget?>(null) }
     var wsMenu by remember { mutableStateOf<HomeWsMenuTarget?>(null) }
@@ -105,6 +108,13 @@ fun HomeScreen(
             connection = state.connection,
             error = state.error,
         )
+        state.updateAvailable?.let { latest ->
+            HerdrUpdatePill(
+                latest = latest,
+                running = updateRunning,
+                onUpdate = { viewModel.runHerdrUpdate() },
+            )
+        }
         when {
             state.snapshot == null && state.showOfflineBanner -> {
                 HomeOfflineBody(error = state.error, modifier = Modifier.fillMaxSize())
@@ -544,6 +554,49 @@ private fun HomeTabRenameDialog(
             TextButton(onClick = onDismiss) { Text("Cancel") }
         },
     )
+}
+
+/**
+ * Update pill under the header: shows the verified next version with a
+ * download action that runs `herdr update --handoff` on the daemon host.
+ * Absent entirely when up to date or unknown (no "current" state shown).
+ */
+@Composable
+private fun HerdrUpdatePill(
+    latest: String,
+    running: Boolean,
+    onUpdate: () -> Unit,
+) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 20.dp)
+            .padding(bottom = 8.dp),
+    ) {
+        androidx.compose.material3.FilledTonalButton(
+            onClick = onUpdate,
+            enabled = !running,
+            contentPadding = PaddingValues(horizontal = 14.dp, vertical = 8.dp),
+        ) {
+            if (running) {
+                androidx.compose.material3.CircularProgressIndicator(
+                    modifier = Modifier.size(16.dp),
+                    strokeWidth = 2.dp,
+                )
+            } else {
+                Icon(
+                    Icons.Filled.Download,
+                    contentDescription = null,
+                    modifier = Modifier.size(16.dp),
+                )
+            }
+            Spacer(Modifier.width(8.dp))
+            Text(
+                text = if (running) "Updating…" else "Update $latest",
+                style = MaterialTheme.typography.labelLarge,
+            )
+        }
+    }
 }
 
 @Composable

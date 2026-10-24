@@ -1,6 +1,5 @@
 package dev.herdr.mobile.feature.terminal
 
-import androidx.compose.foundation.clickable
 import androidx.compose.foundation.lazy.items
 import androidx.compose.ui.input.nestedscroll.nestedScroll
 import androidx.compose.foundation.layout.Arrangement
@@ -51,7 +50,6 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import dev.herdr.mobile.core.designsystem.StatusChip
-import dev.herdr.mobile.core.designsystem.StatusDot
 import dev.herdr.mobile.core.model.ConnectionState
 import dev.herdr.mobile.core.model.InputPanelPage
 import com.termux.view.TerminalView
@@ -579,6 +577,11 @@ private fun TerminalSurface(
     // off-screen draft instead of reaching the terminal (whose DPAD mapping
     // is already implemented). Transition-only: mounting or recomposing must
     // not clear focus (it would dismiss an open tab menu / steal focus).
+    // Tap summoning stays in TermuxViewClient.onSingleTapUp; the keyboard
+    // button goes through host.showKeyboard — those are the only two paths
+    // that may show the IME. (onSingleTapUp itself only requestFocus()es;
+    // whether a tap raises the IME depends on the view's soft-input-on-focus
+    // behavior — verified on emulator: tap does NOT auto-show.)
     val focusManager = androidx.compose.ui.platform.LocalFocusManager.current
     var lastInputPage by remember { mutableStateOf(state.inputPage) }
     LaunchedEffect(state.inputPage) {
@@ -710,7 +713,12 @@ private fun TerminalSurface(
             // Termux sets these in layout XML; programmatically-created views
             // are NOT focusable by default, and without focus the IME never
             // binds (manual keyboard summon silently no-ops) and hardware keys
-            // never arrive.
+            // never arrive. Focus alone must never summon the keyboard —
+            // open/switch always lands with the keyboard down; only the
+            // keyboard button (host.showKeyboard) or a tap shows it.
+            // (No setShowSoftInputOnFocus(false) call exists: the default
+            // Termux view behavior already keeps focus silent here —
+            // verified on emulator, mInputShown=false at open/switch.)
             view.isFocusable = true
             view.isFocusableInTouchMode = true
             val px = (settings.terminalFontSizeSp * density.density).toInt()
@@ -887,6 +895,9 @@ private fun BottomInputPanel(
         initialPage = pages.indexOf(state.inputPage).coerceAtLeast(0),
         pageCount = { pages.size },
     )
+    // No page indicator: the spec allows one but the user finds the dots
+    // noise (current page is obvious from the panel itself). Pager keeps
+    // working via horizontal swipes in both directions.
     // When a panel is disabled in Settings, pages shrinks: clamp the pager or
     // pages[currentPage] throws IndexOutOfBounds on a stale page 1.
     LaunchedEffect(pages.size) {
@@ -938,39 +949,6 @@ private fun BottomInputPanel(
                                 },
                                 onBackspace = { onSendBytes(byteArrayOf(0x7F)) },
                                 focusRequester = cjkFocus,
-                            )
-                        }
-                    }
-                }
-                // Dots double as page buttons: with the keyboard up, the CJK
-                // field eats horizontal drags, so swiping back can be
-                // impossible — tapping a dot always pages.
-                val dotScope = rememberCoroutineScope()
-                Row(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(top = 8.dp),
-                    horizontalArrangement = Arrangement.Center,
-                    verticalAlignment = Alignment.CenterVertically,
-                ) {
-                    pages.forEachIndexed { index, _ ->
-                        // 32dp hit box around the 5–7dp dot (finger target).
-                        Box(
-                            contentAlignment = Alignment.Center,
-                            modifier = Modifier
-                                .size(32.dp)
-                                .clickable {
-                                    dotScope.launch {
-                                        pagerState.animateScrollToPage(index)
-                                    }
-                                },
-                        ) {
-                            StatusDot(
-                                status = state.tab?.status
-                                    ?: state.workspace?.status
-                                    ?: dev.herdr.mobile.core.model.AgentStatus.UNKNOWN,
-                                diameter = if (index == pagerState.currentPage) 7.dp else 5.dp,
-                                describe = false,
                             )
                         }
                     }

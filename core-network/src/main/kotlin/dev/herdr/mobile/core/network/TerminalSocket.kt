@@ -158,9 +158,52 @@ class TerminalSocket(
 
     init {
         scope.launch {
-            for (value in inboundLane) {
-                _inbound.emit(value)
+            // Burst-merge: live output + scroll repaints arrive as many small
+            // socket messages; forwarding each separately redraws the view N
+            // times per frame (the judder under OMP output). Consecutive Bytes
+            // within one lane turn merge into a single emit — lossless
+            // (concatenation preserves PTY order) and control records (Ready/
+            // Closed/Failed) always flush first so attach/teardown never lag.
+            val merge = ArrayDeque<ByteArray>()
+            var mergedSize = 0
+            suspend fun flush() {
+                if (merge.isEmpty()) return
+                val out = ByteArray(mergedSize)
+                var pos = 0
+                for (chunk in merge) {
+                    chunk.copyInto(out, pos)
+                    pos += chunk.size
+                }
+                merge.clear()
+                mergedSize = 0
+                _inbound.emit(TerminalInbound.Bytes(out))
             }
+            for (value in inboundLane) {
+                if (value is TerminalInbound.Bytes) {
+                    merge.addLast(value.data)
+                    mergedSize += value.data.size
+                    // Drain what's already queued this turn, then flush once:
+                    // one emit per lane turn, not per socket message.
+                    while (true) {
+                        val next = inboundLane.tryReceive().getOrNull() ?: break
+                        if (next is TerminalInbound.Bytes) {
+                            merge.addLast(next.data)
+                            mergedSize += next.data.size
+                        } else {
+                            // Control record cuts the burst: flush bytes first
+                            // (order!), then the control itself.
+                            flush()
+                            _inbound.emit(next)
+                            break
+                        }
+                    }
+                    flush()
+                } else {
+                    flush()
+                    _inbound.emit(value)
+                }
+            }
+            flush()
         }
     }
 

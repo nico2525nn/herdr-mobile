@@ -43,6 +43,26 @@ impl EventBus {
         }
     }
 
+    /// The live snapshot's `update` block just changed (new check result):
+    /// clients refetch once instead of maintaining a second fold path.
+    pub fn broadcast_update(&self, cache: &SessionCache) {
+        let event = SemanticEvent {
+            seq: cache.seq() + 1,
+            kind: "herdr.update_available".to_string(),
+            at: crate::cache::now_rfc3339(),
+            workspace_id: None,
+            tab_id: None,
+            pane_id: None,
+            status: None,
+            label: None,
+            message: None,
+            revision: Some(cache.revision()),
+            detail: None,
+        };
+        let _ = cache.next_seq_for_broadcast(event.seq);
+        self.broadcast(event);
+    }
+
     /// The cache is untrustworthy (reconnect, events_lost): force every client to refetch.
     pub fn broadcast_snapshot_required(&self, cache: &SessionCache) {
         let seq = cache.seq() + 1;

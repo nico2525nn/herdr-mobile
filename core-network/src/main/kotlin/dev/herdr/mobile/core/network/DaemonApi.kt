@@ -2,6 +2,7 @@ package dev.herdr.mobile.core.network
 
 import dev.herdr.mobile.core.model.AgentReport
 import dev.herdr.mobile.core.model.HealthReport
+import dev.herdr.mobile.core.model.HerdrUpdate
 import dev.herdr.mobile.core.model.InputRequest
 import dev.herdr.mobile.core.model.Pane
 import dev.herdr.mobile.core.model.ResizeRequest
@@ -184,6 +185,28 @@ class DaemonApi(
     suspend fun moveWorkspace(workspaceId: String, insertIndex: Long) {
         val body = buildJsonObject { put("insertIndex", insertIndex) }.toString()
         post("v1/workspace/${workspaceId.url()}/move", body)
+    }
+
+    /** Update availability: latest verified Herdr release for the Home pill. */
+    suspend fun herdrUpdateStatus(): HerdrUpdate {
+        val text = execute(request("GET", "v1/herdr/update"))
+        val obj = HerdrJson.parseToJsonElement(text).jsonObject
+        // latestVersion is the only field the pill needs; the rest rides the
+        // snapshot block. Absent = up to date or checker failed silently.
+        return HerdrUpdate(
+            latestVersion = obj["latestVersion"]?.jsonPrimitive?.contentOrNull?.ifBlank { null },
+            error = obj["error"]?.jsonPrimitive?.contentOrNull?.ifBlank { null },
+            lastCheckedAt = obj["lastCheckedAt"]?.jsonPrimitive?.long ?: 0,
+        )
+    }
+
+    /**
+     * Run `herdr update --handoff` on the daemon host. Long call (download +
+     * install + handoff beat); callers show progress from the returned log.
+     */
+    suspend fun runHerdrUpdate(): String {
+        val obj = post("v1/herdr/update/run", "{}")
+        return obj["log"]?.jsonPrimitive?.contentOrNull.orEmpty()
     }
 
     private fun String.url(): String = URLEncoder.encode(this, "UTF-8")

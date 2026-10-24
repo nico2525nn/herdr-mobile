@@ -485,6 +485,14 @@ class HerdrClient(
     suspend fun resizePane(paneId: String, cols: Int, rows: Int) =
         withContext(Dispatchers.IO) { api().resizePane(paneId, cols, rows) }
 
+    /** Fresh update check (network hit). Snapshot block stays the source of truth. */
+    suspend fun herdrUpdateStatus() =
+        withContext(Dispatchers.IO) { api().herdrUpdateStatus() }
+
+    /** Run the install; returns the updater's own log on success. */
+    suspend fun runHerdrUpdate(): String =
+        withContext(Dispatchers.IO) { api().runHerdrUpdate() }
+
     // -- One-shot connection test for Settings ---------------------------------------------
 
     suspend fun testConnection(provider: DaemonEndpointProvider): ConnectionTestResult =

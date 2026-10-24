@@ -90,6 +90,23 @@ impl SessionCache {
         )
     }
 
+    /// Store the latest verified update check into the snapshot. Pure metadata:
+    /// never bumps seq (no event); the update worker decides when to announce.
+    pub async fn set_update(&self, manifest: crate::model::HerdrManifest, error: Option<String>) {
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs() as i64)
+            .unwrap_or(0);
+        let latest = manifest.version.clone();
+        let notes = manifest.notes.clone();
+        self.mutate(|snapshot| {
+            snapshot.update.latest_version = latest;
+            snapshot.update.error = error;
+            snapshot.update.last_checked_at = now;
+            snapshot.update.notes = notes;
+        });
+    }
+
     fn home_dir() -> Option<String> {
         std::env::var("HOME").ok()
     }
@@ -99,12 +116,21 @@ impl SessionCache {
         let raw = self.herdr.snapshot().await?;
         // Best effort: version metadata for health/diagnostics.
         let info = self.herdr.ping().await.ok();
+        let update = self
+            .inner
+            .read()
+            .expect("cache lock")
+            .snapshot
+            .as_ref()
+            .map(|s| s.update.clone())
+            .unwrap_or_default();
         let snapshot = build_snapshot(
             raw,
             self.revision.load(Ordering::SeqCst) + 1,
             self.seq.load(Ordering::SeqCst),
             Some(self.herdr.herdr_bin.clone()),
             Self::home_dir(),
+            update,
         )?;
         let workspaces = snapshot.workspaces.len();
         {
@@ -368,6 +394,7 @@ impl SessionCache {
                 seq: self.seq.load(Ordering::SeqCst),
                 captured_at: None,
                 herdr: crate::model::HerdrInfo::default(),
+                update: crate::model::HerdrUpdate::default(),
                 focus: crate::model::Focus::default(),
                 workspaces: vec![],
             });
@@ -1007,6 +1034,7 @@ pub fn build_snapshot(
     seq: i64,
     binary: Option<String>,
     home: Option<String>,
+    update: crate::model::HerdrUpdate,
 ) -> Result<SessionSnapshot> {
     let panes_by_tab: HashMap<&str, Vec<&HerdrPane>> = {
         let mut map: HashMap<&str, Vec<&HerdrPane>> = HashMap::new();
@@ -1065,6 +1093,7 @@ pub fn build_snapshot(
         revision,
         seq,
         captured_at: Some(Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, false)),
+        update,
         herdr: HerdrInfo {
             version: raw.version,
             protocol: raw.protocol,
@@ -1178,7 +1207,7 @@ mod tests {
 
     #[test]
     fn maps_snapshot_with_nulls_and_unknown_fields() {
-        let snap = build_snapshot(fixture(), 7, 42, Some("/bin/herdr".into()), Some("/home/nico".into())).unwrap();
+        let snap = build_snapshot(fixture(), 7, 42, Some("/bin/herdr".into()), Some("/home/nico".into()), crate::model::HerdrUpdate::default()).unwrap();
         assert_eq!(snap.revision, 7);
         assert_eq!(snap.seq, 42);
         assert_eq!(snap.workspaces.len(), 2);
@@ -1199,7 +1228,7 @@ mod tests {
 
     #[test]
     fn diff_finds_changed_and_silent_panes() {
-        let snap = build_snapshot(fixture(), 7, 42, None, None).unwrap();
+        let snap = build_snapshot(fixture(), 7, 42, None, None, crate::model::HerdrUpdate::default()).unwrap();
         // w1:pT is working in the fixture; pretend the cache held idle, and
         // drop w2:p1 (born without a structural event).
         let mut before = std::collections::HashMap::new();
@@ -1224,7 +1253,7 @@ mod tests {
 
     #[test]
     fn diff_closed_finds_vanished_tab_and_pane() {
-        let before = build_snapshot(fixture(), 7, 42, None, None).unwrap();
+        let before = build_snapshot(fixture(), 7, 42, None, None, crate::model::HerdrUpdate::default()).unwrap();
         // After: drop tab w1:tR (and its pane w1:pT); keep w2 intact.
         let mut after = before.clone();
         after.workspaces.retain(|w| w.id != "w1");
@@ -1253,7 +1282,7 @@ mod tests {
                        "agent_status": "transmogrifying"}]
         }))
         .unwrap();
-        let snap = build_snapshot(raw, 1, 0, None, None).unwrap();
+        let snap = build_snapshot(raw, 1, 0, None, None, crate::model::HerdrUpdate::default()).unwrap();
         assert_eq!(snap.workspaces[0].status, AgentStatus::Unknown);
     }
 
@@ -1273,6 +1302,7 @@ mod tests {
             seq: 1,
             captured_at: None,
             herdr: HerdrInfo { version: None, protocol: None, binary: None },
+            update: crate::model::HerdrUpdate::default(),
             focus: Focus { workspace_id: None, tab_id: None, pane_id: None },
             workspaces: vec![Workspace {
                 id: "w1".into(),

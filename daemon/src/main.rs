@@ -6,6 +6,7 @@ mod events;
 mod herdr;
 mod model;
 mod terminal;
+mod update;
 
 use std::net::SocketAddr;
 use std::sync::Arc;
@@ -18,6 +19,7 @@ use tracing::{info, warn};
 use crate::cache::SessionCache;
 use crate::config::Config;
 use crate::events::EventBus;
+use crate::update::UpdateWatcher;
 
 #[derive(Clone)]
 pub struct AppState {
@@ -25,6 +27,7 @@ pub struct AppState {
     pub cache: Arc<SessionCache>,
     pub bus: Arc<EventBus>,
     pub terminals: Arc<terminal::TerminalRegistry>,
+    pub updater: UpdateWatcher,
     pub started_at: Instant,
 }
 
@@ -70,6 +73,8 @@ async fn main() -> Result<()> {
     let cache = Arc::new(SessionCache::new(herdr.clone()));
     let bus = Arc::new(EventBus::new());
     let terminals = Arc::new(terminal::TerminalRegistry::new(herdr.clone()));
+    let updater = UpdateWatcher::new(cache.clone(), bus.clone());
+    updater.spawn();
 
     // Prime from Herdr before accepting traffic, but stay up if Herdr is down: /v1/health
     // reports ok:false and the resync loop keeps retrying in the background.
@@ -94,6 +99,7 @@ async fn main() -> Result<()> {
         cache,
         bus,
         terminals,
+        updater,
         started_at: Instant::now(),
     };
 

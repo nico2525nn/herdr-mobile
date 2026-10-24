@@ -148,6 +148,21 @@ pub struct HerdrInfo {
     pub binary: Option<String>,
 }
 
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct HerdrUpdate {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub latest_version: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
+    /// Epoch seconds of the last completed latest.json fetch (0 = never).
+    #[serde(default)]
+    pub last_checked_at: i64,
+    /// Cached manifest notes for `latest_version`, unformatted markdown.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub notes: Option<String>,
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SessionSnapshot {
@@ -157,6 +172,8 @@ pub struct SessionSnapshot {
     pub captured_at: Option<String>,
     #[serde(default)]
     pub herdr: HerdrInfo,
+    #[serde(default)]
+    pub update: HerdrUpdate,
     #[serde(default)]
     pub focus: Focus,
     #[serde(default)]
@@ -278,6 +295,41 @@ pub struct HerdrSnapshot {
     pub panes: Vec<HerdrPane>,
 }
 
+/// `https://herdr.dev/latest.json` projection: only what the update pill needs.
+#[derive(Clone, Debug, Default, Deserialize)]
+pub struct HerdrManifest {
+    #[serde(default)]
+    pub version: Option<String>,
+    #[serde(default)]
+    pub notes: Option<String>,
+}
+
+/// Strip a leading `v` so `0.9.5` and `v0.9.5` compare equal.
+pub fn normalize_version(raw: &str) -> &str {
+    raw.strip_prefix('v').unwrap_or(raw)
+}
+
+/// True when `latest` is a strictly newer dotted version than `current`.
+/// Unparseable input compares lexicographically as a last resort — never panics.
+pub fn version_is_newer(current: &str, latest: &str) -> bool {
+    fn parts(v: &str) -> Vec<u64> {
+        normalize_version(v)
+            .split('.')
+            .map(|p| p.chars().take_while(|c| c.is_ascii_digit()).collect::<String>())
+            .map(|p| p.parse::<u64>().unwrap_or(0))
+            .collect()
+    }
+    let (a, b) = (parts(current), parts(latest));
+    let n = a.len().max(b.len());
+    for i in 0..n {
+        let (x, y) = (a.get(i).copied().unwrap_or(0), b.get(i).copied().unwrap_or(0));
+        if x != y {
+            return y > x;
+        }
+    }
+    false
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -332,5 +384,15 @@ mod tests {
         assert_eq!(v["terminalId"], "term_x");
         assert!(v.get("label").is_none());
         assert_eq!(v["status"], "idle");
+    }
+
+    #[test]
+    fn version_compare_semver_like() {
+        assert!(version_is_newer("0.9.3", "0.9.5"));
+        assert!(version_is_newer("0.9.9", "0.10.0"));
+        assert!(version_is_newer("v0.9.3", "0.9.5"));
+        assert!(!version_is_newer("0.9.5", "0.9.5"));
+        assert!(!version_is_newer("0.9.5", "0.9.3"));
+        assert!(!version_is_newer("0.9.5", "garbage"));
     }
 }
