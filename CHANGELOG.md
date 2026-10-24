@@ -1,5 +1,11 @@
 # Changelog
 
+## 1.3.22 — 2026-10-24
+
+- Settings: Daemon URL field uses the Uri keyboard (no autocorrect mangling URLs).
+- Refactor: single remote-routing check, shared Versions.isNewer (daemon-twin
+  tested), single scroll-send entry point. No behavior change.
+
 ## 1.3.21 — 2026-10-24
 
 - IME explicit-only: open/tab-switch/Home always land keyboard-down; only the
