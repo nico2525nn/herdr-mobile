@@ -145,7 +145,7 @@ class TermuxViewClient(
             // Termux scrolls local scrollback here; remote panes have none
             // (server owns history), so page remotely instead. Local panes
             // (plain shells) fall through to Termux's own doScroll.
-            val remote = host?.let { it.remoteScrollHost || it.altActive } == true
+            val remote = host?.remoteEffective == true
             if (remote) {
                 onPageScroll?.invoke(keyCode == KeyEvent.KEYCODE_PAGE_UP)
                 return true
@@ -228,7 +228,7 @@ class TermuxViewClient(
         if ((keyCode == KeyEvent.KEYCODE_PAGE_UP || keyCode == KeyEvent.KEYCODE_PAGE_DOWN) &&
             e.isShiftPressed
         ) {
-            return host?.let { it.remoteScrollHost || it.altActive } == true
+            return host?.remoteEffective == true
         }
         if (!e.isFunctionPressed &&
             TerminalKeyEncoder.termuxKey(keyCode, keyModeOf(e), cursorApp(), keypadApp()) != null

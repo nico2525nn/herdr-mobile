@@ -5,6 +5,7 @@ import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.viewModelScope
 import dev.herdr.mobile.core.model.ConnectionState
 import dev.herdr.mobile.core.model.SessionSnapshot
+import dev.herdr.mobile.core.model.Versions
 import dev.herdr.mobile.core.network.HerdrClient
 import dev.herdr.mobile.core.network.HerdrClientState
 import kotlinx.coroutines.flow.SharingStarted
@@ -33,17 +34,7 @@ data class HomeUiState(
             val update = snapshot?.update ?: return null
             val latest = update.latestVersion?.trim()?.ifEmpty { null } ?: return null
             val current = snapshot?.herdr?.version?.trim()?.ifEmpty { null } ?: return latest
-            fun parts(v: String): List<Long> = v.trimStart('v').split('.').map {
-                it.takeWhile(Char::isDigit).toLongOrNull() ?: 0
-            }
-            val a = parts(current)
-            val b = parts(latest)
-            for (i in 0 until maxOf(a.size, b.size)) {
-                val x = a.getOrElse(i) { 0 }
-                val y = b.getOrElse(i) { 0 }
-                if (x != y) return if (y > x) latest else null
-            }
-            return null
+            return if (Versions.isNewer(current, latest)) latest else null
         }
 }
 

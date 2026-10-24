@@ -216,4 +216,14 @@ class ModelContractTest {
         val c = snap(listOf("w1:p1" to AgentStatus.DONE, "w1:p2" to AgentStatus.WORKING))
         assertTrue(a.statusHash() != c.statusHash())
     }
+
+    @Test
+    fun `versions match daemon twin vectors`() {
+        assertTrue(Versions.isNewer("0.9.3", "0.9.5"))
+        assertTrue(Versions.isNewer("0.9.9", "0.10.0"))
+        assertTrue(Versions.isNewer("v0.9.3", "0.9.5"))
+        assertTrue(!Versions.isNewer("0.9.5", "0.9.5"))
+        assertTrue(!Versions.isNewer("0.9.5", "0.9.3"))
+        assertTrue(!Versions.isNewer("0.9.5", "garbage"))
+    }
 }

@@ -72,15 +72,27 @@ class TermuxTerminalHost(
      * request, so a drag firing per onScroll callback stutters through full
      * repaints that race live output frames (the reported judder). Rows
      * accumulate and flush at most once per 150ms; UP flushes the tail
-     * immediately so short drags never feel eaten. Single-flight: the next
-     * flush waits for the previous repaint round (~RTT), not just the clock.
+     * immediately so short drags never feel eaten.
+     *
+     * Single entry point: drags coalesce ([immediate] = false), fling and
+     * PgUp/PgDn page jumps send at once ([immediate] = true) — merging a
+     * page jump with a preceding drag tail would overshoot.
      */
     private var pendingRows = 0
     private var lastFlushMs = 0L
     private var flushQueued = false
     private val flushRunnable = Runnable { flushPending() }
 
-    private fun fireRemoteCoalesced(rows: Int) {
+    private fun requestScroll(rows: Int, immediate: Boolean) {
+        if (rows == 0) return
+        if (immediate) {
+            // A page jump must not merge with a drag tail: flush what's
+            // pending first (order!), then the jump itself.
+            flushPending()
+            lastFlushMs = android.os.SystemClock.uptimeMillis()
+            fireRemote(rows)
+            return
+        }
         pendingRows += rows
         val now = android.os.SystemClock.uptimeMillis()
         if (now - lastFlushMs >= 150) {
@@ -102,7 +114,7 @@ class TermuxTerminalHost(
     }
 
     /** Effective routing: host (agent) OR live alt-screen flag. */
-    private val remoteEffective: Boolean
+    val remoteEffective: Boolean
         get() = remoteScrollHost || altActive
 
     /** Diagnostic: remote scroll requests sent (alt/agent mode). */
@@ -158,7 +170,7 @@ class TermuxTerminalHost(
                 if (rows != 0) {
                     scrollRemainder -= rows * rowPx
                     remoteArmed = true
-                    fireRemoteCoalesced(rows)
+                    requestScroll(rows, immediate = false)
                 }
                 return true
             }
@@ -178,7 +190,7 @@ class TermuxTerminalHost(
                 val rows = (-velocityY / 4000f).toInt().coerceIn(-12, 12)
                 if (rows != 0) {
                     remoteArmed = true
-                    fireRemote(rows)
+                    requestScroll(rows, immediate = true)
                 }
                 return true
             }
@@ -321,7 +333,7 @@ class TermuxTerminalHost(
         } catch (_: Exception) {
             0
         }
-        if (rows > 0) fireRemote(if (up) -rows else rows)
+        if (rows > 0) requestScroll(if (up) -rows else rows, immediate = true)
     }
 
     /** Snap a scrolled viewport home (user input = back at the prompt). */
