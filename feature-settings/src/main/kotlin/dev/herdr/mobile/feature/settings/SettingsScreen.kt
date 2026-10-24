@@ -179,6 +179,13 @@ fun SettingsScreen(
                             .padding(horizontal = 16.dp),
                         label = { Text("Daemon URL") },
                         singleLine = true,
+                        // Uri disables autocorrect: without it Gboard rewrites
+                        // "http://127.0.0.1:8765" mid-edit (duplicated port,
+                        // emoji, phantom chars — verified on emulator).
+                        keyboardOptions = KeyboardOptions(
+                            keyboardType = KeyboardType.Uri,
+                            imeAction = ImeAction.Done,
+                        ),
                     )
                 }
                 settings.hostProfiles.forEach { profile ->
