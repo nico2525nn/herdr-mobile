@@ -226,4 +226,71 @@ class TerminalKeyEncoderTest {
             TerminalKeyEncoder.withModifiers(setOf(TerminalKeyEncoder.Modifier.CTRL), "\t"),
         )
     }
+
+    @Test
+    fun `shift uppercases letters`() {
+        val shift = setOf(TerminalKeyEncoder.Modifier.SHIFT)
+        assertArrayEquals(
+            byteArrayOf('C'.code.toByte()),
+            TerminalKeyEncoder.withModifiers(shift, "c"),
+        )
+        // Already upper / non-letter: pass through.
+        assertArrayEquals(
+            byteArrayOf('C'.code.toByte()),
+            TerminalKeyEncoder.withModifiers(shift, "C"),
+        )
+        assertArrayEquals(
+            byteArrayOf('/'.code.toByte()),
+            TerminalKeyEncoder.withModifiers(shift, "/"),
+        )
+    }
+
+    @Test
+    fun `shift rewrites CSI to modified form`() {
+        fun shifted(vararg bytes: Byte): ByteArray =
+            TerminalKeyEncoder.withShift(byteArrayOf(*bytes))
+        assertArrayEquals(
+            "\u001B[1;2A".toByteArray(Charsets.US_ASCII),
+            shifted(0x1B, '['.code.toByte(), 'A'.code.toByte()),
+        )
+        assertArrayEquals(
+            "\u001B[5;2~".toByteArray(Charsets.US_ASCII),
+            shifted(0x1B, '['.code.toByte(), '5'.code.toByte(), '~'.code.toByte()),
+        )
+        // Unknown sequences pass through, never swallowed.
+        val unknown = byteArrayOf(0x1B, '['.code.toByte(), 'Z'.code.toByte())
+        assertArrayEquals(unknown, shifted(0x1B, '['.code.toByte(), 'Z'.code.toByte()))
+    }
+
+    @Test
+    fun `withModifiers stacks shift ctrl and alt`() {
+        assertArrayEquals(
+            byteArrayOf(0x1B, 0x03),
+            TerminalKeyEncoder.withModifiers(
+                setOf(
+                    TerminalKeyEncoder.Modifier.SHIFT,
+                    TerminalKeyEncoder.Modifier.CTRL,
+                    TerminalKeyEncoder.Modifier.ALT,
+                ),
+                "c",
+            ),
+        )
+    }
+
+    @Test
+    fun `layout keeps seven keys per row with shift and flick pg`() {
+        val layout = TerminalKeyEncoder.DEFAULT_LAYOUT
+        assertEquals(2, layout.size)
+        assertTrue(layout.all { it.size == 7 })
+        val flat = layout.flatten()
+        assertTrue(flat.any { it.modifier == TerminalKeyEncoder.Modifier.SHIFT })
+        val pg = flat.first { it.label == "PGUP" }
+        assertArrayEquals(
+            "\u001B[6~".toByteArray(Charsets.US_ASCII),
+            pg.flickDownBytes,
+        )
+        assertEquals("PGDN", pg.flickDownLabel)
+        // No standalone PGDN key anymore (flick replaces it).
+        assertTrue(flat.none { it.label == "PGDN" && it.bytes != null })
+    }
 }

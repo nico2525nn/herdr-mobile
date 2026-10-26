@@ -1,5 +1,14 @@
 # Changelog
 
+## 1.3.23 — 2026-10-26
+
+- Extra Keys: SHIFT sticky modifier (replaces PGDN slot, 7-key grid kept).
+  SHIFT+letter uppercases, SHIFT+arrows/HOME/END/PGUP/PGDN emit `;2` modified
+  CSI, stacks with CTRL/ALT and the soft keyboard.
+- Extra Keys: PGUP is dual-action — tap = PGUP, flick down = PGDN.
+- Gboard Backspace/Enter still arrive only as InputConnection callbacks
+  (TerminalView is final, cannot wrap); tracked separately.
+
 ## 1.3.22 — 2026-10-24
 
 - Settings: Daemon URL field uses the Uri keyboard (no autocorrect mangling URLs).

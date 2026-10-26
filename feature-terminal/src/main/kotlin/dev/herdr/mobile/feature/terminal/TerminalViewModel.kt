@@ -484,8 +484,19 @@ class TerminalViewModel(
         val raw = key.bytes
         val bytes = if (sticky.isEmpty()) {
             raw
+        } else if (TerminalKeyEncoder.Modifier.SHIFT in sticky && raw != null && raw.size > 1) {
+            // SHIFT is the only latch that transforms CSI sequences (arrows →
+            // ;2 modified form); CTRL/ALT ignore multi-byte keys as before.
+            var out: ByteArray? = TerminalKeyEncoder.withShift(raw)
+            if (TerminalKeyEncoder.Modifier.ALT in sticky && out != null && out.size == 1) {
+                out = byteArrayOf(TerminalKeyEncoder.ESC, out[0])
+            }
+            out
         } else if (raw != null && raw.size == 1) {
             var out: ByteArray? = raw
+            if (TerminalKeyEncoder.Modifier.SHIFT in sticky) {
+                out = TerminalKeyEncoder.withShift(out!!)
+            }
             if (TerminalKeyEncoder.Modifier.CTRL in sticky) {
                 out = TerminalKeyEncoder.withModifier(
                     TerminalKeyEncoder.Modifier.CTRL,

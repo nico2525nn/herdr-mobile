@@ -17,6 +17,10 @@ object TerminalKeyEncoder {
         val herdrKeys: List<String>? = null,
         /** While held, the next key is sent with this modifier. */
         val modifier: Modifier? = null,
+        /** Down-flick action: bytes sent when swiped down instead of tapped. */
+        val flickDownBytes: ByteArray? = null,
+        /** Label hint for the down-flick action (shown under [label]). */
+        val flickDownLabel: String? = null,
     ) {
         override fun equals(other: Any?): Boolean {
             if (this === other) return true
@@ -27,7 +31,13 @@ object TerminalKeyEncoder {
         override fun hashCode(): Int = label.hashCode()
     }
 
-    enum class Modifier { CTRL, ALT }
+    enum class Modifier { CTRL, ALT, SHIFT }
+
+    /**
+     * Flick direction for dual-action keys: vertical swipe selects which
+     * action fires. Consumed by [flickBytes], not by the encoder directly.
+     */
+    enum class Flick { UP, DOWN }
 
     private fun esc(seq: String): ByteArray = byteArrayOf(ESC) + seq.toByteArray(Charsets.US_ASCII)
 
@@ -40,7 +50,9 @@ object TerminalKeyEncoder {
             Key("HOME", bytes = esc("[H")),
             Key("↑", bytes = esc("[A")),
             Key("END", bytes = esc("[F")),
-            Key("PGUP", bytes = esc("[5~")),
+            // Dual-action: tap = PGUP, flick down = PGDN (frees the lower
+            // row's PGDN slot for SHIFT without breaking the 7-key grid).
+            Key("PGUP", bytes = esc("[5~"), flickDownBytes = esc("[6~"), flickDownLabel = "PGDN"),
         ),
         listOf(
             Key("TAB", bytes = byteArrayOf(0x09)),
@@ -49,7 +61,7 @@ object TerminalKeyEncoder {
             Key("←", bytes = esc("[D")),
             Key("↓", bytes = esc("[B")),
             Key("→", bytes = esc("[C")),
-            Key("PGDN", bytes = esc("[6~")),
+            Key("SHIFT", modifier = Modifier.SHIFT),
         ),
     )
 
@@ -61,10 +73,17 @@ object TerminalKeyEncoder {
      * caller keeps the latch instead of silently swallowing it. Keys carrying
      * only [Key.herdrKeys] also return null — no consumer implements that path
      * yet, so sending empty bytes would be a silent no-op.
+     *
+     * SHIFT on a single byte uppercases letters (Termux commitText parity:
+     * Gboard shift produces the shifted char before we ever see it, so the
+     * latch must do the same for Extra Keys). SHIFT on a CSI sequence rewrites
+     * it to the `;2` modified form (arrows, HOME/END, PGUP/PGDN, TAB→`ESC[Z`).
      */
     fun withModifier(modifier: Modifier?, key: Key): ByteArray? {
         val base = key.bytes ?: return null
-        if (modifier == null || base.size != 1) return base
+        if (modifier == null) return base
+        if (modifier == Modifier.SHIFT) return withShift(base)
+        if (base.size != 1) return base
         val byte = base[0].toInt() and 0xFF
         return when (modifier) {
             Modifier.CTRL -> {
@@ -79,21 +98,63 @@ object TerminalKeyEncoder {
             }
 
             Modifier.ALT -> byteArrayOf(ESC, base[0])
+            Modifier.SHIFT -> null // unreachable: handled above
         }
     }
 
     /**
+     * Apply SHIFT to already-encoded [base] bytes: letters uppercase, CSI
+     * cursor/paging sequences gain the `;2` modifier (xterm modifyOtherKeys
+     * convention, same table as [termuxKey]'s modifier=2). Unrecognized
+     * sequences pass through unchanged — SHIFT+unknown must still do
+     * something sane rather than swallow the key.
+     */
+    fun withShift(base: ByteArray): ByteArray {
+        if (base.size == 1) {
+            val b = base[0].toInt() and 0xFF
+            if (b in 0x61..0x7A) return byteArrayOf((b - 0x20).toByte())
+            return base
+        }
+        // CSI sequences this panel emits: ESC [ <params> <final>.
+        // Rewrite param-less cursor/paging forms to the ;2 modified form.
+        val text = try {
+            base.toString(Charsets.US_ASCII)
+        } catch (_: Exception) {
+            return base
+        }
+        if (!text.startsWith("\u001B[")) return base
+        val shifted = when (text) {
+            "\u001B[A" -> "\u001B[1;2A"
+            "\u001B[B" -> "\u001B[1;2B"
+            "\u001B[C" -> "\u001B[1;2C"
+            "\u001B[D" -> "\u001B[1;2D"
+            "\u001B[H" -> "\u001B[1;2H"
+            "\u001B[F" -> "\u001B[1;2F"
+            "\u001B[5~" -> "\u001B[5;2~"
+            "\u001B[6~" -> "\u001B[6;2~"
+            "\u001B[2~" -> "\u001B[2;2~"
+            "\u001B[3~" -> "\u001B[3;2~"
+            else -> return base
+        }
+        return shifted.toByteArray(Charsets.US_ASCII)
+    }
+
+    /**
      * Apply [modifiers] to one committed [text] chunk from the soft keyboard.
-     * Single ASCII char: CTRL maps to 0x00–0x1F, ALT prefixes ESC (both stack:
-     * Ctrl+Alt+X → ESC 0x18). Multi-char or non-ASCII text returns null — an
-     * atomic paste must never be half-modified; the caller sends it verbatim
-     * and keeps the latch armed.
+     * Single ASCII char: SHIFT uppercases, CTRL maps to 0x00–0x1F, ALT prefixes
+     * ESC (all stack: Shift+Ctrl+Alt+X → ESC uppercase-then-ctrl). Multi-char
+     * or non-ASCII text returns null — an atomic paste must never be
+     * half-modified; the caller sends it verbatim and keeps the latch armed.
      */
     fun withModifiers(modifiers: Set<Modifier>, text: String): ByteArray? {
         if (modifiers.isEmpty() || text.length != 1) return null
         val byte = text[0].code
         if (byte !in 0x20..0x7E) return null
         var out = byteArrayOf(byte.toByte())
+        // SHIFT first (case shift is input-level), then CTRL, then ALT prefix.
+        if (Modifier.SHIFT in modifiers) {
+            out = withShift(out)
+        }
         if (Modifier.CTRL in modifiers) {
             out = withModifier(Modifier.CTRL, Key("", bytes = out)) ?: return null
         }
