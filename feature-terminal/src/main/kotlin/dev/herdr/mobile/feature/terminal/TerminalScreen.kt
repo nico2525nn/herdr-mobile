@@ -652,11 +652,26 @@ private fun TerminalSurface(
                 // Termux toolbar PASTE: clipboard text goes through the same
                 // paste normalization as CJK commits (strip ESC/C1, newlines
                 // to CR), then to the network. Stock Termux pastes into its
-                // local PTY at this exact hook.
+                // local PTY at this exact hook. When the app enabled 2004
+                // (agents, TUIs), wrap in the bracket markers so the block
+                // lands as one paste (multiline into the input box, not
+                // line-by-line submits); plain shells never set the mode and
+                // get the raw text exactly as before.
                 onPasteRequest = {
                     val clip = clipboard.getText()?.text.orEmpty()
                     if (clip.isNotEmpty()) {
-                        onSendText(dev.herdr.mobile.terminal.view.TerminalKeyEncoder.pasteNormalize(clip))
+                        val normalized =
+                            dev.herdr.mobile.terminal.view.TerminalKeyEncoder.pasteNormalize(clip)
+                        val bracket = dev.herdr.mobile.terminal.view.TerminalKeyEncoder
+                            .isBracketedPasteMode(bridgeRef.value?.emulator)
+                        onSendText(
+                            if (bracket) {
+                                dev.herdr.mobile.terminal.view.TerminalKeyEncoder
+                                    .bracketedPaste(normalized)
+                            } else {
+                                normalized
+                            },
+                        )
                     }
                 },
             )

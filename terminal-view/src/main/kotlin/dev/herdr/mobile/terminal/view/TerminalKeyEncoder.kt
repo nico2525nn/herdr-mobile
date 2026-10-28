@@ -434,4 +434,40 @@ object TerminalKeyEncoder {
         val stripped = text.filter { c -> c != '\u001B' && (c.code < 0x80 || c.code > 0x9F) }
         return stripped.replace(Regex("\r?\n"), "\r")
     }
+
+    const val BRACKETED_PASTE_START = "\u001B[200~"
+    const val BRACKETED_PASTE_END = "\u001B[201~"
+
+    /**
+     * Wrap [normalized] (already [pasteNormalize]d) in the 2004 bracketed-paste
+     * markers, exactly like Termux `TerminalEmulator.paste()` when the app set
+     * the mode. Agents (OMP/codex) and TUIs use the markers to accept the
+     * block as one paste (multiline lands in the input box); plain shells
+     * ignore unknown CSI so the markers degrade to nothing visible... except
+     * when the app did NOT request the mode and echoes raw — then a stray
+     * `m` is impossible (these markers end in `~`, not `m`), but callers must
+     * only bracket when the app opted in. See [isBracketedPasteMode].
+     */
+    fun bracketedPaste(normalized: String): String =
+        BRACKETED_PASTE_START + normalized + BRACKETED_PASTE_END
+
+    /**
+     * True when the attached emulator has DECSET 2004 (bracketed paste) active.
+     * Mirrors Termux's own `paste()` gate (`isDecsetInternalBitSet(1024)`):
+     * there is no public accessor, so this reads `mCurrentDecSetFlags`
+     * reflectively (same pattern as the mEmulator injection in
+     * RemoteTermuxSession; pinned to terminal-emulator v0.118.3).
+     * Falls back to false (plain paste) on any reflection failure.
+     */
+    fun isBracketedPasteMode(emulator: Any?): Boolean {
+        if (emulator == null) return false
+        return try {
+            val field = emulator.javaClass.getDeclaredField("mCurrentDecSetFlags").apply {
+                isAccessible = true
+            }
+            field.getInt(emulator) and 1024 != 0
+        } catch (_: Exception) {
+            false
+        }
+    }
 }

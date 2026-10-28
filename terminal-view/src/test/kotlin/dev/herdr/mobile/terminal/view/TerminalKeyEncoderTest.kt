@@ -293,4 +293,27 @@ class TerminalKeyEncoderTest {
         // No standalone PGDN key anymore (flick replaces it).
         assertTrue(flat.none { it.label == "PGDN" && it.bytes != null })
     }
+
+    @Test
+    fun `bracketedPaste wraps markers exactly`() {
+        assertEquals(
+            "\u001B[200~abc\u001B[201~",
+            TerminalKeyEncoder.bracketedPaste("abc"),
+        )
+        // Markers end in ~, never m: a stray m can never come from these.
+        assertTrue(TerminalKeyEncoder.BRACKETED_PASTE_START.endsWith("~"))
+        assertTrue(TerminalKeyEncoder.BRACKETED_PASTE_END.endsWith("~"))
+    }
+
+    @Test
+    fun `isBracketedPasteMode reads the 2004 bit`() {
+        // Fake emulator with the real field name/shape.
+        class FakeEmu(@JvmField var mCurrentDecSetFlags: Int)
+        assertTrue(TerminalKeyEncoder.isBracketedPasteMode(FakeEmu(1024)))
+        assertTrue(TerminalKeyEncoder.isBracketedPasteMode(FakeEmu(1024 or 512)))
+        assertTrue(!TerminalKeyEncoder.isBracketedPasteMode(FakeEmu(0)))
+        assertTrue(!TerminalKeyEncoder.isBracketedPasteMode(FakeEmu(512)))
+        assertTrue(!TerminalKeyEncoder.isBracketedPasteMode(null))
+        assertTrue(!TerminalKeyEncoder.isBracketedPasteMode(Any()))
+    }
 }

@@ -1,5 +1,13 @@
 # Changelog
 
+## 1.3.24 — 2026-10-28
+
+- Paste: bracketed-paste (2004) wrap when the app opts in — multiline
+  clipboard lands as one block in agent input boxes instead of line-by-line
+  submits. Gate reads the live emulator's 2004 bit (Termux `paste()` parity);
+  plain shells get raw text exactly as before.
+- Debug-only ClipSeedActivity for E2E paste tests (never shipped in release).
+
 ## 1.3.23 — 2026-10-26
 
 - Extra Keys: SHIFT sticky modifier (replaces PGDN slot, 7-key grid kept).
