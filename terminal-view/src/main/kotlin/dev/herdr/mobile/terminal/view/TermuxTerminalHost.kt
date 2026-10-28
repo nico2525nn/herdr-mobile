@@ -56,10 +56,11 @@ class TermuxTerminalHost(
     var mouseTracking: Boolean = false
 
     /**
-     * Codex routes to SGR wheel (not page_key): it binds PgUp/PgDn to full
-     * transcript-page steps (18-19 rows, lines ignored — verified on a long
-     * transcript) but honors SGR wheel at ~3 rows/event. Other agent panes
-     * (omp: line-precise page_key) stay on the probed/live mouse flag.
+     * Codex/Pi route to SGR wheel (not page_key): both bind PgUp/PgDn to
+     * full-viewport jumps (lines ignored — codex 18-19 rows verified on a
+     * long transcript, Pi a full screen per PgUp) but honor one SGR wheel
+     * event as exactly one row (measured both directions). Other agent
+     * panes (omp: line-precise page_key) stay on the probed/live mouse flag.
      */
     @Volatile
     var agentWheel: Boolean = false
@@ -290,9 +291,9 @@ class TermuxTerminalHost(
         scrolledRows += kotlin.math.abs(rows)
         remoteScrolls++
         if (agentWheel) {
-            // Codex scrolls exactly one row per SGR wheel event (measured 6
-            // events = 6 rows, both directions, from live and mid-scroll), so
-            // one event per requested row — no divisor, no carry, no tuning.
+            // Codex/Pi scroll exactly one row per SGR wheel event (measured
+            // both directions, from live and mid-scroll), so one event per
+            // requested row — no divisor, no carry, no tuning.
             if (rows != 0) onRemoteWheel?.invoke(rows)
         } else if (mouseTracking) {
             // Conventional mouse apps (vim/less) scroll 3 lines per wheel

@@ -662,8 +662,9 @@ private fun TerminalSurface(
                     if (clip.isNotEmpty()) {
                         val normalized =
                             dev.herdr.mobile.terminal.view.TerminalKeyEncoder.pasteNormalize(clip)
+                        val emu = bridgeRef.value?.emulator
                         val bracket = dev.herdr.mobile.terminal.view.TerminalKeyEncoder
-                            .isBracketedPasteMode(bridgeRef.value?.emulator)
+                            .isBracketedPasteMode(emu)
                         onSendText(
                             if (bracket) {
                                 dev.herdr.mobile.terminal.view.TerminalKeyEncoder
@@ -773,8 +774,11 @@ private fun TerminalSurface(
             // TUIs like codex whose transcript lives in HOST scrollback, not
             // local history). Alt-screen is OR-ed live by the pump.
             // Plain shells keep instant local scroll.
+            // Pi binds PgUp/PgDn to full-viewport jumps (lines ignored —
+            // verified: one PgUp moves a full screen) but honors SGR wheel
+            // line-precisely, exactly like codex. Route both to wheel.
             hostRef?.remoteScrollHost = state.pane?.agent?.isNotBlank() == true
-            hostRef?.agentWheel = state.pane?.agent?.lowercase() == "codex"
+            hostRef?.agentWheel = state.pane?.agent?.lowercase() in setOf("codex", "pi")
             val vc = viewClientRef
             val h = hostRef
             if (vc != null && h != null) bindTermuxCallbacks(vc, h)

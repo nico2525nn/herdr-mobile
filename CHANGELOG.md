@@ -1,5 +1,11 @@
 # Changelog
 
+## 1.3.26 — 2026-10-28
+
+- Pi scroll: route to SGR wheel like codex. Pi binds PgUp/PgDn to full
+  viewport jumps (lines ignored) but honors one wheel event as exactly one
+  row — small drags no longer teleport across the transcript.
+
 ## 1.3.25 — 2026-10-28
 
 - Termux parity (verified vs v0.118.3 sources): NUM_LOCK key mapping, key-up
