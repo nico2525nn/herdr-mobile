@@ -656,7 +656,12 @@ private fun TerminalSurface(
                 // (agents, TUIs), wrap in the bracket markers so the block
                 // lands as one paste (multiline into the input box, not
                 // line-by-line submits); plain shells never set the mode and
-                // get the raw text exactly as before.
+                // get the raw text exactly as before. Pi's TUI renders
+                // server-side so the local emulator never sees its DECSET —
+                // bracket for Pi by agent kind instead (measured: plain CR
+                // submits line-by-line, bracketed CR lands as one block).
+                // Bracketed payloads travel the BYTES path (markers contain
+                // ESC, which the text path's paste normalization strips).
                 onPasteRequest = {
                     val clip = clipboard.getText()?.text.orEmpty()
                     if (clip.isNotEmpty()) {
@@ -664,15 +669,18 @@ private fun TerminalSurface(
                             dev.herdr.mobile.terminal.view.TerminalKeyEncoder.pasteNormalize(clip)
                         val emu = bridgeRef.value?.emulator
                         val bracket = dev.herdr.mobile.terminal.view.TerminalKeyEncoder
-                            .isBracketedPasteMode(emu)
-                        onSendText(
-                            if (bracket) {
+                            .isBracketedPasteMode(emu) ||
+                            dev.herdr.mobile.terminal.view.TerminalKeyEncoder
+                                .shouldBracketForAgent(state.pane?.agent)
+                        if (bracket) {
+                            onSendBytes(
                                 dev.herdr.mobile.terminal.view.TerminalKeyEncoder
                                     .bracketedPaste(normalized)
-                            } else {
-                                normalized
-                            },
-                        )
+                                    .toByteArray(Charsets.UTF_8),
+                            )
+                        } else {
+                            onSendText(normalized)
+                        }
                     }
                 },
             )

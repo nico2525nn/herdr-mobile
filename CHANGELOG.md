@@ -1,5 +1,13 @@
 # Changelog
 
+## 1.3.27 — 2026-10-28
+
+- Pi paste: bracket by agent kind (Pi's TUI renders server-side so the local
+  emulator never sees its 2004 DECSET) and send bracketed payloads via the
+  bytes path (the text path strips the ESC in the markers). Multiline
+  clipboard now lands as one block in Pi's input box; no more line-by-line
+  submits or stray `[200~`/`m` fragments.
+
 ## 1.3.26 — 2026-10-28
 
 - Pi scroll: route to SGR wheel like codex. Pi binds PgUp/PgDn to full
