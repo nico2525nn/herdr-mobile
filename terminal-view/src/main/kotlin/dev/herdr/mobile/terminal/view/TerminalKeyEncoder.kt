@@ -186,6 +186,7 @@ object TerminalKeyEncoder {
     /**
      * Termux `KeyHandler.getCode`: keyCode + modifiers to wire bytes, or null
      * when Termux itself falls through to unicode processing (printables,
+     * upstream v0.118.3 `KeyHandler.java:157-339`; master differs for modified PgUp/PgDn at lines 230-234.
      * SPACE without CTRL). [cursorApp]/[keypadApp] come from the live emulator
      * (it mirrors the remote PTY's DECCKM/DECKPAM via output replay).
      */
@@ -258,6 +259,9 @@ object TerminalKeyEncoder {
             android.view.KeyEvent.KEYCODE_FORWARD_DEL -> return transformForModifiers("\u001B[3", mode, '~')
             android.view.KeyEvent.KEYCODE_PAGE_UP -> return "\u001B[5~"
             android.view.KeyEvent.KEYCODE_PAGE_DOWN -> return "\u001B[6~"
+            // Termux maps the Num Lock key to keypad SS3-P only in keypad app mode.
+            // Upstream: KeyHandler.java:237-242.
+            android.view.KeyEvent.KEYCODE_NUM_LOCK -> return if (keypadApp) "\u001BOP" else null
             android.view.KeyEvent.KEYCODE_DEL -> {
                 val prefix = if (mode and KEYMOD_ALT == 0) "" else "\u001B"
                 return prefix + if (mode and KEYMOD_CTRL == 0) "\u007F" else "\u0008"
@@ -387,7 +391,7 @@ object TerminalKeyEncoder {
 
     /**
      * Termux `inputCodePoint` transform for hardware-key unicode: full CTRL
-     * table, bluetooth-keyboard quirks, left-ALT ESC prefix. Soft commits
+     * table, bluetooth-keyboard quirks, left-ALT ESC prefix (`TerminalView.java:828-888`). Soft commits
      * never reach here (the VM applies the sticky latch to those instead —
      * routing both through here would double-apply).
      */
@@ -419,7 +423,8 @@ object TerminalKeyEncoder {
     }
 
     /**
-     * Termux `paste()` normalization for atomic multi-char commits (CJK panel):
+     * Termux `paste()` normalization for atomic multi-char commits (CJK panel;
+     * upstream `TerminalEmulator.java:2577-2581`):
      * strip ESC + C1 controls (escape injection), map every newline to CR
      * (what Enter sends; LF would Ctrl-J in TUIs instead of submitting).
      *
@@ -453,7 +458,8 @@ object TerminalKeyEncoder {
 
     /**
      * True when the attached emulator has DECSET 2004 (bracketed paste) active.
-     * Mirrors Termux's own `paste()` gate (`isDecsetInternalBitSet(1024)`):
+     * Mirrors Termux's own `paste()` gate (`TerminalEmulator.java:2577-2586`,
+     * `isDecsetInternalBitSet(DECSET_BIT_BRACKETED_PASTE_MODE)`):
      * there is no public accessor, so this reads `mCurrentDecSetFlags`
      * reflectively (same pattern as the mEmulator injection in
      * RemoteTermuxSession; pinned to terminal-emulator v0.118.3).

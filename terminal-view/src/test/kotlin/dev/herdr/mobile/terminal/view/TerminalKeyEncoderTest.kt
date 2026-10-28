@@ -22,6 +22,7 @@ class TerminalKeyEncoderTest {
     private val MOVE_END = 123
     private val PAGE_UP = 92
     private val PAGE_DOWN = 93
+    private val NUM_LOCK = 143
     private val INSERT = 124
     private val FORWARD_DEL = 112
     private val SYSRQ = 120
@@ -65,6 +66,8 @@ class TerminalKeyEncoderTest {
         assertEquals("\u001B[3;5~", code(FORWARD_DEL, TerminalKeyEncoder.KEYMOD_CTRL))
         assertEquals("\u001B[5~", code(PAGE_UP))
         assertEquals("\u001B[6~", code(PAGE_DOWN))
+        assertEquals(null, code(NUM_LOCK))
+        assertEquals("\u001BOP", code(NUM_LOCK, keypadApp = true))
     }
 
     @Test

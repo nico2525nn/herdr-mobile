@@ -1,5 +1,13 @@
 # Changelog
 
+## 1.3.25 — 2026-10-28
+
+- Termux parity (verified vs v0.118.3 sources): NUM_LOCK key mapping, key-up
+  unicode decision unified with key-down, inherited IME contract documented
+  with upstream citations, redundant tap-focus removed.
+- Fix: native-CTRL soft-keyboard commits (e.g. penti) now route through the
+  CTRL table instead of arriving as plain letters.
+
 ## 1.3.24 — 2026-10-28
 
 - Paste: bracketed-paste (2004) wrap when the app opts in — multiline

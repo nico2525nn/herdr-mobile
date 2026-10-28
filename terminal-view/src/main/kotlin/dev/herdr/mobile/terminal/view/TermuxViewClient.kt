@@ -7,7 +7,6 @@ import android.view.MotionEvent
 import com.termux.terminal.TerminalSession
 import com.termux.view.TerminalView
 import com.termux.view.TerminalViewClient
-import dev.herdr.mobile.core.model.CursorStyle
 
 /**
  * [TerminalViewClient] for a remote session: every keystroke goes to the network,
@@ -68,10 +67,9 @@ class TermuxViewClient(
 
     override fun onSingleTapUp(e: MotionEvent) {
         val v = view ?: return
-        // Termux parity: a tap focuses the view (hardware keys route to the
-        // focused view — without this, BT/USB keyboards silently go nowhere
-        // until something else grabs focus).
-        v.requestFocus()
+        // TerminalView already requests focus immediately before invoking this
+        // callback (upstream `TerminalView.java:151-160`), so no requestFocus
+        // here — the binding below only serves getColumnAndRow.
         // Bypass sendMouseEvent (would emit SGR/X10 wire bytes into the dead
         // local session): the screen forwards as a terminal.mouse record and
         // Herdr routes it server-side (ghostty knows the real mouse state).
@@ -110,6 +108,19 @@ class TermuxViewClient(
         return mode
     }
 
+    /** Same MetaState transformation as upstream `TerminalView.java:749-822`; key-up uses it too. */
+    private fun unicodeChar(e: KeyEvent): Int {
+        var bitsToClear = KeyEvent.META_CTRL_MASK
+        if (e.metaState and KeyEvent.META_ALT_RIGHT_ON == 0) {
+            bitsToClear = bitsToClear or KeyEvent.META_ALT_ON or KeyEvent.META_ALT_LEFT_ON
+        }
+        var effectiveMeta = e.metaState and bitsToClear.inv()
+        if (e.isShiftPressed) {
+            effectiveMeta = effectiveMeta or KeyEvent.META_SHIFT_ON or KeyEvent.META_SHIFT_LEFT_ON
+        }
+        return e.getUnicodeChar(effectiveMeta)
+    }
+
     private fun cursorApp(): Boolean {
         return try {
             view?.currentSession?.emulator?.isCursorKeysApplicationMode == true
@@ -127,7 +138,7 @@ class TermuxViewClient(
     }
 
     override fun onKeyDown(keyCode: Int, e: KeyEvent, session: TerminalSession): Boolean {
-        // Termux TerminalView.onKeyDown order, remote-adapted: ACTION_MULTIPLE
+        // Termux TerminalView.onKeyDown order (upstream `TerminalView.java:749-822`), remote-adapted: ACTION_MULTIPLE
         // chars, shift+PgUp/PgDn paging, KeyHandler mapping (full modifiers),
         // then the unicode path (meta-cleared, combining accents, CTRL table,
         // BT quirks, ALT prefix). Anything unclaimed returns false so Termux's
@@ -167,17 +178,7 @@ class TermuxViewClient(
             }
         }
         // Unicode path: clear CTRL (handled below), let right-Alt compose.
-        val meta = e.metaState
-        val rightAlt = meta and KeyEvent.META_ALT_RIGHT_ON != 0
-        var bitsToClear = KeyEvent.META_CTRL_MASK
-        if (!rightAlt) {
-            bitsToClear = bitsToClear or KeyEvent.META_ALT_ON or KeyEvent.META_ALT_LEFT_ON
-        }
-        var effectiveMeta = meta and bitsToClear.inv()
-        if (e.isShiftPressed) {
-            effectiveMeta = effectiveMeta or KeyEvent.META_SHIFT_ON or KeyEvent.META_SHIFT_LEFT_ON
-        }
-        val result = e.getUnicodeChar(effectiveMeta)
+        val result = unicodeChar(e)
         if (result == 0) {
             // No character and no mapping: last resort is the CTRL table for
             // keycodes whose unicode is 0 under CTRL (Termux inputCodePoint
@@ -235,7 +236,7 @@ class TermuxViewClient(
         ) {
             return true
         }
-        if (e.getUnicodeChar(e.metaState) != 0) return true
+        if (unicodeChar(e) != 0) return true
         if ((e.isCtrlPressed || ctrlDown) && keyCodeToCtrlByte(keyCode) != null) return true
         return false
     }
@@ -260,8 +261,31 @@ class TermuxViewClient(
 
     override fun readFnKey(): Boolean = false
 
+    /**
+     * Termux's inherited `onCreateInputConnection()` handles `commitText()`
+     * and dispatches text one code point at a time through this callback
+     * (`TerminalView.java:297-390`); the remote client replaces only delivery,
+     * not Android's IME/composition contract. `deleteSurroundingText()` is
+     * inherited too and becomes KEYCODE_DEL events handled above
+     * (`TerminalView.java:359-366`).
+     *
+     * Native CTRL (some soft keyboards commit control chars directly, e.g.
+     * penti; upstream converts to printable + ctrlHeld at 378-426 and the
+     * CTRL table lives in `inputCodePoint` at 828-888): route through the
+     * same [TerminalKeyEncoder.termuxCodePoint] table as hardware keys so
+     * e.g. native Ctrl+C arrives as 0x03, not the letter "c". Sticky-latch
+     * CTRL is separate (applied by the VM on the text path) and untouched.
+     */
     override fun onCodePoint(codePoint: Int, ctrlDown: Boolean, session: TerminalSession): Boolean {
         if (codePoint <= 0) return true
+        if (ctrlDown) {
+            // Native-CTRL commit: CTRL table + BT quirks, no ALT prefix (the
+            // inherited path passes leftAltDownFromEvent=false here).
+            onDirectBytes?.invoke(
+                TerminalKeyEncoder.termuxCodePoint(codePoint, ctrlDown = true, altDown = false),
+            )
+            return true
+        }
         onDirectInput?.invoke(String(Character.toChars(codePoint)))
         return true
     }
@@ -309,6 +333,4 @@ class TermuxViewClient(
         Log.e(tag, "termux stacktrace", e)
     }
 
-    @Suppress("UNUSED_PARAMETER")
-    private fun unused(cursorStyle: CursorStyle) = Unit
 }

@@ -725,15 +725,13 @@ private fun TerminalSurface(
             // calls onEmulatorSet), then attach (in the session effect above).
             val viewClient = TermuxViewClient()
             val view = TerminalView(context, null)
-            // Termux sets these in layout XML; programmatically-created views
-            // are NOT focusable by default, and without focus the IME never
-            // binds (manual keyboard summon silently no-ops) and hardware keys
-            // never arrive. Focus alone must never summon the keyboard —
-            // open/switch always lands with the keyboard down; only the
-            // keyboard button (host.showKeyboard) or a tap shows it.
-            // (No setShowSoftInputOnFocus(false) call exists: the default
-            // Termux view behavior already keeps focus silent here —
-            // verified on emulator, mInputShown=false at open/switch.)
+            // Mirror Termux's focusableInTouchMode XML attribute
+            // (`app/src/main/res/layout/activity_termux.xml:31`); this view is
+            // created programmatically, so set focusability explicitly for
+            // hardware input and the inherited IME connection
+            // (`TerminalView.java:297-390`). A tap's focus request is upstream
+            // (`TerminalView.java:151-160`); explicit keyboard summon uses
+            // host.showKeyboard(). No on-focus soft-input override is installed.
             view.isFocusable = true
             view.isFocusableInTouchMode = true
             val px = (settings.terminalFontSizeSp * density.density).toInt()
