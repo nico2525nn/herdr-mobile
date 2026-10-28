@@ -319,15 +319,4 @@ class TerminalKeyEncoderTest {
         assertTrue(!TerminalKeyEncoder.isBracketedPasteMode(null))
         assertTrue(!TerminalKeyEncoder.isBracketedPasteMode(Any()))
     }
-
-    @Test
-    fun `shouldBracketForAgent matches pi only`() {
-        assertTrue(TerminalKeyEncoder.shouldBracketForAgent("pi"))
-        assertTrue(TerminalKeyEncoder.shouldBracketForAgent("Pi"))
-        assertTrue(TerminalKeyEncoder.shouldBracketForAgent("PI"))
-        assertTrue(!TerminalKeyEncoder.shouldBracketForAgent("omp"))
-        assertTrue(!TerminalKeyEncoder.shouldBracketForAgent("codex"))
-        assertTrue(!TerminalKeyEncoder.shouldBracketForAgent(null))
-        assertTrue(!TerminalKeyEncoder.shouldBracketForAgent(""))
-    }
 }

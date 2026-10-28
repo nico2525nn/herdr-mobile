@@ -656,10 +656,9 @@ private fun TerminalSurface(
                 // (agents, TUIs), wrap in the bracket markers so the block
                 // lands as one paste (multiline into the input box, not
                 // line-by-line submits); plain shells never set the mode and
-                // get the raw text exactly as before. Pi's TUI renders
-                // server-side so the local emulator never sees its DECSET —
-                // bracket for Pi by agent kind instead (measured: plain CR
-                // submits line-by-line, bracketed CR lands as one block).
+                // get the raw text exactly as before. Some TUIs (Pi,
+                // opencode) render server-side so the local emulator never
+                // sees their DECSET — AgentMatrix brackets those by kind.
                 // Bracketed payloads travel the BYTES path (markers contain
                 // ESC, which the text path's paste normalization strips).
                 onPasteRequest = {
@@ -670,8 +669,7 @@ private fun TerminalSurface(
                         val emu = bridgeRef.value?.emulator
                         val bracket = dev.herdr.mobile.terminal.view.TerminalKeyEncoder
                             .isBracketedPasteMode(emu) ||
-                            dev.herdr.mobile.terminal.view.TerminalKeyEncoder
-                                .shouldBracketForAgent(state.pane?.agent)
+                            dev.herdr.mobile.core.model.AgentMatrix.alwaysBracket(state.pane?.agent)
                         if (bracket) {
                             onSendBytes(
                                 dev.herdr.mobile.terminal.view.TerminalKeyEncoder
@@ -779,14 +777,14 @@ private fun TerminalSurface(
             viewClientRef?.ctrlDown = dev.herdr.mobile.terminal.view.TerminalKeyEncoder.Modifier.CTRL in state.stickyModifiers
             viewClientRef?.altDown = dev.herdr.mobile.terminal.view.TerminalKeyEncoder.Modifier.ALT in state.stickyModifiers
             // Remote scroll routing (host part): agent panes (main-screen
-            // TUIs like codex whose transcript lives in HOST scrollback, not
-            // local history). Alt-screen is OR-ed live by the pump.
+            // TUIs whose transcript lives in HOST scrollback, not local
+            // history). Alt-screen is OR-ed live by the pump.
             // Plain shells keep instant local scroll.
-            // Pi binds PgUp/PgDn to full-viewport jumps (lines ignored —
-            // verified: one PgUp moves a full screen) but honors SGR wheel
-            // line-precisely, exactly like codex. Route both to wheel.
+            // Wheel vs page_key comes from AgentMatrix (measured per agent:
+            // codex/pi/opencode bind PgUp to full jumps but honor 1-row
+            // wheel; omp is line-precise page_key).
             hostRef?.remoteScrollHost = state.pane?.agent?.isNotBlank() == true
-            hostRef?.agentWheel = state.pane?.agent?.lowercase() in setOf("codex", "pi")
+            hostRef?.agentWheel = dev.herdr.mobile.core.model.AgentMatrix.useWheelScroll(state.pane?.agent)
             val vc = viewClientRef
             val h = hostRef
             if (vc != null && h != null) bindTermuxCallbacks(vc, h)

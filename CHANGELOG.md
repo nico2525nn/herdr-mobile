@@ -1,5 +1,12 @@
 # Changelog
 
+## 1.3.28 — 2026-10-28
+
+- AgentMatrix: per-agent scroll/paste behavior in one measured table.
+  Opencode joins wheel scroll + always-bracket (PgUp=full page, wheel=1
+  row, 2004 honored — verified on live pane). Pi/codex/omp unchanged.
+  Unknown agents keep the safe OMP defaults. Sources cited per entry.
+
 ## 1.3.27 — 2026-10-28
 
 - Pi paste: bracket by agent kind (Pi's TUI renders server-side so the local

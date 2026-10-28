@@ -457,19 +457,6 @@ object TerminalKeyEncoder {
         BRACKETED_PASTE_START + normalized + BRACKETED_PASTE_END
 
     /**
-     * Agents whose input box honors 2004 markers even though the local
-     * emulator never sees the DECSET (their TUIs render server-side; the
-     * local emulator only replays visible frames). Measured per agent on
-     * live panes — see the paste matrix in the release notes:
-     * - Pi: plain CR submits line-by-line (multiline paste explodes into
-     *   separate turns); bracketed CR lands as one block. Bracket always.
-     * - OMP/codex: honor markers when 2004 is set; fall back to the live
-     *   emulator bit via [isBracketedPasteMode].
-     */
-    fun shouldBracketForAgent(agent: String?): Boolean =
-        agent?.lowercase() == "pi"
-
-    /**
      * True when the attached emulator has DECSET 2004 (bracketed paste) active.
      * Mirrors Termux's own `paste()` gate (`TerminalEmulator.java:2577-2586`,
      * `isDecsetInternalBitSet(DECSET_BIT_BRACKETED_PASTE_MODE)`):

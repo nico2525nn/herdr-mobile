@@ -226,4 +226,31 @@ class ModelContractTest {
         assertTrue(!Versions.isNewer("0.9.5", "0.9.3"))
         assertTrue(!Versions.isNewer("0.9.5", "garbage"))
     }
+
+    @Test
+    fun `agent matrix routes scroll by kind`() {
+        // codex/pi/opencode: PgUp jumps full pages, wheel is 1 row.
+        assertTrue(AgentMatrix.useWheelScroll("codex"))
+        assertTrue(AgentMatrix.useWheelScroll("pi"))
+        assertTrue(AgentMatrix.useWheelScroll("PI"))
+        assertTrue(AgentMatrix.useWheelScroll("opencode"))
+        assertTrue(AgentMatrix.useWheelScroll("OpenCode"))
+        // omp: line-precise page_key. Unknown/null: safe default.
+        assertTrue(!AgentMatrix.useWheelScroll("omp"))
+        assertTrue(!AgentMatrix.useWheelScroll("unknown-agent"))
+        assertTrue(!AgentMatrix.useWheelScroll(null))
+        assertTrue(!AgentMatrix.useWheelScroll(""))
+    }
+
+    @Test
+    fun `agent matrix brackets paste by kind`() {
+        // pi/opencode render server-side: local never sees their 2004.
+        assertTrue(AgentMatrix.alwaysBracket("pi"))
+        assertTrue(AgentMatrix.alwaysBracket("opencode"))
+        // omp/codex: trust the live emulator bit.
+        assertTrue(!AgentMatrix.alwaysBracket("omp"))
+        assertTrue(!AgentMatrix.alwaysBracket("codex"))
+        assertTrue(!AgentMatrix.alwaysBracket(null))
+        assertTrue(!AgentMatrix.alwaysBracket("unknown-agent"))
+    }
 }
