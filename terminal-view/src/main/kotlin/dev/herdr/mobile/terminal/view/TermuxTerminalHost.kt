@@ -56,16 +56,27 @@ class TermuxTerminalHost(
     var mouseTracking: Boolean = false
 
     /**
-     * Codex/Pi route to SGR wheel (not page_key): both bind PgUp/PgDn to
-     * full-viewport jumps (lines ignored — codex 18-19 rows verified on a
-     * long transcript, Pi a full screen per PgUp) but honor one SGR wheel
-     * event as exactly one row (measured both directions). Other agent
-     * panes (omp: line-precise page_key) stay on the probed/live mouse flag.
+     * AgentMatrix-selected SGR wheel route. The host sends one wheel event per
+     * requested row; this matches measured Codex/Pi behavior, while agents
+     * with different wheel strides (for example Qwen's documented 3 lines per
+     * tick) remain a known limitation of the two-route matrix.
      */
     @Volatile
     var agentWheel: Boolean = false
 
-    /** Fractional-row carry across gestures (Termux-remainder-style). */
+    /** App-specific transcript rows advanced by one agent wheel event. */
+    @Volatile
+    var agentWheelRowsPerEvent: Int = 1
+        set(value) {
+            if (field == value) return
+            field = value
+            agentWheelRemainder = 0.0
+        }
+
+    /** Fractional-row carry across agent wheel gestures. */
+    private var agentWheelRemainder = 0.0
+
+    /** Fractional-row carry across conventional 3-row wheel gestures. */
     private var wheelRemainder = 0.0
 
     /**
@@ -291,10 +302,14 @@ class TermuxTerminalHost(
         scrolledRows += kotlin.math.abs(rows)
         remoteScrolls++
         if (agentWheel) {
-            // Codex/Pi scroll exactly one row per SGR wheel event (measured
-            // both directions, from live and mid-scroll), so one event per
-            // requested row — no divisor, no carry, no tuning.
-            if (rows != 0) onRemoteWheel?.invoke(rows)
+            // Convert requested rows to events using the app's documented
+            // stride; retain fractional rows between drag callbacks.
+            agentWheelRemainder += rows.toDouble() / agentWheelRowsPerEvent
+            val notches = agentWheelRemainder.toInt()
+            if (notches != 0) {
+                agentWheelRemainder -= notches
+                onRemoteWheel?.invoke(notches)
+            }
         } else if (mouseTracking) {
             // Conventional mouse apps (vim/less) scroll 3 lines per wheel
             // notch (xterm default): accumulate fractional rows across events.

@@ -229,28 +229,61 @@ class ModelContractTest {
 
     @Test
     fun `agent matrix routes scroll by kind`() {
-        // codex/pi/opencode: PgUp jumps full pages, wheel is 1 row.
-        assertTrue(AgentMatrix.useWheelScroll("codex"))
-        assertTrue(AgentMatrix.useWheelScroll("pi"))
-        assertTrue(AgentMatrix.useWheelScroll("PI"))
-        assertTrue(AgentMatrix.useWheelScroll("opencode"))
-        assertTrue(AgentMatrix.useWheelScroll("OpenCode"))
-        // omp: line-precise page_key. Unknown/null: safe default.
-        assertTrue(!AgentMatrix.useWheelScroll("omp"))
+        // Live/source-backed wheel transports (1 row/event unless noted).
+        listOf("codex", "pi", "opencode", "qwen").forEach { kind ->
+            assertTrue("$kind should route wheel", AgentMatrix.useWheelScroll(kind))
+            assertTrue("$kind should be case-insensitive", AgentMatrix.useWheelScroll(kind.uppercase()))
+        }
+        // Every other supported kind uses page_key; null/unknown retain default.
+        // copilot/hermes: wheel mentioned upstream but stride unestablished —
+        // PAGE_KEY is conservative (PgUp proven / degrades to host offset).
+        listOf(
+            "omp", "claude", "gemini", "cursor", "devin", "agy", "cline",
+            "mastracode", "copilot", "kimi", "kiro", "droid", "amp", "grok",
+            "hermes", "kilo", "qodercli", "letta", "maki", "muse",
+        ).forEach { kind ->
+            assertTrue("$kind should route page keys", !AgentMatrix.useWheelScroll(kind))
+            assertTrue("$kind should be case-insensitive", !AgentMatrix.useWheelScroll(kind.uppercase()))
+        }
         assertTrue(!AgentMatrix.useWheelScroll("unknown-agent"))
         assertTrue(!AgentMatrix.useWheelScroll(null))
         assertTrue(!AgentMatrix.useWheelScroll(""))
     }
 
     @Test
+    fun `agent matrix preserves documented wheel stride`() {
+        listOf(
+            "codex", "pi", "opencode",
+        ).forEach { kind ->
+            assertEquals(1, AgentMatrix.wheelRowsPerEvent(kind))
+            assertEquals(1, AgentMatrix.wheelRowsPerEvent(kind.uppercase()))
+        }
+        assertEquals(3, AgentMatrix.wheelRowsPerEvent("qwen"))
+        assertEquals(3, AgentMatrix.wheelRowsPerEvent("QWEN"))
+        assertEquals(1, AgentMatrix.wheelRowsPerEvent("unknown-agent"))
+        assertEquals(1, AgentMatrix.wheelRowsPerEvent(null))
+        assertEquals(1, AgentMatrix.wheelRowsPerEvent(""))
+    }
+
+    @Test
     fun `agent matrix brackets paste by kind`() {
-        // pi/opencode render server-side: local never sees their 2004.
-        assertTrue(AgentMatrix.alwaysBracket("pi"))
-        assertTrue(AgentMatrix.alwaysBracket("opencode"))
-        // omp/codex: trust the live emulator bit.
-        assertTrue(!AgentMatrix.alwaysBracket("omp"))
-        assertTrue(!AgentMatrix.alwaysBracket("codex"))
+        // Existing server-side-rendered TUIs whose local emulator cannot
+        // observe the app's bracketed-paste mode.
+        listOf("pi", "opencode").forEach { kind ->
+            assertTrue("$kind should always bracket", AgentMatrix.alwaysBracket(kind))
+            assertTrue("$kind should be case-insensitive", AgentMatrix.alwaysBracket(kind.uppercase()))
+        }
+        // All remaining supported kinds use the emulator-bit gate.
+        listOf(
+            "omp", "codex", "claude", "gemini", "cursor", "devin", "agy",
+            "cline", "mastracode", "copilot", "kimi", "kiro", "droid", "amp",
+            "grok", "hermes", "kilo", "qodercli", "qwen", "letta", "maki", "muse",
+        ).forEach { kind ->
+            assertTrue("$kind should use emulator mode", !AgentMatrix.alwaysBracket(kind))
+            assertTrue("$kind should be case-insensitive", !AgentMatrix.alwaysBracket(kind.uppercase()))
+        }
         assertTrue(!AgentMatrix.alwaysBracket(null))
         assertTrue(!AgentMatrix.alwaysBracket("unknown-agent"))
+        assertTrue(!AgentMatrix.alwaysBracket(""))
     }
 }

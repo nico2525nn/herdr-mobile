@@ -1,5 +1,12 @@
 # Changelog
 
+## 1.3.29 — 2026-10-29
+
+- AgentMatrix covers all 24 supported `--kind` values with per-entry
+  upstream evidence. Qwen's documented 3-line wheel stride is preserved
+  explicitly. copilot/hermes stay on conservative page_key (wheel stride
+  unestablished); all unverified kinds keep safe OMP defaults.
+
 ## 1.3.28 — 2026-10-28
 
 - AgentMatrix: per-agent scroll/paste behavior in one measured table.

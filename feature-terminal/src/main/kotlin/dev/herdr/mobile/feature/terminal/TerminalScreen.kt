@@ -656,9 +656,10 @@ private fun TerminalSurface(
                 // (agents, TUIs), wrap in the bracket markers so the block
                 // lands as one paste (multiline into the input box, not
                 // line-by-line submits); plain shells never set the mode and
-                // get the raw text exactly as before. Some TUIs (Pi,
-                // opencode) render server-side so the local emulator never
-                // sees their DECSET — AgentMatrix brackets those by kind.
+                // get the raw text exactly as before. Pi and OpenCode have a measured server-side paste path
+                // whose DECSET is not visible locally; AgentMatrix forces
+                // brackets for those kinds and trusts the emulator bit for
+                // the other mapped agents.
                 // Bracketed payloads travel the BYTES path (markers contain
                 // ESC, which the text path's paste normalization strips).
                 onPasteRequest = {
@@ -780,11 +781,14 @@ private fun TerminalSurface(
             // TUIs whose transcript lives in HOST scrollback, not local
             // history). Alt-screen is OR-ed live by the pump.
             // Plain shells keep instant local scroll.
-            // Wheel vs page_key comes from AgentMatrix (measured per agent:
-            // codex/pi/opencode bind PgUp to full jumps but honor 1-row
-            // wheel; omp is line-precise page_key).
+            // Wheel vs page_key comes from AgentMatrix: each supported
+            // --kind has an evidence note and unknown kinds keep the page_key
+            // fallback. AgentMatrix also supplies a documented wheel stride;
+            // key protocols and other terminal modes remain outside these routes.
             hostRef?.remoteScrollHost = state.pane?.agent?.isNotBlank() == true
             hostRef?.agentWheel = dev.herdr.mobile.core.model.AgentMatrix.useWheelScroll(state.pane?.agent)
+            hostRef?.agentWheelRowsPerEvent =
+                dev.herdr.mobile.core.model.AgentMatrix.wheelRowsPerEvent(state.pane?.agent)
             val vc = viewClientRef
             val h = hostRef
             if (vc != null && h != null) bindTermuxCallbacks(vc, h)
