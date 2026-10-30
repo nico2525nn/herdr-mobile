@@ -1,5 +1,6 @@
 package dev.herdr.mobile.feature.terminal
 
+import dev.herdr.mobile.core.model.BackendMode
 import dev.herdr.mobile.core.model.TerminalAttachmentState
 import dev.herdr.mobile.core.network.TerminalConnection
 import dev.herdr.mobile.core.network.TerminalInbound
@@ -24,6 +25,9 @@ class ConnectionTerminalBackend(
 ) : TerminalBackend {
 
     private val inner: TerminalConnection = connection
+
+    override val supportsBinaryPaste: Boolean
+        get() = inner.backendMode == BackendMode.CORE
 
     override val state: StateFlow<BackendState> = connection.state
         .map { s ->
@@ -51,7 +55,8 @@ class ConnectionTerminalBackend(
     override suspend fun sendText(text: String) = inner.sendText(text)
 
     override suspend fun resize(cols: Int, rows: Int) = inner.resize(cols, rows)
-    override suspend fun scrollRemote(lines: Int) = inner.scrollRemote(lines)
+    override suspend fun scrollRemote(lines: Int, allowPageKey: Boolean) =
+        inner.scrollRemote(lines, allowPageKey)
 
 
 

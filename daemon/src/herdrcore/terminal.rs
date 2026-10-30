@@ -1,3 +1,5 @@
+use std::borrow::Cow;
+
 use anyhow::{Context, Result};
 use axum::extract::ws::{Message, WebSocket};
 use base64::Engine;
@@ -97,20 +99,39 @@ fn is_finished_facts(bytes: &[u8]) -> bool {
         || value.get("exit_code").is_some_and(|value| !value.is_null())
 }
 
+fn input_payload(value: &Value) -> Result<Option<Cow<'_, [u8]>>> {
+    match value.get("type").and_then(Value::as_str).unwrap_or("") {
+        "input.text" => Ok(value
+            .get("text")
+            .and_then(Value::as_str)
+            .map(|text| Cow::Borrowed(text.as_bytes()))),
+        "input.bytes" => value
+            .get("bytes")
+            .and_then(Value::as_str)
+            .map(|encoded| {
+                base64::engine::general_purpose::STANDARD
+                    .decode(encoded)
+                    .map(Cow::Owned)
+                    .context("invalid input.bytes base64")
+            })
+            .transpose(),
+        _ => Ok(None),
+    }
+}
+
+fn allows_core_page_scroll(value: &Value) -> bool {
+    value.get("allowPageKey").and_then(Value::as_bool) == Some(true)
+}
+
 async fn handle_control(attachment: &mut CoreAttachment, text: &str) -> Result<bool> {
     let Ok(value) = serde_json::from_str::<Value>(text) else { return Ok(false) };
+    if let Some(bytes) = input_payload(&value)? {
+        // Keep input byte-exact: bracketed-paste markers contain ESC and must
+        // never pass through Termux's text/paste normalizer (bug class #1).
+        attachment.send_data(&bytes).await?;
+        return Ok(false);
+    }
     match value.get("type").and_then(Value::as_str).unwrap_or("") {
-        "input.text" => {
-            if let Some(text) = value.get("text").and_then(Value::as_str) {
-                attachment.send_data(text.as_bytes()).await?;
-            }
-        }
-        "input.bytes" => {
-            if let Some(text) = value.get("bytes").and_then(Value::as_str) {
-                let bytes = base64::engine::general_purpose::STANDARD.decode(text).context("invalid input.bytes base64")?;
-                attachment.send_data(&bytes).await?;
-            }
-        }
         "resize" => {
             let cols = value.get("cols").and_then(Value::as_u64).unwrap_or(0).min(u16::MAX as u64) as u16;
             let rows = value.get("rows").and_then(Value::as_u64).unwrap_or(0).min(u16::MAX as u64) as u16;
@@ -119,6 +140,13 @@ async fn handle_control(attachment: &mut CoreAttachment, text: &str) -> Result<b
             }
         }
         "scroll" => {
+            // Core exposes PTY DATA, not host scrollback. Only honor page-key
+            // scrolling when the client observed an agent or alt-screen TUI;
+            // otherwise literal PgUp bytes can land in shells such as `sleep`
+            // (bug class #2).
+            if !allows_core_page_scroll(&value) {
+                return Ok(false);
+            }
             let lines = value.get("lines").and_then(Value::as_i64).unwrap_or(0);
             if lines != 0 {
                 // Core exposes PTY DATA, not Herdr's host-scroll RPC. Page-up/down
@@ -164,5 +192,27 @@ mod tests {
     fn terminal_facts_only_close_for_finished_programs() {
         assert!(is_finished_facts(br#"{"reason":"exited","exit_code":0}"#));
         assert!(!is_finished_facts(br#"{"state":"live","status":{"state":"working"}}"#));
+    }
+
+    #[test]
+    fn bracketed_paste_esc_markers_survive_text_and_bytes_controls() {
+        // Regression for bug class #1: core attach input must preserve ESC-bearing
+        // bracket markers rather than sending them through paste normalization.
+        let expected: &[u8] = b"\x1b[200~pasted\x1b[201~";
+        let text = json!({"type":"input.text","text":"\u{1b}[200~pasted\u{1b}[201~"});
+        let bytes = json!({
+            "type":"input.bytes",
+            "bytes":base64::engine::general_purpose::STANDARD.encode(expected),
+        });
+        assert_eq!(input_payload(&text).unwrap().unwrap().as_ref(), expected);
+        assert_eq!(input_payload(&bytes).unwrap().unwrap().as_ref(), expected);
+    }
+
+    #[test]
+    fn core_scroll_requires_agent_or_alt_screen_evidence() {
+        // Regression for bug class #2: old clients without a scroll capability
+        // bit must not type PgUp into non-TUI foreground programs such as sleep.
+        assert!(!allows_core_page_scroll(&json!({"type":"scroll","direction":"up","lines":5})));
+        assert!(allows_core_page_scroll(&json!({"type":"scroll","allowPageKey":true})));
     }
 }

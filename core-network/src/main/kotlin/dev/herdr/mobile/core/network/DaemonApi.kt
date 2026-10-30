@@ -69,6 +69,8 @@ class DaemonApi(
         return try {
             val obj = HerdrJson.parseToJsonElement(text).jsonObject
             val err = obj["error"]?.jsonObject
+            // Preserve unknown typed server codes (including core `unavailable`)
+            // and message; view models surface them instead of treating them as success.
             val code = err?.get("code")?.jsonPrimitive?.contentOrNull ?: "http_$status"
             val message = err?.get("message")?.jsonPrimitive?.contentOrNull ?: text.ifBlank { "HTTP $status" }
             DaemonException(code, message, status)

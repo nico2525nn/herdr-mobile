@@ -30,6 +30,36 @@ pub struct CoreSnapshot {
     pub version: Option<String>,
 }
 
+/// A private cursor for one `events.subscribe` client; never shared globally.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct CoreEventCursor {
+    seq: i64,
+}
+
+impl CoreEventCursor {
+    pub fn new(seq: i64) -> Self {
+        Self { seq }
+    }
+
+    pub fn seq(self) -> i64 {
+        self.seq
+    }
+
+    /// Ignore duplicates/late records without moving this connection backwards.
+    pub fn observe(&mut self, seq: i64) -> bool {
+        if seq <= self.seq {
+            return false;
+        }
+        self.seq = seq;
+        true
+    }
+
+    /// A `missed` notification is authoritative and resets only this cursor.
+    pub fn resync(&mut self, seq: i64) {
+        self.seq = seq;
+    }
+}
+
 impl CoreClient {
     pub fn new(socket_path: impl Into<PathBuf>) -> Self {
         Self { socket_path: socket_path.into() }
@@ -483,8 +513,11 @@ pub fn translate_snapshot(seq: i64, terminals: &[Value], version: Option<String>
             .unwrap_or_else(|| terminal.get("name").and_then(Value::as_str).unwrap_or(address).to_owned());
         let cwd = field_string(terminal, "cwd").map(str::to_owned);
         let status_value = terminal.pointer("/status/state").map(status).unwrap_or(AgentStatus::Unknown);
+        // Core `Status.app` is the OSC 7501 app identity consumed by AgentMatrix.
+        // `foreground.name` is any process (e.g. `sleep`), not an agent kind.
         let agent = terminal.pointer("/status/app").and_then(Value::as_str)
-            .or_else(|| terminal.pointer("/foreground/name").and_then(Value::as_str))
+            .map(str::trim)
+            .filter(|app| !app.is_empty())
             .map(str::to_owned);
         let title = field_string(terminal, "title").map(str::to_owned);
         let pane = Pane {
@@ -640,21 +673,36 @@ mod tests {
         assert_eq!(snapshot.workspaces[0].tabs[0].label, "2");
         assert_eq!(snapshot.workspaces[0].tabs[0].panes[0].terminal_id.as_deref(), Some("t7"));
         assert_eq!(snapshot.workspaces[0].tabs[0].panes[0].status, crate::model::AgentStatus::Working);
+        assert_eq!(snapshot.workspaces[0].tabs[0].panes[0].agent.as_deref(), Some("codex"));
+    }
+
+    #[test]
+    fn core_foreground_process_is_not_mistaken_for_agent() {
+        // Regression for bug class #2: `foreground.name` may be `sleep`, a shell,
+        // or any other command; only the Status.app field selects AgentMatrix routing.
+        let snapshot = translate_snapshot(18, &[json!({
+            "address":"t8", "cwd":"/work", "state":"live",
+            "foreground":{"name":"sleep"}, "status":null
+        })], None);
+        assert_eq!(snapshot.workspaces[0].tabs[0].panes[0].agent, None);
     }
 
     #[test]
     fn event_translation_maps_status_and_structure() {
         let location = HashMap::from([("t7".to_owned(), ("space-1".to_owned(), "tab-1".to_owned()))]);
-        let status = translate_event(&json!({"method":"event","params":{"seq":18,"terminal":"t7","type":"status","data":{"status":{"state":"blocked"}}}}), &location).unwrap();
+        let status = translate_event(&json!({"method":"event","params":{"seq":18,"terminal":"t7","type":"status","data":{"status":{"state":"blocked","app":"pi"}}}}), &location).unwrap();
         assert_eq!(status.kind, "pane.status_changed");
         assert_eq!(status.workspace_id.as_deref(), Some("space-1"));
         assert_eq!(status.status, Some(crate::model::AgentStatus::Blocked));
+        assert_eq!(status.detail.as_ref().and_then(|detail| detail.pointer("/status/app")).and_then(Value::as_str), Some("pi"));
         let created = translate_event(&json!({"params":{"seq":19,"terminal":"t8","type":"created","data":{}}}), &location).unwrap();
         assert_eq!(created.kind, "pane.created");
     }
 
     #[test]
     fn core_attach_frame_encoding_matches_measured_wire_header() {
+        // Regression for bug class #6: resize is encoded as RESIZE, never FOCUS;
+        // Android IME handling remains outside this protocol bridge.
         assert_eq!(
             encode_frame(1, FRAME_RESIZE, &encode_resize(101, 31)),
             [1, 0, 0, 0, 3, 4, 0, 0, 0, 101, 0, 31, 0],
@@ -662,5 +710,22 @@ mod tests {
         assert_eq!(FRAME_FACTS, 2);
         assert_eq!(FRAME_FOCUS, 4);
         assert_eq!(FRAME_CLOSE, 5);
+    }
+
+    #[test]
+    fn core_event_cursors_are_monotonic_and_per_connection() {
+        // Regression for bug class #5: reconnects and missed-event recovery must
+        // not share a global cursor or make one subscriber drive another's seq.
+        let mut first = CoreEventCursor::new(10);
+        let second = CoreEventCursor::new(10);
+        assert!(first.observe(12));
+        assert!(!first.observe(11));
+        assert_eq!(first.seq(), 12);
+        assert_eq!(second.seq(), 10);
+        first.resync(15);
+        assert_eq!(first.seq(), 15);
+        assert!(!first.observe(14));
+        assert!(first.observe(16));
+        assert_eq!(second.seq(), 10);
     }
 }

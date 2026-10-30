@@ -423,6 +423,35 @@ object TerminalKeyEncoder {
     }
 
     /**
+     * Core payloads keep bracket markers on raw bytes; TUI payloads preserve
+     * their legacy text control. ESC is removed only from clipboard text before
+     * the bracket markers are added.
+     */
+    sealed interface PastePayload {
+        data class Text(val value: String) : PastePayload
+        data class Bytes(val value: ByteArray) : PastePayload
+    }
+
+    /**
+     * Normalize clipboard text once. Only the core binary backend can carry
+     * bracket markers as DATA bytes; the TUI backend keeps its input.text path.
+     */
+    fun pastePayload(
+        text: String,
+        bracketed: Boolean,
+        binaryBackend: Boolean,
+    ): PastePayload {
+        val normalized = pasteNormalize(text)
+        if (!bracketed) return PastePayload.Text(normalized)
+        val payload = bracketedPaste(normalized)
+        return if (binaryBackend) {
+            PastePayload.Bytes(payload.toByteArray(Charsets.UTF_8))
+        } else {
+            PastePayload.Text(payload)
+        }
+    }
+
+    /**
      * Termux `paste()` normalization for atomic multi-char commits (CJK panel;
      * upstream `TerminalEmulator.java:2577-2581`):
      * strip ESC + C1 controls (escape injection), map every newline to CR
@@ -462,8 +491,9 @@ object TerminalKeyEncoder {
      * `isDecsetInternalBitSet(DECSET_BIT_BRACKETED_PASTE_MODE)`):
      * there is no public accessor, so this reads `mCurrentDecSetFlags`
      * reflectively (same pattern as the mEmulator injection in
-     * RemoteTermuxSession; pinned to terminal-emulator v0.118.3).
-     * Falls back to false (plain paste) on any reflection failure.
+     * RemoteTermuxSession; pinned to terminal-emulator v0.118.3). The app keep
+     * rule preserves the field in release; a lookup failure logs loudly and
+     * falls back to plain paste rather than silently changing behavior.
      */
     fun isBracketedPasteMode(emulator: Any?): Boolean {
         if (emulator == null) return false
@@ -472,7 +502,12 @@ object TerminalKeyEncoder {
                 isAccessible = true
             }
             field.getInt(emulator) and 1024 != 0
-        } catch (_: Exception) {
+        } catch (error: Exception) {
+            java.util.logging.Logger.getLogger("TerminalKeyEncoder").log(
+                java.util.logging.Level.WARNING,
+                "Unable to inspect Termux DECSET 2004; using plain-paste fallback",
+                error,
+            )
             false
         }
     }

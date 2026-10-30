@@ -1,5 +1,6 @@
 package dev.herdr.mobile.core.network
 
+import dev.herdr.mobile.core.model.BackendMode
 import dev.herdr.mobile.core.model.RawTerminalRecord
 import dev.herdr.mobile.core.model.TerminalAttachmentState
 import dev.herdr.mobile.core.model.TerminalProtocol
@@ -33,13 +34,14 @@ import java.util.concurrent.atomic.AtomicBoolean
  * leave as JSON text frames; [TerminalProtocol.Ready] / [Closed] arrive as JSON text frames.
  */
 interface TerminalConnection {
+    val backendMode: BackendMode get() = BackendMode.TUI
     val state: StateFlow<TerminalAttachmentState>
     val inbound: Flow<TerminalInbound>
 
     suspend fun send(data: ByteArray)
     suspend fun sendText(text: String)
     suspend fun resize(cols: Int, rows: Int)
-    suspend fun scrollRemote(lines: Int)
+    suspend fun scrollRemote(lines: Int, allowPageKey: Boolean)
     suspend fun mouse(action: String, button: String, column: Int, row: Int)
     suspend fun release()
 
@@ -80,6 +82,8 @@ class TerminalSocket(
      */
     private val restore: Pair<Int, Int>? = null,
 ) : TerminalConnection {
+    override val backendMode: BackendMode get() = endpoint.backendMode
+
     private val _state =
         MutableStateFlow<TerminalAttachmentState>(TerminalAttachmentState.Attaching(paneId))
     override val state: StateFlow<TerminalAttachmentState> = _state.asStateFlow()
@@ -242,15 +246,19 @@ class TerminalSocket(
         outbound.send(OutboundFrame.Text(record))
     }
 
-    override suspend fun scrollRemote(lines: Int) {
+    override suspend fun scrollRemote(lines: Int, allowPageKey: Boolean) {
         if (lines == 0) return
         // Sign matches view scrollRows: positive = finger up = toward live =
-        // direction down; negative = toward older = direction up.
+        // direction down; negative = toward older = direction up. Core cannot
+        // distinguish shell input from host scrollback, so only send its
+        // destructive PgUp/PgDn fallback when the view explicitly observed an
+        // agent or alternate-screen app. TUI ignores the extra intent bit.
         val record = HerdrJson.encodeToString(
             TerminalProtocol.Scroll.serializer(),
             TerminalProtocol.Scroll(
                 direction = if (lines > 0) TerminalProtocol.Scroll.DOWN else TerminalProtocol.Scroll.UP,
                 lines = kotlin.math.abs(lines),
+                allowPageKey = endpoint.backendMode == BackendMode.CORE && allowPageKey,
             ),
         )
         outbound.send(OutboundFrame.Text(record))

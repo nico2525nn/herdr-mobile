@@ -1,5 +1,16 @@
 # Changelog
 
+## 1.4.1 — 2026-10-30
+
+- Harden herdr-core input and event routing: bracketed paste keeps ESC markers
+  on core DATA bytes while the TUI retains its `input.text` path; PageUp/PgDn
+  scrolling requires app/alt-screen evidence; app identity comes from core's
+  `status.app`; and event cursors are isolated per subscriber. Connection-target
+  changes clear cached snapshots and release old terminal attachments, stale
+  refreshes cannot republish prior state, and core-only unavailable errors stay
+  typed and visible to the user.
+- Fixes Flow-invariant crash on backend/target switch (events flow never swapped).
+
 ## 1.4.0 — 2026-10-30
 
 - Backend choice: each connection selects Herdr TUI or Herdr app (core) in

@@ -70,6 +70,8 @@ object TerminalProtocol {
     data class Scroll(
         val direction: String,
         val lines: Int,
+        /** Core transports can send PgUp/PgDn only for agent/alt-screen views. */
+        val allowPageKey: Boolean = false,
         @EncodeDefault val type: String = TYPE,
     ) {
         init {

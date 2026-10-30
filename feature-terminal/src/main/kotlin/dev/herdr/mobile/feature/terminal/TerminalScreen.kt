@@ -1,5 +1,6 @@
 package dev.herdr.mobile.feature.terminal
 
+import android.util.Log
 import androidx.compose.foundation.lazy.items
 import androidx.compose.ui.input.nestedscroll.nestedScroll
 import androidx.compose.foundation.layout.Arrangement
@@ -559,6 +560,15 @@ private fun TerminalSurface(
         else -> {}
     }
     val settings = state.settings
+    val appIdentity = state.pane?.agent?.trim()?.takeIf { it.isNotEmpty() }
+    LaunchedEffect(appIdentity) {
+        if (appIdentity != null && !dev.herdr.mobile.core.model.AgentMatrix.isKnownApp(appIdentity)) {
+            Log.w(
+                "AgentMatrix",
+                "Unknown core app identity '$appIdentity'; using safe page-key/emulator-bit defaults",
+            )
+        }
+    }
     var bridge by remember(backend) { mutableStateOf<RemoteTermuxSession?>(null) }
     // DisposableEffect(backend) re-runs on backend change — but by onDispose
     // time, remember(backend) has ALREADY reset `bridge` to null, so reading
@@ -660,25 +670,27 @@ private fun TerminalSurface(
                 // whose DECSET is not visible locally; AgentMatrix forces
                 // brackets for those kinds and trusts the emulator bit for
                 // the other mapped agents.
-                // Bracketed payloads travel the BYTES path (markers contain
-                // ESC, which the text path's paste normalization strips).
+                // Core bracketed payloads use binary DATA so markers survive
+                // text normalization; TUI keeps its existing input.text path.
                 onPasteRequest = {
                     val clip = clipboard.getText()?.text.orEmpty()
                     if (clip.isNotEmpty()) {
-                        val normalized =
-                            dev.herdr.mobile.terminal.view.TerminalKeyEncoder.pasteNormalize(clip)
                         val emu = bridgeRef.value?.emulator
                         val bracket = dev.herdr.mobile.terminal.view.TerminalKeyEncoder
                             .isBracketedPasteMode(emu) ||
                             dev.herdr.mobile.core.model.AgentMatrix.alwaysBracket(state.pane?.agent)
-                        if (bracket) {
-                            onSendBytes(
-                                dev.herdr.mobile.terminal.view.TerminalKeyEncoder
-                                    .bracketedPaste(normalized)
-                                    .toByteArray(Charsets.UTF_8),
-                            )
-                        } else {
-                            onSendText(normalized)
+                        when (
+                            val payload = dev.herdr.mobile.terminal.view.TerminalKeyEncoder
+                                .pastePayload(
+                                    clip,
+                                    bracketed = bracket,
+                                    binaryBackend = backend.supportsBinaryPaste,
+                                )
+                        ) {
+                            is dev.herdr.mobile.terminal.view.TerminalKeyEncoder.PastePayload.Bytes ->
+                                onSendBytes(payload.value)
+                            is dev.herdr.mobile.terminal.view.TerminalKeyEncoder.PastePayload.Text ->
+                                onSendText(payload.value)
                         }
                     }
                 },
@@ -719,7 +731,13 @@ private fun TerminalSurface(
         }
         viewClient.onPageScroll = { up -> host.pageRemote(up) }
         host.onRemoteScroll = { lines ->
-            bridgeRef.value?.scrollRemote(lines)
+            bridgeRef.value?.scrollRemote(
+                lines,
+                allowPageKey = dev.herdr.mobile.core.model.AgentMatrix.allowPageKey(
+                    appIdentity = appIdentity,
+                    altActive = host.altActive,
+                ),
+            )
         }
         host.onRemoteWheel = { notches ->
             bridgeRef.value?.scrollWheel(notches)
@@ -777,18 +795,16 @@ private fun TerminalSurface(
             // next hardware key when set).
             viewClientRef?.ctrlDown = dev.herdr.mobile.terminal.view.TerminalKeyEncoder.Modifier.CTRL in state.stickyModifiers
             viewClientRef?.altDown = dev.herdr.mobile.terminal.view.TerminalKeyEncoder.Modifier.ALT in state.stickyModifiers
-            // Remote scroll routing (host part): agent panes (main-screen
-            // TUIs whose transcript lives in HOST scrollback, not local
-            // history). Alt-screen is OR-ed live by the pump.
-            // Plain shells keep instant local scroll.
-            // Wheel vs page_key comes from AgentMatrix: each supported
-            // --kind has an evidence note and unknown kinds keep the page_key
-            // fallback. AgentMatrix also supplies a documented wheel stride;
-            // key protocols and other terminal modes remain outside these routes.
-            hostRef?.remoteScrollHost = state.pane?.agent?.isNotBlank() == true
-            hostRef?.agentWheel = dev.herdr.mobile.core.model.AgentMatrix.useWheelScroll(state.pane?.agent)
+            // Remote scroll ownership is driven by the explicit pane app
+            // identity (core status.app), never a foreground command name.
+            // Alt-screen is OR-ed live by the pump. Missing identity keeps
+            // ordinary shells on local history; unknown explicit apps use the
+            // logged, conservative page-key fallback in AgentMatrix.
+            // Wheel route and documented stride remain per known app kind.
+            hostRef?.remoteScrollHost = appIdentity != null
+            hostRef?.agentWheel = dev.herdr.mobile.core.model.AgentMatrix.useWheelScroll(appIdentity)
             hostRef?.agentWheelRowsPerEvent =
-                dev.herdr.mobile.core.model.AgentMatrix.wheelRowsPerEvent(state.pane?.agent)
+                dev.herdr.mobile.core.model.AgentMatrix.wheelRowsPerEvent(appIdentity)
             val vc = viewClientRef
             val h = hostRef
             if (vc != null && h != null) bindTermuxCallbacks(vc, h)

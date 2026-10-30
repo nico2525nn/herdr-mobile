@@ -1,6 +1,7 @@
 package dev.herdr.mobile.core.model
 
 import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.jsonObject
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
@@ -112,6 +113,32 @@ class ModelContractTest {
         assertEquals(AgentStatus.BLOCKED, updated.pane("w1:p1")?.status)
         assertEquals(AgentStatus.BLOCKED, updated.tab("w1:t1")?.status)
         assertEquals(AgentStatus.BLOCKED, updated.workspace("w1")?.status)
+    }
+
+    @Test
+    fun `bug class 2 live core app identity updates agent routing`() {
+        val pane = Pane(id = "w1:p1", tabId = "w1:t1", workspaceId = "w1", agent = null)
+        val tab = Tab(id = "w1:t1", workspaceId = "w1", panes = listOf(pane))
+        val workspace = Workspace(id = "w1", label = "w", tabs = listOf(tab))
+        val snapshot = SessionSnapshot(revision = 1, seq = 10, workspaces = listOf(workspace))
+        val update = SemanticEvent(
+            seq = 11,
+            type = SemanticEvent.TYPE_PANE_STATUS_CHANGED,
+            workspaceId = "w1",
+            tabId = "w1:t1",
+            paneId = "w1:p1",
+            status = AgentStatus.WORKING,
+            detail = json.parseToJsonElement("""{"status":{"state":"working","app":"pi"}}""").jsonObject,
+        )
+        val updated = (SnapshotReducer.apply(snapshot, update) as SnapshotReducer.Outcome.Applied).snapshot
+        assertEquals("pi", updated.pane("w1:p1")?.agent)
+
+        val cleared = update.copy(
+            seq = 12,
+            detail = json.parseToJsonElement("""{"status":null}""").jsonObject,
+        )
+        val afterStop = (SnapshotReducer.apply(updated, cleared) as SnapshotReducer.Outcome.Applied).snapshot
+        assertNull(afterStop.pane("w1:p1")?.agent)
     }
 
     @Test
@@ -242,6 +269,24 @@ class ModelContractTest {
         assertTrue(!Versions.isNewer("0.9.5", "0.9.5"))
         assertTrue(!Versions.isNewer("0.9.5", "0.9.3"))
         assertTrue(!Versions.isNewer("0.9.5", "garbage"))
+    }
+
+    @Test
+    fun `bug classes 2 and 7 require app identity or alt screen for page-key scroll`() {
+        // Regression: a foreground command such as `sleep` is not an app identity;
+        // the core adapter represents missing status.app as null, so it cannot
+        // route PageUp into an ordinary shell. Active alt-screen remains eligible.
+        assertTrue(!AgentMatrix.allowPageKey(appIdentity = null, altActive = false))
+        assertTrue(AgentMatrix.allowPageKey(appIdentity = null, altActive = true))
+        assertTrue(AgentMatrix.allowPageKey(appIdentity = "codex", altActive = false))
+
+        // Unknown explicit apps log in the screen and safely fall back to the
+        // conservative page-key/emulator-bit routes instead of a guessed wheel.
+        assertTrue(!AgentMatrix.isKnownApp("future-app"))
+        assertTrue(AgentMatrix.allowPageKey(appIdentity = "future-app", altActive = false))
+        assertTrue(!AgentMatrix.useWheelScroll("future-app"))
+        assertTrue(!AgentMatrix.alwaysBracket("future-app"))
+        assertTrue(AgentMatrix.isKnownApp("CODEX"))
     }
 
     @Test

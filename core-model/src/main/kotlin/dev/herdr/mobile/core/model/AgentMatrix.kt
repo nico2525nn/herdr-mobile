@@ -141,6 +141,18 @@ object AgentMatrix {
     private fun entry(agent: String?): Entry =
         MATRIX[agent?.lowercase()] ?: DEFAULT
 
+    /** Whether [agent] has a behavior entry; unknown explicit app identities use [DEFAULT]. */
+    fun isKnownApp(agent: String?): Boolean =
+        agent != null && MATRIX.containsKey(agent.lowercase())
+
+    /**
+     * Page-key scrolling is permitted only for an explicit app identity or an
+     * active alternate screen. The identity must come from core status.app,
+     * never the foreground process/command name (for example `sleep`).
+     */
+    fun allowPageKey(appIdentity: String?, altActive: Boolean): Boolean =
+        appIdentity != null || altActive
+
     /** True when [agent]'s scroll must go via SGR wheel (not page_key). */
     fun useWheelScroll(agent: String?): Boolean =
         entry(agent).scroll == ScrollRoute.WHEEL

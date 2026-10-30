@@ -298,6 +298,42 @@ class TerminalKeyEncoderTest {
     }
 
     @Test
+    fun `bug class 1 bracket markers use core bytes and preserve TUI text input`() {
+        val payload = TerminalKeyEncoder.pastePayload(
+            "a\u001B[200~b\n",
+            bracketed = true,
+            binaryBackend = true,
+        )
+
+        // Regression for bug class #1: core framing ESC bytes bypass text
+        // normalization, while TUI keeps its input.text route below.
+        assertTrue(payload is TerminalKeyEncoder.PastePayload.Bytes)
+        assertArrayEquals(
+            "\u001B[200~a[200~b\r\u001B[201~".toByteArray(Charsets.UTF_8),
+            (payload as TerminalKeyEncoder.PastePayload.Bytes).value,
+        )
+
+        val tuiPayload = TerminalKeyEncoder.pastePayload(
+            "a\u001B[200~b\n",
+            bracketed = true,
+            binaryBackend = false,
+        )
+        assertTrue(tuiPayload is TerminalKeyEncoder.PastePayload.Text)
+        assertEquals(
+            "\u001B[200~a[200~b\r\u001B[201~",
+            (tuiPayload as TerminalKeyEncoder.PastePayload.Text).value,
+        )
+
+        val plain = TerminalKeyEncoder.pastePayload(
+            "a\nb",
+            bracketed = false,
+            binaryBackend = true,
+        )
+        assertTrue(plain is TerminalKeyEncoder.PastePayload.Text)
+        assertEquals("a\rb", (plain as TerminalKeyEncoder.PastePayload.Text).value)
+    }
+
+    @Test
     fun `bracketedPaste wraps markers exactly`() {
         assertEquals(
             "\u001B[200~abc\u001B[201~",
@@ -310,6 +346,7 @@ class TerminalKeyEncoderTest {
 
     @Test
     fun `isBracketedPasteMode reads the 2004 bit`() {
+        // Regression for bug class #4: use Termux's exact 2004 mode bit.
         // Fake emulator with the real field name/shape.
         class FakeEmu(@JvmField var mCurrentDecSetFlags: Int)
         assertTrue(TerminalKeyEncoder.isBracketedPasteMode(FakeEmu(1024)))

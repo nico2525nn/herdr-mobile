@@ -1,5 +1,10 @@
 package dev.herdr.mobile.core.model
 
+import kotlinx.serialization.json.JsonNull
+import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.JsonPrimitive
+import kotlinx.serialization.json.contentOrNull
+
 /**
  * Applies semantic events to a cached [SessionSnapshot].
  *
@@ -109,7 +114,16 @@ object SnapshotReducer {
                 if (pane.id == event.paneId) {
                     touched = true
                     tabTouched = true
-                    pane.copy(status = event.status ?: pane.status)
+                    val statusRecord = event.detail?.get("status")
+                    val appIdentity = (statusRecord as? JsonObject)?.get("app")
+                        .let { it as? JsonPrimitive }
+                        ?.contentOrNull
+                        ?.takeIf { it.isNotBlank() }
+                    val appWasReported = statusRecord is JsonObject || statusRecord == JsonNull
+                    pane.copy(
+                        status = event.status ?: pane.status,
+                        agent = if (appWasReported) appIdentity else pane.agent,
+                    )
                 } else {
                     pane
                 }

@@ -785,10 +785,10 @@ async fn serve_core_events(socket: WebSocket, core: crate::herdrcore::CoreClient
         }
     };
     let mut locations = crate::herdrcore::locations(&subscription.initial.terminals);
-    let mut last_seq = subscription.initial.seq;
+    let mut cursor = crate::herdrcore::CoreEventCursor::new(subscription.initial.seq);
     let (mut sink, mut stream) = socket.split();
     let ready = SemanticEvent {
-        seq: last_seq,
+        seq: cursor.seq(),
         kind: "stream.ready".to_owned(),
         at: crate::cache::now_rfc3339(),
         workspace_id: None,
@@ -797,7 +797,7 @@ async fn serve_core_events(socket: WebSocket, core: crate::herdrcore::CoreClient
         status: None,
         label: None,
         message: None,
-        revision: Some(last_seq),
+        revision: Some(cursor.seq()),
         detail: None,
     };
     if sink.send(Message::Text(serde_json::to_string(&ready).unwrap().into())).await.is_err() {
@@ -819,7 +819,9 @@ async fn serve_core_events(socket: WebSocket, core: crate::herdrcore::CoreClient
                             }
                         }
                         if let Some(event) = crate::herdrcore::translate_event(&notification, &locations) {
-                            last_seq = last_seq.max(event.seq);
+                            if !cursor.observe(event.seq) {
+                                continue;
+                            }
                             if sink.send(Message::Text(serde_json::to_string(&event).unwrap().into())).await.is_err() {
                                 break;
                             }
@@ -829,11 +831,11 @@ async fn serve_core_events(socket: WebSocket, core: crate::herdrcore::CoreClient
                         match core.snapshot().await {
                             Ok(snapshot) => {
                                 locations = crate::herdrcore::locations(&snapshot.terminals);
-                                last_seq = snapshot.seq;
+                                cursor.resync(snapshot.seq);
                                 let ready = SemanticEvent {
-                                    seq: last_seq, kind:"stream.ready".to_owned(), at:crate::cache::now_rfc3339(),
+                                    seq: cursor.seq(), kind:"stream.ready".to_owned(), at:crate::cache::now_rfc3339(),
                                     workspace_id:None, tab_id:None, pane_id:None, status:None,
-                                    label:None, message:None, revision:Some(last_seq), detail:None,
+                                    label:None, message:None, revision:Some(cursor.seq()), detail:None,
                                 };
                                 if sink.send(Message::Text(serde_json::to_string(&ready).unwrap().into())).await.is_err() {
                                     break;
@@ -902,4 +904,21 @@ async fn terminal_ws(
             warn!("terminal bridge for {pane_id} ended: {e:#}");
         }
     })
+}
+
+#[cfg(test)]
+mod core_unavailable_tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn core_unavailable_is_a_typed_501_response() {
+        // Regression for bug class #8: unsupported core operations must reach
+        // the app as an explicit unavailable error, never a fake success.
+        let response = core_unavailable("tab.move", "no ordering API");
+        assert_eq!(response.status(), StatusCode::NOT_IMPLEMENTED);
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        let value: Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(value.pointer("/error/code").and_then(Value::as_str), Some("unavailable"));
+        assert!(value.pointer("/error/message").and_then(Value::as_str).unwrap().contains("tab.move"));
+    }
 }

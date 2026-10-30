@@ -165,9 +165,9 @@ class RemoteTermuxSession(
      * scroll local history in-view). Fire-and-forget: repaint frames arrive as
      * normal bytes; the local offset stays pinned at live.
      */
-    fun scrollRemote(lines: Int) {
+    fun scrollRemote(lines: Int, allowPageKey: Boolean) {
         if (lines == 0) return
-        scope.launch { runCatching { backend.scrollRemote(lines) } }
+        scope.launch { runCatching { backend.scrollRemote(lines, allowPageKey) } }
     }
 
     /**

@@ -13,6 +13,9 @@ import kotlinx.coroutines.flow.StateFlow
  */
 interface TerminalBackend {
 
+    /** True when this backend's binary DATA path is required for bracket markers. */
+    val supportsBinaryPaste: Boolean get() = false
+
     val state: StateFlow<BackendState>
 
     /** Raw ANSI bytes from the remote pane, in arrival order. */
@@ -27,11 +30,12 @@ interface TerminalBackend {
     suspend fun resize(cols: Int, rows: Int)
 
     /**
-     * Scroll the remote viewport (alt-screen TUIs only; shells scroll local
-     * history). Positive [lines] = finger dragged up = toward live
-     * (direction down); negative = toward older (direction up).
+     * Scroll the remote viewport. Positive [lines] = finger dragged up =
+     * toward live (direction down); negative = toward older (direction up).
+     * [allowPageKey] is true only for an explicit app identity or active
+     * alt-screen; core backends must not synthesize PageUp/PageDown otherwise.
      */
-    suspend fun scrollRemote(lines: Int)
+    suspend fun scrollRemote(lines: Int, allowPageKey: Boolean)
 
     /** Mouse event for mouse-mode apps (vim, less, tmux mouse). */
     suspend fun mouse(action: String, button: String, column: Int, row: Int)

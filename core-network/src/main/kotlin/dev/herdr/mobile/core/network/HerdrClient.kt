@@ -9,6 +9,7 @@ import dev.herdr.mobile.core.model.HealthReport
 import dev.herdr.mobile.core.model.SemanticEvent
 import dev.herdr.mobile.core.model.SessionSnapshot
 import dev.herdr.mobile.core.model.SnapshotReducer
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -18,7 +19,6 @@ import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
-import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.isActive
@@ -91,18 +91,64 @@ class HerdrClient(
     private val _state = MutableStateFlow(HerdrClientState())
     val state: StateFlow<HerdrClientState> = _state.asStateFlow()
 
+    private val lifecycleLock = Any()
+
+    /** Invalidates work from a previous redial, without discarding its cache. */
+    @Volatile
+    private var currentLinkGeneration = 0L
+
+    /** Invalidates pane targets when the app switches to a different profile/transport. */
+    @Volatile
+    private var currentTargetGeneration = 0L
+
+    /** Prevents an external kick from reconnecting through the outgoing provider during debounce. */
+    @Volatile
+    private var targetInvalidated = false
+
+    val linkGeneration: Long get() = currentLinkGeneration
+    val targetGeneration: Long get() = currentTargetGeneration
+
+    private fun isCurrentGeneration(generation: Long): Boolean =
+        currentLinkGeneration == generation
+
+    internal fun updateForGeneration(
+        generation: Long,
+        transform: (HerdrClientState) -> HerdrClientState,
+    ) {
+        synchronized(lifecycleLock) {
+            if (currentLinkGeneration != generation) return
+            _state.update(transform)
+        }
+    }
+
+    internal fun installEndpoint(generation: Long, value: DaemonEndpoint): Boolean =
+        synchronized(lifecycleLock) {
+            if (currentLinkGeneration != generation || targetInvalidated) {
+                false
+            } else {
+                endpoint = value
+                true
+            }
+        }
+
     /**
      * Every semantic event as it arrives, BEFORE folding. Notifications consume
      * this (exact transitions, no coalescing loss); snapshots remain the UI
      * source. Replay 0 + conflated buffer: slow collectors drop interim
      * events, and the snapshot-diff backstop in NotificationRelay covers gaps.
+     *
+     * Single SharedFlow (never swapped): the previous generation swapped the
+     * inner flow on invalidate, and collectLatest re-collection raced
+     * in-flight emissions → "Flow invariant is violated" crash. Stale events
+     * are instead dropped at emit time by the generation check in
+     * [applyEvent], which is the only writer.
      */
     private val _events = kotlinx.coroutines.flow.MutableSharedFlow<SemanticEvent>(
         replay = 0,
         extraBufferCapacity = 64,
         onBufferOverflow = kotlinx.coroutines.channels.BufferOverflow.DROP_OLDEST,
     )
-    val events: kotlinx.coroutines.flow.SharedFlow<SemanticEvent> = _events.asSharedFlow()
+    val events: kotlinx.coroutines.flow.SharedFlow<SemanticEvent> = _events
 
     private var loop: Job? = null
 
@@ -151,7 +197,7 @@ class HerdrClient(
                 when (cmd) {
                     LoopCommand.Restart -> {
                         loop?.cancelAndJoin()
-                        loop = scope.launch { run() }
+                        loop = scope.launch { run(linkGeneration) }
                     }
                     LoopCommand.Stop -> {
                         loop?.cancelAndJoin()
@@ -188,11 +234,15 @@ class HerdrClient(
 
     /** Start (or restart) the link. Safe to call repeatedly; replaces any running loop. */
     fun start() {
-        kickQueue.trySend(LoopCommand.Restart)
+        restartLink()
     }
 
     /** Stop retrying and close the transport. State keeps the last snapshot for offline reading. */
     fun stop() {
+        synchronized(lifecycleLock) {
+            currentLinkGeneration++
+            endpoint = null
+        }
         kickQueue.trySend(LoopCommand.Stop)
     }
 
@@ -202,24 +252,65 @@ class HerdrClient(
      * down a healthy SSE (transient STALE, resubscribe gap, extra SSH dials).
      */
     fun kick() {
-        if (_state.value.connection == ConnectionState.CONNECTED) return
-        kickQueue.trySend(LoopCommand.Restart)
+        if (targetInvalidated || _state.value.connection == ConnectionState.CONNECTED) return
+        restartLink()
+    }
+
+    /**
+     * Drop data and event subscriptions for a changed profile/transport before
+     * provider construction or teardown can suspend. The caller starts the new
+     * link with [restartLink] after installing its provider.
+     */
+    fun invalidateTarget() {
+        synchronized(lifecycleLock) {
+            currentLinkGeneration++
+            invalidateTargetLocked()
+        }
+    }
+
+    private fun invalidateTargetLocked() {
+        currentTargetGeneration++
+        targetInvalidated = true
+        // _events is never swapped (Flow invariant); stale emissions die at
+        // the generation check in applyEvent, the only writer.
+        endpoint = null
+        tickSeen = false
+        lastTickOrEventAt = 0
+        _state.update {
+            it.copy(
+                connection = ConnectionState.CONNECTING,
+                snapshot = null,
+                stale = false,
+                error = null,
+                endpointDescription = null,
+                lastSyncAt = 0,
+            )
+        }
     }
 
     /** Forced full redial, even when connected (transport or backend settings changed). */
     fun restartLink(clearCachedSnapshot: Boolean = false) {
-        if (clearCachedSnapshot) {
-            tickSeen = false
-            lastTickOrEventAt = 0
-            _state.update {
-                it.copy(
-                    connection = ConnectionState.CONNECTING,
-                    snapshot = null,
-                    stale = false,
-                    error = null,
-                    lastSyncAt = 0,
-                )
+        synchronized(lifecycleLock) {
+            currentLinkGeneration++
+            if (clearCachedSnapshot) {
+                invalidateTargetLocked()
+            } else {
+                endpoint = null
+                tickSeen = false
+                lastTickOrEventAt = 0
+                _state.update {
+                    it.copy(
+                        connection = if (it.snapshot == null) {
+                            ConnectionState.CONNECTING
+                        } else {
+                            ConnectionState.RECONNECTING
+                        },
+                        stale = it.snapshot != null,
+                        error = null,
+                    )
+                }
             }
+            targetInvalidated = false
         }
         kickQueue.trySend(LoopCommand.Restart)
     }
@@ -230,20 +321,21 @@ class HerdrClient(
      * down the SSE (deep-link freshness, post-createTab waits).
      */
     fun refresh() {
+        val generation = linkGeneration
         if (_state.value.connection != ConnectionState.CONNECTED) {
             kick()
             return
         }
         scope.launch {
-            runCatching { refetch("manual") }
+            runCatching { refetch("manual", generation) }
         }
     }
 
-    private suspend fun run() {
+    private suspend fun run(generation: Long) {
         var backoffMs = INITIAL_BACKOFF_MS
-        while (coroutineContext.isActive) {
+        while (coroutineContext.isActive && isCurrentGeneration(generation) && !targetInvalidated) {
             try {
-                _state.update {
+                updateForGeneration(generation) {
                     it.copy(
                         connection = if (it.snapshot == null) {
                             ConnectionState.CONNECTING
@@ -254,10 +346,11 @@ class HerdrClient(
                     )
                 }
                 val ep = endpointProvider.open()
-                endpoint = ep
-                _state.update { it.copy(endpointDescription = ep.description) }
+                if (!installEndpoint(generation, ep)) return
+                updateForGeneration(generation) { it.copy(endpointDescription = ep.description) }
 
                 val health = api().health()
+                if (!isCurrentGeneration(generation)) return
                 checkProtocol(health)
                 if (!health.ok || !health.herdrConnected) {
                     throw DaemonException(
@@ -267,7 +360,8 @@ class HerdrClient(
                 }
 
                 val snapshot = api().snapshot()
-                _state.update {
+                if (!isCurrentGeneration(generation)) return
+                updateForGeneration(generation) {
                     it.copy(
                         connection = ConnectionState.CONNECTED,
                         snapshot = snapshot,
@@ -278,21 +372,23 @@ class HerdrClient(
                 }
                 backoffMs = INITIAL_BACKOFF_MS
 
-                consumeEvents()
+                consumeEvents(generation)
 
                 // Stream ended without an exception: reconnect, the daemon went quiet.
                 throw DaemonException("stream_closed", "Event stream closed")
             } catch (e: DaemonException) {
-                if (coroutineContext.isActive) {
+                if (coroutineContext.isActive && isCurrentGeneration(generation)) {
                     // Transport failure (not auth/protocol): invalidate the tunnel
                     // so the next retry dials fresh. JSch isConnected stays true
                     // on half-open TCP (keepalive needs up to 45s), and reusing
                     // the dead session would loop forever without this close.
                     if (e.code != "unauthorized" && e.code != "protocol_mismatch") {
                         runCatching { endpointProvider.close() }
-                        endpoint = null
+                        synchronized(lifecycleLock) {
+                            if (currentLinkGeneration == generation) endpoint = null
+                        }
                     }
-                    _state.update {
+                    updateForGeneration(generation) {
                         it.copy(
                             connection = if (e.code == "unauthorized" || e.code == "protocol_mismatch") {
                                 ConnectionState.FAILED
@@ -320,11 +416,13 @@ class HerdrClient(
                     backoffMs = min(backoffMs * 2, MAX_BACKOFF_MS)
                 }
             } catch (e: Exception) {
-                if (coroutineContext.isActive) {
+                if (coroutineContext.isActive && isCurrentGeneration(generation)) {
                     // Same invalidation for non-daemon transport errors.
                     runCatching { endpointProvider.close() }
-                    endpoint = null
-                    _state.update {
+                    synchronized(lifecycleLock) {
+                        if (currentLinkGeneration == generation) endpoint = null
+                    }
+                    updateForGeneration(generation) {
                         it.copy(
                             connection = if (it.snapshot != null) {
                                 ConnectionState.RECONNECTING
@@ -351,11 +449,15 @@ class HerdrClient(
         }
     }
 
-    private suspend fun consumeEvents() {
+    private suspend fun consumeEvents(generation: Long) {
         val socket = EventSocket(http) {
+            if (!isCurrentGeneration(generation)) {
+                throw DaemonException("not_connected", "Connection was replaced")
+            }
             endpoint ?: throw DaemonException("not_connected", "No endpoint is open")
         }
         socket.stream().collect { signal ->
+            if (!isCurrentGeneration(generation)) return@collect
             when (signal) {
                 is EventSocket.Signal.Ready -> {
                     // The daemon announces its cursor with no replay: events that
@@ -364,11 +466,11 @@ class HerdrClient(
                     // before consuming, or the gap is silently lost.
                     val held = _state.value.snapshot?.seq ?: -1
                     if (signal.seq != held) {
-                        refetch("cursor moved ${held} -> ${signal.seq} during subscribe")
+                        refetch("cursor moved ${held} -> ${signal.seq} during subscribe", generation)
                     }
                 }
 
-                is EventSocket.Signal.Event -> applyEvent(signal.event)
+                is EventSocket.Signal.Event -> applyEvent(signal.event, generation)
 
                 is EventSocket.Signal.Closed ->
                     throw DaemonException("stream_closed", signal.reason.ifBlank { "Event stream closed" })
@@ -376,19 +478,27 @@ class HerdrClient(
         }
     }
 
-    private suspend fun applyEvent(event: SemanticEvent) {
+    private suspend fun applyEvent(event: SemanticEvent, generation: Long) {
         // Emit before folding: Gap/Refetch outcomes drop the event from the
         // snapshot, but its transition (working->done) still happened and
         // notifications must fire exactly once for it.
-        _events.tryEmit(event)
-        lastTickOrEventAt = System.currentTimeMillis()
+        val accepted = synchronized(lifecycleLock) {
+            if (currentLinkGeneration != generation) {
+                false
+            } else {
+                _events.tryEmit(event)
+                lastTickOrEventAt = System.currentTimeMillis()
+                true
+            }
+        }
+        if (!accepted) return
         val current = _state.value.snapshot ?: run {
-            refetch("event without snapshot")
+            refetch("event without snapshot", generation)
             return
         }
         when (val outcome = SnapshotReducer.apply(current, event)) {
             is SnapshotReducer.Outcome.Applied -> {
-                _state.update {
+                updateForGeneration(generation) {
                     it.copy(
                         snapshot = outcome.snapshot,
                         stale = false,
@@ -400,30 +510,35 @@ class HerdrClient(
                 // diverged despite contiguous seqs — refetch authoritatively.
                 // Match = proof, zero bytes beyond the ~70B tick.
                 if (event.type == dev.herdr.mobile.core.model.SemanticEvent.TYPE_SNAPSHOT_TICK) {
-                    tickSeen = true
+                    synchronized(lifecycleLock) {
+                        if (currentLinkGeneration == generation) tickSeen = true
+                    }
                     val want = (event.detail?.get("hash") as? kotlinx.serialization.json.JsonPrimitive)?.content
                     val have = outcome.snapshot.statusHash()
                     if (want != null && want != have) {
-                        refetch("tick hash drift (want $want, have $have)")
+                        refetch("tick hash drift (want $want, have $have)", generation)
                     }
                 }
             }
 
             is SnapshotReducer.Outcome.Gap -> {
-                _state.update { it.copy(connection = ConnectionState.STALE, stale = true) }
-                refetch("seq gap: expected ${outcome.expectedSeq}, got ${outcome.receivedSeq}")
+                updateForGeneration(generation) {
+                    it.copy(connection = ConnectionState.STALE, stale = true)
+                }
+                refetch("seq gap: expected ${outcome.expectedSeq}, got ${outcome.receivedSeq}", generation)
             }
 
             SnapshotReducer.Outcome.Refetch -> {
-                refetch("daemon requested refetch (${event.type})")
+                refetch("daemon requested refetch (${event.type})", generation)
             }
         }
     }
 
-    private suspend fun refetch(reason: String) {
+    internal suspend fun refetch(reason: String, generation: Long) {
+        if (!isCurrentGeneration(generation)) return
         try {
             val snapshot = api().snapshot()
-            _state.update {
+            updateForGeneration(generation) {
                 it.copy(
                     connection = ConnectionState.CONNECTED,
                     snapshot = snapshot,
@@ -432,8 +547,10 @@ class HerdrClient(
                     lastSyncAt = System.currentTimeMillis(),
                 )
             }
+        } catch (e: CancellationException) {
+            throw e
         } catch (e: Exception) {
-            _state.update {
+            updateForGeneration(generation) {
                 it.copy(
                     connection = if (it.snapshot != null) ConnectionState.RECONNECTING else ConnectionState.CONNECTING,
                     stale = it.snapshot != null,
