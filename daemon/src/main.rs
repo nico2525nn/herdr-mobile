@@ -4,6 +4,7 @@ mod cache;
 mod config;
 mod events;
 mod herdr;
+mod herdrcore;
 mod model;
 mod terminal;
 mod update;
@@ -25,6 +26,7 @@ use crate::update::UpdateWatcher;
 pub struct AppState {
     pub config: Arc<Config>,
     pub cache: Arc<SessionCache>,
+    pub core: herdrcore::CoreClient,
     pub bus: Arc<EventBus>,
     pub terminals: Arc<terminal::TerminalRegistry>,
     pub updater: UpdateWatcher,
@@ -69,6 +71,7 @@ async fn main() -> Result<()> {
     }
 
     let herdr = herdr::HerdrClient::new(config.herdr_socket.clone(), config.herdr_bin.clone());
+    let core = herdrcore::CoreClient::new(config.core_socket.clone());
     let config = Arc::new(config);
     let cache = Arc::new(SessionCache::new(herdr.clone()));
     let bus = Arc::new(EventBus::new());
@@ -97,6 +100,7 @@ async fn main() -> Result<()> {
     let state = AppState {
         config,
         cache,
+        core,
         bus,
         terminals,
         updater,

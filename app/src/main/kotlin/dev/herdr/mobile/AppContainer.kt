@@ -1,6 +1,7 @@
 package dev.herdr.mobile
 
 import android.content.Context
+import dev.herdr.mobile.core.model.BackendMode
 import dev.herdr.mobile.core.network.DaemonEndpointProvider
 import dev.herdr.mobile.core.network.HerdrClient
 import dev.herdr.mobile.core.network.networkAvailable
@@ -48,11 +49,12 @@ class AppContainer(context: Context) {
         // never changes on field edits ("direct" is constant, profile ids are
         // stable), so gating on id drops every edit until process restart.
         scope.launch {
+            var previousBackend: BackendMode? = null
             settingsRepository.settings
                 .map { s ->
                     val active = s.hostProfiles.firstOrNull { it.id == s.activeProfileId }
                         ?: s.hostProfiles.firstOrNull()
-                    Triple(s.transportMode, s.directUrl, active)
+                    Triple(s.transportMode, s.directUrl, active to s.directBackendMode)
                 }
                 .distinctUntilChanged()
                 // Debounce: URL/host keystrokes emit a distinct key per character.
@@ -60,6 +62,15 @@ class AppContainer(context: Context) {
                 .collectLatest {
                     kotlinx.coroutines.delay(500)
                     val current = settingsRepository.settings.value
+                    val active = current.hostProfiles.firstOrNull { it.id == current.activeProfileId }
+                        ?: current.hostProfiles.firstOrNull()
+                    val backend = if (current.transportMode == dev.herdr.mobile.core.model.TransportMode.SSH) {
+                        active?.backendMode ?: BackendMode.TUI
+                    } else {
+                        current.directBackendMode
+                    }
+                    val clearSnapshot = previousBackend != null && previousBackend != backend
+                    previousBackend = backend
                     val rebuilt = settingsRepository.providerFor(current)
                     val old = providerFlow.value
                     if (rebuilt == null) {
@@ -82,7 +93,7 @@ class AppContainer(context: Context) {
                             }
                         }
                         providerFlow.value = rebuilt
-                        client.restartLink()
+                        client.restartLink(clearCachedSnapshot = clearSnapshot)
                     }
                 }
         }
@@ -103,6 +114,7 @@ class AppContainer(context: Context) {
     ) : DaemonEndpointProvider {
         override val id: String get() = current.value?.id ?: "none"
         override val description: String get() = current.value?.description ?: "no provider"
+        override val backendMode: BackendMode get() = current.value?.backendMode ?: BackendMode.TUI
 
         override suspend fun open() =
             current.value?.open()

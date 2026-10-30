@@ -126,6 +126,7 @@ class TerminalSocket(
         }
         val request = Request.Builder()
             .url(endpoint.wsUrl("/v1/terminal/$paneId", query))
+            .header("X-Herdr-Backend", endpoint.backendMode.wire)
             .apply { endpoint.token?.let { header("Authorization", "Bearer $it") } }
             .build()
 

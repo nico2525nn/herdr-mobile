@@ -55,6 +55,17 @@ object SnapshotReducer {
                     if (w.id == event.workspaceId) w.withPaneStatus(event) else w
                 }
 
+            SemanticEvent.TYPE_PANE_TITLE_CHANGED ->
+                snapshot.workspaces.map { w ->
+                    if (w.id != event.workspaceId || event.label == null) w else {
+                        w.copy(tabs = w.tabs.map { tab ->
+                            tab.copy(panes = tab.panes.map { pane ->
+                                if (pane.id == event.paneId) pane.copy(title = event.label) else pane
+                            })
+                        })
+                    }
+                }
+
             SemanticEvent.TYPE_TAB_RENAMED ->
                 snapshot.workspaces.map { w ->
                     if (w.id == event.workspaceId) {

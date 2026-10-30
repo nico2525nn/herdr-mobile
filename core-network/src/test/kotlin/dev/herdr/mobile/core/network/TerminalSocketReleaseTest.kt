@@ -1,5 +1,6 @@
 package dev.herdr.mobile.core.network
 
+import dev.herdr.mobile.core.model.BackendMode
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import okhttp3.WebSocket
@@ -47,7 +48,10 @@ class TerminalSocketReleaseTest {
     }
 
     private class CapturingClient(val fake: FakeWebSocket) : OkHttpClient() {
+        var capturedRequest: Request? = null
+
         override fun newWebSocket(request: Request, listener: WebSocketListener): WebSocket {
+            capturedRequest = request
             listener.onOpen(fake, okhttp3.Response.Builder()
                 .request(request)
                 .protocol(okhttp3.Protocol.HTTP_1_1)
@@ -89,5 +93,28 @@ class TerminalSocketReleaseTest {
         assertTrue(done.await(10, TimeUnit.SECONDS))
         assertEquals("exactly one release frame", 1, fake.textSends.get())
         assertEquals("exactly one close frame", 1, fake.closes.get())
+    }
+
+    @Test
+    fun backendModeIsSentOnTerminalSocketHandshake() {
+        val fake = FakeWebSocket()
+        val client = CapturingClient(fake)
+        val socket = TerminalSocket(
+            http = client,
+            endpoint = DaemonEndpoint.direct(
+                "http://127.0.0.1:1",
+                null,
+                "test",
+                BackendMode.CORE,
+            ),
+            paneId = "core:t1",
+            cols = 80,
+            rows = 24,
+            takeover = false,
+            scope = kotlinx.coroutines.CoroutineScope(kotlinx.coroutines.Dispatchers.Unconfined),
+        )
+
+        socket.connect()
+        assertEquals("core", client.capturedRequest?.header("X-Herdr-Backend"))
     }
 }

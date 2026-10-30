@@ -40,6 +40,7 @@ import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import dev.herdr.mobile.core.designsystem.SettingsRow
 import dev.herdr.mobile.core.designsystem.SettingsSection
+import dev.herdr.mobile.core.model.BackendMode
 import dev.herdr.mobile.core.model.ConnectionTestResult
 import dev.herdr.mobile.core.model.CursorStyle
 import dev.herdr.mobile.core.model.FailureKind
@@ -63,6 +64,13 @@ fun SettingsScreen(
 ) {
     val ui by viewModel.uiState.collectAsStateWithLifecycle()
     val settings = ui.settings
+    val activeProfile = settings.hostProfiles.firstOrNull { it.id == settings.activeProfileId }
+        ?: settings.hostProfiles.firstOrNull()
+    val backendMode = if (settings.transportMode == TransportMode.SSH) {
+        activeProfile?.backendMode ?: BackendMode.TUI
+    } else {
+        settings.directBackendMode
+    }
     var editingProfile by remember { mutableStateOf<HostProfile?>(null) }
     var showAddProfile by remember { mutableStateOf(false) }
 
@@ -157,6 +165,14 @@ fun SettingsScreen(
                     onSelect = { viewModel.setTransportMode(it) },
                     showDivider = true,
                 )
+                EnumRow(
+                    headline = "Backend",
+                    supporting = "Choose Herdr TUI or Herdr app (core) for this connection",
+                    value = backendMode.displayName,
+                    options = BackendMode.entries.map { it to it.displayName },
+                    onSelect = { viewModel.setBackendMode(it) },
+                    showDivider = true,
+                )
                 if (settings.transportMode == TransportMode.DIRECT) {
                     var editingUrl by remember(settings.directUrl) {
                         mutableStateOf(settings.directUrl)
@@ -194,6 +210,7 @@ fun SettingsScreen(
                         headline = "${if (active) "● " else ""}${profile.label}",
                         supporting = buildString {
                             append(profile.userAtHost)
+                            append(" · ${profile.backendMode.displayName}")
                             append(" · auth: ")
                             append(
                                 when {

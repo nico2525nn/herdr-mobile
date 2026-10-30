@@ -37,6 +37,7 @@ class EventSocket(
         val url = ep.wsUrl("/v1/events")
         val request = Request.Builder()
             .url(url)
+            .header("X-Herdr-Backend", ep.backendMode.wire)
             .apply { ep.token?.let { header("Authorization", "Bearer $it") } }
             .build()
 

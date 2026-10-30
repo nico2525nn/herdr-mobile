@@ -4,6 +4,7 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.viewModelScope
 import dev.herdr.mobile.core.model.AppSettings
+import dev.herdr.mobile.core.model.BackendMode
 import dev.herdr.mobile.core.model.ConnectionTestResult
 import dev.herdr.mobile.core.model.CursorStyle
 import dev.herdr.mobile.core.model.HostProfile
@@ -72,6 +73,18 @@ class SettingsViewModel(
     fun setBoldIsBright(enabled: Boolean) = edit { it.copy(boldIsBright = enabled) }
 
     fun setTransportMode(mode: TransportMode) = edit { it.copy(transportMode = mode) }
+    fun setBackendMode(mode: BackendMode) = edit { settings ->
+        if (settings.transportMode == TransportMode.DIRECT) {
+            settings.copy(directBackendMode = mode)
+        } else {
+            val profile = settings.hostProfiles.firstOrNull { it.id == settings.activeProfileId }
+                ?: settings.hostProfiles.firstOrNull()
+                ?: return@edit settings
+            settings.copy(hostProfiles = settings.hostProfiles.map {
+                if (it.id == profile.id) it.copy(backendMode = mode) else it
+            })
+        }
+    }
     fun setDirectUrl(url: String) = edit { it.copy(directUrl = url.trim()) }
     fun setActiveProfile(id: String?) {
         viewModelScope.launch { runCatching { repository.setActiveProfile(id) } }

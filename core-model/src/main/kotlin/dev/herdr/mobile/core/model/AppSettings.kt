@@ -72,6 +72,15 @@ enum class SwipeBehavior(val wire: String, val displayName: String) {
 }
 
 /** Transport used to reach the daemon. */
+enum class BackendMode(val wire: String, val displayName: String) {
+    TUI("tui", "Herdr TUI"),
+    CORE("core", "Herdr app (core)");
+
+    companion object {
+        fun fromWire(value: String?): BackendMode = entries.firstOrNull { it.wire == value } ?: TUI
+    }
+}
+
 enum class TransportMode(val wire: String, val displayName: String) {
     /** Recommended default: SSH tunnel to a daemon bound to the loopback interface. */
     SSH("ssh", "SSH tunnel"),
@@ -103,6 +112,7 @@ data class HostProfile(
     val hostKeyAlias: String? = null,
     val useTls: Boolean = false,
     val bearerTokenAlias: String? = null,
+    val backendMode: BackendMode = BackendMode.TUI,
 ) {
     val userAtHost: String get() = "$username@$host"
 }
@@ -123,6 +133,8 @@ data class AppSettings(
     val hostProfiles: List<HostProfile> = emptyList(),
     /** Direct-transport daemon origin, e.g. `http://100.x.y.z:8765`. Not a secret. */
     val directUrl: String = "http://10.0.2.2:8765",
+    /** Backend used by the direct connection. SSH connections persist theirs on [HostProfile]. */
+    val directBackendMode: BackendMode = BackendMode.TUI,
 
     val extraKeysEnabled: Boolean = true,
     val extraKeysLayoutId: String = DEFAULT_EXTRA_KEYS_LAYOUT,

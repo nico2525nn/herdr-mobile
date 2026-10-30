@@ -1,5 +1,6 @@
 package dev.herdr.mobile.connection.direct
 
+import dev.herdr.mobile.core.model.BackendMode
 import dev.herdr.mobile.core.network.DaemonEndpoint
 import dev.herdr.mobile.core.network.DaemonEndpointProvider
 import okhttp3.HttpUrl.Companion.toHttpUrl
@@ -15,6 +16,7 @@ class DirectProvider(
     private val baseUrl: String,
     private val bearerToken: () -> String?,
     private val label: String = baseUrl,
+    override val backendMode: BackendMode = BackendMode.TUI,
 ) : DaemonEndpointProvider {
 
     override val id: String get() = "direct"
@@ -38,7 +40,7 @@ class DirectProvider(
                     "or an https daemon URL",
             )
         }
-        return DaemonEndpoint(httpBase = url, token = token, description = "direct $label")
+        return DaemonEndpoint(httpBase = url, token = token, description = "direct $label", backendMode = backendMode)
     }
 
     private fun isLoopback(host: String): Boolean {

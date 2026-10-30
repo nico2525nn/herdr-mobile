@@ -1,5 +1,14 @@
 # Changelog
 
+## 1.4.0 — 2026-10-30
+
+- Backend choice: each connection selects Herdr TUI or Herdr app (core) in
+  Settings. Daemon speaks herdr-core JSON-RPC (default socket
+  $XDG_RUNTIME_DIR/herdr-core/default.sock) and serves the same /v1 API:
+  snapshot/events/terminal/input/resize/interrupt/create/rename/close.
+  Move/focus return typed unavailable (no core equivalent); scroll sends
+  PgUp/PgDn keys; mouse becomes SGR bytes. TUI path unchanged (default).
+
 ## 1.3.29 — 2026-10-29
 
 - AgentMatrix covers all 24 supported `--kind` values with per-entry

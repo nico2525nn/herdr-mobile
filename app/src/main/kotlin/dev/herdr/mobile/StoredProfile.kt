@@ -1,5 +1,6 @@
 package dev.herdr.mobile
 
+import dev.herdr.mobile.core.model.BackendMode
 import dev.herdr.mobile.core.model.HostProfile
 import kotlinx.serialization.Serializable
 
@@ -19,6 +20,7 @@ data class StoredProfile(
     val hostKeyAlias: String? = null,
     val useTls: Boolean = false,
     val bearerTokenAlias: String? = null,
+    val backendMode: BackendMode = BackendMode.TUI,
 ) {
     fun toModel() = HostProfile(
         id = id,
@@ -34,6 +36,7 @@ data class StoredProfile(
         hostKeyAlias = hostKeyAlias,
         useTls = useTls,
         bearerTokenAlias = bearerTokenAlias,
+        backendMode = backendMode,
     )
 
     companion object {
@@ -51,6 +54,7 @@ data class StoredProfile(
             hostKeyAlias = model.hostKeyAlias,
             useTls = model.useTls,
             bearerTokenAlias = model.bearerTokenAlias,
+            backendMode = model.backendMode,
         )
     }
 }

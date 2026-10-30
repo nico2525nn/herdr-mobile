@@ -115,6 +115,23 @@ class ModelContractTest {
     }
 
     @Test
+    fun `reducer folds pane title updates`() {
+        val pane = Pane(id = "w1:p1", tabId = "w1:t1", workspaceId = "w1", title = "old")
+        val tab = Tab(id = "w1:t1", workspaceId = "w1", panes = listOf(pane))
+        val workspace = Workspace(id = "w1", label = "w", tabs = listOf(tab))
+        val snapshot = SessionSnapshot(revision = 1, seq = 10, workspaces = listOf(workspace))
+        val outcome = SnapshotReducer.apply(snapshot, SemanticEvent(
+            seq = 11,
+            type = SemanticEvent.TYPE_PANE_TITLE_CHANGED,
+            workspaceId = "w1",
+            paneId = "w1:p1",
+            label = "new",
+        ))
+        assertTrue(outcome is SnapshotReducer.Outcome.Applied)
+        assertEquals("new", (outcome as SnapshotReducer.Outcome.Applied).snapshot.pane("w1:p1")?.title)
+    }
+
+    @Test
     fun `reducer reports a gap instead of patching`() {
         val snapshot = SessionSnapshot(revision = 1, seq = 10)
         val outcome = SnapshotReducer.apply(

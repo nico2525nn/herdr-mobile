@@ -73,6 +73,37 @@ fn check_auth(state: &AppState, headers: &HeaderMap) -> Result<(), Response> {
     }
 }
 
+fn selected_backend(state: &AppState, headers: &HeaderMap) -> crate::config::Backend {
+    headers
+        .get("x-herdr-backend")
+        .and_then(|value| value.to_str().ok())
+        .and_then(crate::config::Backend::from_wire)
+        .unwrap_or(state.config.backend)
+}
+
+fn core_unavailable(operation: &str, reason: &str) -> Response {
+    api_error(
+        StatusCode::NOT_IMPLEMENTED,
+        "unavailable",
+        format!("{operation} is unavailable for herdr-core: {reason}"),
+    )
+}
+
+fn core_error(error: anyhow::Error) -> Response {
+    let message = format!("{error:#}");
+    if message.contains("not_found") {
+        api_error(StatusCode::NOT_FOUND, "not_found", message)
+    } else if message.contains("finished") || message.contains("live") {
+        api_error(StatusCode::CONFLICT, "terminal_state", message)
+    } else if message.contains("unavailable") {
+        api_error(StatusCode::NOT_IMPLEMENTED, "unavailable", message)
+    } else if message.contains("cannot connect to herdr-core socket") {
+        api_error(StatusCode::SERVICE_UNAVAILABLE, "daemon_unavailable", message)
+    } else {
+        api_error(StatusCode::BAD_GATEWAY, "core_error", message)
+    }
+}
+
 fn api_error(status: StatusCode, code: &str, message: impl Into<String>) -> Response {
     (
         status,
@@ -106,6 +137,28 @@ async fn health(State(state): State<AppState>, headers: HeaderMap) -> Response {
     if let Err(e) = check_auth(&state, &headers) {
         return e;
     }
+    if selected_backend(&state, &headers) == crate::config::Backend::Core {
+        return match state.core.call("server.status", json!({})).await {
+            Ok(status) => {
+                let version = status.get("version").and_then(Value::as_str);
+                (StatusCode::OK, Json(json!({
+                    "ok": true,
+                    "revision": 0,
+                    "seq": 0,
+                    "uptimeMs": status.get("uptime_ms").and_then(Value::as_i64).unwrap_or(0),
+                    "protocol": PROTOCOL,
+                    "herdr": {"version":version,"protocol":1,"binary":"herdr-core"},
+                    "herdrConnected": true,
+                    "error": null,
+                }))).into_response()
+            }
+            Err(error) => (StatusCode::OK, Json(json!({
+                "ok":false,"revision":0,"seq":0,"uptimeMs":0,"protocol":PROTOCOL,
+                "herdr":{"version":null,"protocol":null,"binary":"herdr-core"},
+                "herdrConnected":false,"error":format!("{error:#}"),
+            }))).into_response(),
+        };
+    }
     let (connected, error, version, protocol) = state.cache.health_parts();
     let snapshot = state.cache.snapshot();
     let ok = connected && snapshot.is_some();
@@ -133,6 +186,12 @@ async fn snapshot(State(state): State<AppState>, headers: HeaderMap) -> Response
     if let Err(e) = check_auth(&state, &headers) {
         return e;
     }
+    if selected_backend(&state, &headers) == crate::config::Backend::Core {
+        return match state.core.snapshot().await {
+            Ok(snapshot) => Json(crate::herdrcore::translate_snapshot(snapshot.seq, &snapshot.terminals, snapshot.version)).into_response(),
+            Err(error) => core_error(error),
+        };
+    }
     match state.cache.snapshot() {
         Some(snapshot) => (StatusCode::OK, Json(snapshot)).into_response(),
         None => api_error(
@@ -146,6 +205,15 @@ async fn snapshot(State(state): State<AppState>, headers: HeaderMap) -> Response
 async fn workspaces(State(state): State<AppState>, headers: HeaderMap) -> Response {
     if let Err(e) = check_auth(&state, &headers) {
         return e;
+    }
+    if selected_backend(&state, &headers) == crate::config::Backend::Core {
+        return match state.core.snapshot().await {
+            Ok(core) => {
+                let snapshot = crate::herdrcore::translate_snapshot(core.seq, &core.terminals, core.version);
+                Json(json!({"revision":snapshot.revision,"seq":snapshot.seq,"workspaces":snapshot.workspaces})).into_response()
+            }
+            Err(error) => core_error(error),
+        };
     }
     match state.cache.snapshot() {
         Some(snapshot) => (
@@ -168,6 +236,17 @@ async fn workspaces(State(state): State<AppState>, headers: HeaderMap) -> Respon
 async fn panes(State(state): State<AppState>, headers: HeaderMap) -> Response {
     if let Err(e) = check_auth(&state, &headers) {
         return e;
+    }
+    if selected_backend(&state, &headers) == crate::config::Backend::Core {
+        return match state.core.snapshot().await {
+            Ok(core) => {
+                let snapshot = crate::herdrcore::translate_snapshot(core.seq, &core.terminals, core.version);
+                let panes: Vec<_> = snapshot.workspaces.iter().flat_map(|workspace| workspace.tabs.iter())
+                    .flat_map(|tab| tab.panes.iter().cloned()).collect();
+                Json(json!({"revision":snapshot.revision,"seq":snapshot.seq,"panes":panes})).into_response()
+            }
+            Err(error) => core_error(error),
+        };
     }
     match state.cache.snapshot() {
         Some(snapshot) => {
@@ -206,6 +285,20 @@ async fn pane_input(
     }
     let encoding = body.get("encoding").and_then(|e| e.as_str()).unwrap_or("utf-8");
     let text = body.get("text").and_then(|t| t.as_str()).unwrap_or("");
+    if selected_backend(&state, &headers) == crate::config::Backend::Core {
+        let bytes = match encoding {
+            "utf-8" => text.as_bytes().to_vec(),
+            "base64" => match base64_decode(text) {
+                Ok(bytes) => bytes,
+                Err(_) => return api_error(StatusCode::BAD_REQUEST, "bad_request", "text is not valid base64"),
+            },
+            other => return api_error(StatusCode::BAD_REQUEST, "bad_request", format!("unsupported encoding {other:?}; want utf-8 or base64")),
+        };
+        return match state.core.send_input(&pane_id, &bytes).await {
+            Ok(()) => (StatusCode::OK, Json(json!({"ok":true}))).into_response(),
+            Err(error) => core_error(error),
+        };
+    }
     let herdr = state.cache.herdr_client();
     let result = match encoding {
         "utf-8" => herdr.send_text(&pane_id, text).await,
@@ -249,6 +342,12 @@ async fn pane_interrupt(
     if let Err(e) = check_auth(&state, &headers) {
         return e;
     }
+    if selected_backend(&state, &headers) == crate::config::Backend::Core {
+        return match state.core.key(&pane_id, &["ctrl+c"]).await {
+            Ok(_) => (StatusCode::OK, Json(json!({"ok":true}))).into_response(),
+            Err(error) => core_error(error),
+        };
+    }
     match state.cache.herdr_client().send_keys(&pane_id, &["ctrl+c".to_string()]).await {
         Ok(()) => (StatusCode::OK, Json(json!({"ok": true}))).into_response(),
         Err(e) => herdr_error(e),
@@ -268,6 +367,12 @@ async fn pane_resize(
     let rows = body.get("rows").and_then(|r| r.as_u64()).unwrap_or(0) as u32;
     if cols == 0 || rows == 0 {
         return api_error(StatusCode::BAD_REQUEST, "bad_request", "cols and rows must be greater than 0");
+    }
+    if selected_backend(&state, &headers) == crate::config::Backend::Core {
+        return match state.core.resize(&pane_id, cols.min(u16::MAX as u32) as u16, rows.min(u16::MAX as u32) as u16).await {
+            Ok(()) => (StatusCode::OK, Json(json!({"ok":true}))).into_response(),
+            Err(error) => core_error(error),
+        };
     }
     // A short-lived control child applies the geometry, then releases.
     let herdr = state.cache.herdr_client().clone();
@@ -298,6 +403,9 @@ async fn agent_report(
 ) -> Response {
     if let Err(e) = check_auth(&state, &headers) {
         return e;
+    }
+    if selected_backend(&state, &headers) == crate::config::Backend::Core {
+        return core_unavailable("agent.report", "herdr-core exposes program-reported status but no custom status report method");
     }
     let Some(pane_id) = body.get("paneId").and_then(|v| v.as_str()) else {
         return api_error(StatusCode::BAD_REQUEST, "bad_request", "missing paneId");
@@ -345,6 +453,12 @@ async fn tab_create(
         return api_error(StatusCode::BAD_REQUEST, "bad_request", "missing workspaceId");
     };
     let label = body.get("label").and_then(|v| v.as_str());
+    if selected_backend(&state, &headers) == crate::config::Backend::Core {
+        return match state.core.create_tab(workspace_id, label).await {
+            Ok(tab_id) => (StatusCode::OK, Json(json!({"ok":true,"tabId":tab_id}))).into_response(),
+            Err(error) => core_error(error),
+        };
+    }
     match state.cache.herdr_client().tab_create(workspace_id, label).await {
         Ok(tab_id) => (StatusCode::OK, Json(json!({"ok": true, "tabId": tab_id}))).into_response(),
         Err(e) => herdr_error(e),
@@ -359,6 +473,12 @@ async fn tab_close(
     if let Err(e) = check_auth(&state, &headers) {
         return e;
     }
+    if selected_backend(&state, &headers) == crate::config::Backend::Core {
+        return match state.core.close_tab(&tab_id).await {
+            Ok(()) => (StatusCode::OK, Json(json!({"ok":true}))).into_response(),
+            Err(error) => core_error(error),
+        };
+    }
     match state.cache.herdr_client().tab_close(&tab_id).await {
         Ok(()) => (StatusCode::OK, Json(json!({"ok": true}))).into_response(),
         Err(e) => herdr_error(e),
@@ -372,6 +492,9 @@ async fn tab_focus(
 ) -> Response {
     if let Err(e) = check_auth(&state, &headers) {
         return e;
+    }
+    if selected_backend(&state, &headers) == crate::config::Backend::Core {
+        return core_unavailable("tab.focus", "herdr-core has no focus or read-ack method");
     }
     match state.cache.herdr_client().tab_focus(&tab_id).await {
         Ok(()) => (StatusCode::OK, Json(json!({"ok": true}))).into_response(),
@@ -394,6 +517,12 @@ async fn tab_rename(
     if label.is_empty() {
         return api_error(StatusCode::BAD_REQUEST, "bad_request", "label must not be blank");
     }
+    if selected_backend(&state, &headers) == crate::config::Backend::Core {
+        return match state.core.rename_tab(&tab_id, label).await {
+            Ok(()) => (StatusCode::OK, Json(json!({"ok":true}))).into_response(),
+            Err(error) => core_error(error),
+        };
+    }
     match state.cache.herdr_client().tab_rename(&tab_id, label).await {
         Ok(()) => (StatusCode::OK, Json(json!({"ok": true}))).into_response(),
         Err(e) => herdr_error(e),
@@ -410,6 +539,12 @@ async fn workspace_create(
     }
     let label = body.get("label").and_then(|v| v.as_str()).map(str::trim).filter(|l| !l.is_empty());
     let cwd = body.get("cwd").and_then(|v| v.as_str()).map(str::trim).filter(|c| !c.is_empty());
+    if selected_backend(&state, &headers) == crate::config::Backend::Core {
+        return match state.core.create_workspace(label, cwd).await {
+            Ok(workspace_id) => (StatusCode::OK, Json(json!({"ok":true,"workspaceId":workspace_id}))).into_response(),
+            Err(error) => core_error(error),
+        };
+    }
     match state.cache.herdr_client().workspace_create(label, cwd).await {
         Ok(workspace_id) => (StatusCode::OK, Json(json!({"ok": true, "workspaceId": workspace_id}))).into_response(),
         Err(e) => herdr_error(e),
@@ -431,6 +566,12 @@ async fn workspace_rename(
     if label.is_empty() {
         return api_error(StatusCode::BAD_REQUEST, "bad_request", "label must not be blank");
     }
+    if selected_backend(&state, &headers) == crate::config::Backend::Core {
+        return match state.core.rename_workspace(&workspace_id, label).await {
+            Ok(()) => (StatusCode::OK, Json(json!({"ok":true}))).into_response(),
+            Err(error) => core_error(error),
+        };
+    }
     match state.cache.herdr_client().workspace_rename(&workspace_id, label).await {
         Ok(()) => (StatusCode::OK, Json(json!({"ok": true}))).into_response(),
         Err(e) => herdr_error(e),
@@ -444,6 +585,12 @@ async fn workspace_close(
 ) -> Response {
     if let Err(e) = check_auth(&state, &headers) {
         return e;
+    }
+    if selected_backend(&state, &headers) == crate::config::Backend::Core {
+        return match state.core.close_workspace(&workspace_id).await {
+            Ok(()) => (StatusCode::OK, Json(json!({"ok":true}))).into_response(),
+            Err(error) => core_error(error),
+        };
     }
     match state.cache.herdr_client().workspace_close(&workspace_id).await {
         Ok(()) => (StatusCode::OK, Json(json!({"ok": true}))).into_response(),
@@ -463,6 +610,9 @@ async fn tab_move(
     let Some(insert_index) = body.get("insertIndex").and_then(|v| v.as_i64()) else {
         return api_error(StatusCode::BAD_REQUEST, "bad_request", "missing insertIndex");
     };
+    if selected_backend(&state, &headers) == crate::config::Backend::Core {
+        return core_unavailable("tab.move", "herdr-core has no ordering method for terminals or labels");
+    }
     match state.cache.herdr_client().tab_move(&tab_id, insert_index).await {
         Ok(ordered) => {
             state.cache.apply_tab_order(&tab_id, &ordered);
@@ -484,6 +634,9 @@ async fn workspace_move(
     let Some(insert_index) = body.get("insertIndex").and_then(|v| v.as_i64()) else {
         return api_error(StatusCode::BAD_REQUEST, "bad_request", "missing insertIndex");
     };
+    if selected_backend(&state, &headers) == crate::config::Backend::Core {
+        return core_unavailable("workspace.move", "herdr-core has no ordering method for spaces or labels");
+    }
     match state.cache.herdr_client().workspace_move(&workspace_id, insert_index).await {
         Ok(ordered) => {
             state.cache.apply_workspace_order(&ordered);
@@ -496,6 +649,9 @@ async fn workspace_move(
 async fn herdr_update_status(State(state): State<AppState>, headers: HeaderMap) -> Response {
     if let Err(e) = check_auth(&state, &headers) {
         return e;
+    }
+    if selected_backend(&state, &headers) == crate::config::Backend::Core {
+        return core_unavailable("herdr.update", "the TUI updater does not manage herdr-core or herdr-app");
     }
     // Fresh check on demand (network failure still returns a body with error
     // so the client can show "check failed" instead of spinning forever).
@@ -518,6 +674,9 @@ async fn herdr_update_run(State(state): State<AppState>, headers: HeaderMap) -> 
     if let Err(e) = check_auth(&state, &headers) {
         return e;
     }
+    if selected_backend(&state, &headers) == crate::config::Backend::Core {
+        return core_unavailable("herdr.update.run", "the TUI updater does not manage herdr-core or herdr-app");
+    }
     match state.updater.run_update().await {
         Ok(log) => (StatusCode::OK, Json(json!({"ok": true, "log": log}))).into_response(),
         Err(e) => api_error(StatusCode::BAD_GATEWAY, "update_failed", format!("{e:#}")),
@@ -535,6 +694,9 @@ async fn events_ws(
 ) -> Response {
     if let Err(e) = check_auth(&state, &headers) {
         return e;
+    }
+    if selected_backend(&state, &headers) == crate::config::Backend::Core {
+        return ws.on_upgrade(move |socket| serve_core_events(socket, state.core.clone()));
     }
     ws.on_upgrade(move |socket| serve_events(socket, state.bus.clone(), state.cache.clone()))
 }
@@ -614,6 +776,86 @@ async fn serve_events(socket: WebSocket, bus: Arc<EventBus>, cache: Arc<SessionC
     info!("events subscriber disconnected");
 }
 
+async fn serve_core_events(socket: WebSocket, core: crate::herdrcore::CoreClient) {
+    let mut subscription = match core.subscribe().await {
+        Ok(subscription) => subscription,
+        Err(error) => {
+            warn!("cannot subscribe to herdr-core events: {error:#}");
+            return;
+        }
+    };
+    let mut locations = crate::herdrcore::locations(&subscription.initial.terminals);
+    let mut last_seq = subscription.initial.seq;
+    let (mut sink, mut stream) = socket.split();
+    let ready = SemanticEvent {
+        seq: last_seq,
+        kind: "stream.ready".to_owned(),
+        at: crate::cache::now_rfc3339(),
+        workspace_id: None,
+        tab_id: None,
+        pane_id: None,
+        status: None,
+        label: None,
+        message: None,
+        revision: Some(last_seq),
+        detail: None,
+    };
+    if sink.send(Message::Text(serde_json::to_string(&ready).unwrap().into())).await.is_err() {
+        return;
+    }
+    loop {
+        tokio::select! {
+            notification = subscription.next() => {
+                let Some(notification) = (match notification { Ok(value) => value, Err(error) => {
+                    warn!("herdr-core event stream failed: {error:#}");
+                    break;
+                }}) else { break; };
+                match notification.get("method").and_then(Value::as_str).unwrap_or("") {
+                    "event" => {
+                        let event_type = notification.pointer("/params/type").and_then(Value::as_str).unwrap_or("");
+                        if matches!(event_type, "created" | "removed" | "finished" | "lost" | "restarted" | "labels") {
+                            if let Ok(snapshot) = core.snapshot().await {
+                                locations = crate::herdrcore::locations(&snapshot.terminals);
+                            }
+                        }
+                        if let Some(event) = crate::herdrcore::translate_event(&notification, &locations) {
+                            last_seq = last_seq.max(event.seq);
+                            if sink.send(Message::Text(serde_json::to_string(&event).unwrap().into())).await.is_err() {
+                                break;
+                            }
+                        }
+                    }
+                    "missed" => {
+                        match core.snapshot().await {
+                            Ok(snapshot) => {
+                                locations = crate::herdrcore::locations(&snapshot.terminals);
+                                last_seq = snapshot.seq;
+                                let ready = SemanticEvent {
+                                    seq: last_seq, kind:"stream.ready".to_owned(), at:crate::cache::now_rfc3339(),
+                                    workspace_id:None, tab_id:None, pane_id:None, status:None,
+                                    label:None, message:None, revision:Some(last_seq), detail:None,
+                                };
+                                if sink.send(Message::Text(serde_json::to_string(&ready).unwrap().into())).await.is_err() {
+                                    break;
+                                }
+                            }
+                            Err(error) => warn!("cannot resnapshot herdr-core after missed events: {error:#}"),
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            message = stream.next() => {
+                match message {
+                    Some(Ok(Message::Close(_))) | None => break,
+                    Some(Ok(_)) => debug!("ignoring client frame on core events socket"),
+                    Some(Err(_)) => break,
+                }
+            }
+        }
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Terminal WebSocket
 // ---------------------------------------------------------------------------
@@ -627,6 +869,17 @@ async fn terminal_ws(
 ) -> Response {
     if let Err(e) = check_auth(&state, &headers) {
         return e;
+    }
+    if selected_backend(&state, &headers) == crate::config::Backend::Core {
+        let cols = query.get("cols").and_then(|value| value.parse::<u32>().ok()).unwrap_or(90).clamp(20, 400);
+        let rows = query.get("rows").and_then(|value| value.parse::<u32>().ok()).unwrap_or(30).clamp(5, 200);
+        let core = state.core.clone();
+        let address = pane_id.clone();
+        return ws.on_upgrade(move |socket| async move {
+            if let Err(error) = crate::herdrcore::terminal::bridge(socket, core, address.clone(), cols, rows, 2000).await {
+                warn!("herdr-core terminal bridge for {address} ended: {error:#}");
+            }
+        });
     }
     let cols = query.get("cols").and_then(|c| c.parse::<u32>().ok()).unwrap_or(90).clamp(20, 400);
     let rows = query.get("rows").and_then(|r| r.parse::<u32>().ok()).unwrap_or(30).clamp(5, 200);

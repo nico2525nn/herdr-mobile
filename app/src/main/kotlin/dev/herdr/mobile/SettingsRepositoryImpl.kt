@@ -11,6 +11,7 @@ import dev.herdr.mobile.connection.direct.DirectProvider
 import dev.herdr.mobile.connection.ssh.SshTunnelProvider
 import dev.herdr.mobile.core.model.UnknownHostKeyException
 import dev.herdr.mobile.core.model.AppSettings
+import dev.herdr.mobile.core.model.BackendMode
 import dev.herdr.mobile.core.model.ConnectionTestResult
 import dev.herdr.mobile.core.model.CursorStyle
 import dev.herdr.mobile.core.model.FailureKind
@@ -53,6 +54,7 @@ private object Keys {
     val BOLD_BRIGHT = booleanPreferencesKey("bold_bright")
     val TRANSPORT_MODE = stringPreferencesKey("transport_mode")
     val DIRECT_URL = stringPreferencesKey("direct_url")
+    val DIRECT_BACKEND = stringPreferencesKey("direct_backend")
     val ACTIVE_PROFILE = stringPreferencesKey("active_profile")
     val PROFILES = stringPreferencesKey("profiles")
     val EXTRA_KEYS = booleanPreferencesKey("extra_keys")
@@ -135,6 +137,7 @@ class SettingsRepositoryImpl(
             boldIsBright = prefs[Keys.BOLD_BRIGHT] ?: true,
             transportMode = TransportMode.fromWire(prefs[Keys.TRANSPORT_MODE]),
             directUrl = prefs[Keys.DIRECT_URL] ?: BuildConfig.DEFAULT_DIRECT_URL,
+            directBackendMode = BackendMode.fromWire(prefs[Keys.DIRECT_BACKEND]),
             activeProfileId = prefs[Keys.ACTIVE_PROFILE],
             hostProfiles = decodeProfiles(prefs[Keys.PROFILES]),
             extraKeysEnabled = prefs[Keys.EXTRA_KEYS] ?: true,
@@ -198,6 +201,7 @@ class SettingsRepositoryImpl(
         prefs[Keys.BOLD_BRIGHT] = next.boldIsBright
         prefs[Keys.TRANSPORT_MODE] = next.transportMode.wire
         prefs[Keys.DIRECT_URL] = next.directUrl
+        prefs[Keys.DIRECT_BACKEND] = next.directBackendMode.wire
         val activeProfileId = next.activeProfileId
         if (activeProfileId != null) {
             prefs[Keys.ACTIVE_PROFILE] = activeProfileId
@@ -339,6 +343,7 @@ class SettingsRepositoryImpl(
                     knownHosts = { profile.hostKeyAlias?.let { secrets.get(it) } },
                     onUnknownHostKey = { _, _ -> false },
                     bearerToken = { profile.bearerTokenAlias?.let { secrets.get(it) } },
+                    backendMode = profile.backendMode,
                 )
             }
 
@@ -350,6 +355,7 @@ class SettingsRepositoryImpl(
                         val profile = settings.hostProfiles.firstOrNull { it.id == settings.activeProfileId }
                         profile?.bearerTokenAlias?.let { secrets.get(it) }
                     },
+                    backendMode = settings.directBackendMode,
                 )
             }
         }

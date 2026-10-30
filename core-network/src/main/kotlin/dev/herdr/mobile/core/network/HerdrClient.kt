@@ -206,8 +206,21 @@ class HerdrClient(
         kickQueue.trySend(LoopCommand.Restart)
     }
 
-    /** Forced full redial, even when connected (transport settings changed). */
-    fun restartLink() {
+    /** Forced full redial, even when connected (transport or backend settings changed). */
+    fun restartLink(clearCachedSnapshot: Boolean = false) {
+        if (clearCachedSnapshot) {
+            tickSeen = false
+            lastTickOrEventAt = 0
+            _state.update {
+                it.copy(
+                    connection = ConnectionState.CONNECTING,
+                    snapshot = null,
+                    stale = false,
+                    error = null,
+                    lastSyncAt = 0,
+                )
+            }
+        }
         kickQueue.trySend(LoopCommand.Restart)
     }
 

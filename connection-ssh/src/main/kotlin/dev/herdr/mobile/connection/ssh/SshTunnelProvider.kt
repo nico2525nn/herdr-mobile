@@ -2,6 +2,7 @@ package dev.herdr.mobile.connection.ssh
 
 import com.jcraft.jsch.JSch
 import com.jcraft.jsch.Session
+import dev.herdr.mobile.core.model.BackendMode
 import dev.herdr.mobile.core.model.FailureKind
 import dev.herdr.mobile.core.model.HostProfile
 import dev.herdr.mobile.core.model.UnknownHostKeyException
@@ -41,6 +42,7 @@ class SshTunnelProvider(
     private val knownHosts: () -> String?,
     private val onUnknownHostKey: suspend (host: String, fingerprint: String) -> Boolean,
     private val bearerToken: () -> String?,
+    override val backendMode: BackendMode = BackendMode.TUI,
 ) : DaemonEndpointProvider {
 
     override val id: String get() = profile.id
@@ -172,6 +174,7 @@ class SshTunnelProvider(
             httpBase = "$scheme://127.0.0.1:$localPort".toHttpUrl(),
             token = bearerToken(),
             description = "ssh ${profile.userAtHost} via 127.0.0.1:$localPort",
+            backendMode = backendMode,
         )
     }
 

@@ -44,6 +44,7 @@ class DaemonApi(
         val url = endpoint.httpBase.resolve(path.trimStart('/'))
             ?: throw DaemonException("bad_url", "Cannot resolve $path against ${endpoint.httpBase}")
         val builder = Request.Builder().url(url)
+            .header("X-Herdr-Backend", endpoint.backendMode.wire)
         endpoint.token?.let { builder.header("Authorization", "Bearer $it") }
         when (method) {
             "GET" -> builder.get()

@@ -1,5 +1,6 @@
 package dev.herdr.mobile.core.network
 
+import dev.herdr.mobile.core.model.BackendMode
 import okhttp3.HttpUrl
 import okhttp3.HttpUrl.Companion.toHttpUrl
 
@@ -14,6 +15,7 @@ data class DaemonEndpoint(
     val httpBase: HttpUrl,
     val token: String?,
     val description: String,
+    val backendMode: BackendMode = BackendMode.TUI,
 ) {
     val wsBase: String
         get() = httpBase.toString().let {
@@ -40,8 +42,12 @@ data class DaemonEndpoint(
     }
 
     companion object {
-        fun direct(url: String, token: String?, description: String): DaemonEndpoint =
-            DaemonEndpoint(url.toHttpUrl(), token, description)
+        fun direct(
+            url: String,
+            token: String?,
+            description: String,
+            backendMode: BackendMode = BackendMode.TUI,
+        ): DaemonEndpoint = DaemonEndpoint(url.toHttpUrl(), token, description, backendMode)
     }
 }
 
@@ -54,6 +60,9 @@ data class DaemonEndpoint(
 interface DaemonEndpointProvider {
     /** Stable id of the profile this provider serves, or `"direct"`. */
     val id: String
+
+    /** Per-connection backend routed through the daemon. */
+    val backendMode: BackendMode get() = BackendMode.TUI
 
     /** Human line for Settings and diagnostics, with no secrets in it. */
     val description: String
