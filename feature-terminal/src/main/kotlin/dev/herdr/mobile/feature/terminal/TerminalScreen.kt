@@ -11,10 +11,15 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
-import androidx.compose.foundation.layout.imePadding
+import androidx.compose.foundation.layout.ExperimentalLayoutApi
+import androidx.compose.foundation.layout.WindowInsets
+import androidx.compose.foundation.layout.ime
+import androidx.compose.foundation.layout.isImeVisible
 import androidx.compose.foundation.layout.offset
-import androidx.compose.foundation.layout.navigationBarsPadding
+import androidx.compose.foundation.layout.navigationBars
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.union
+import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.pager.HorizontalPager
 import androidx.compose.foundation.pager.rememberPagerState
@@ -95,6 +100,25 @@ fun TerminalScreen(
     // restarts with the old counter value still > 0 — without this ledger a
     // tab switch re-summoned the keyboard forever after the first summon.
     var keyboardShowHandled by remember { mutableStateOf(0) }
+    // One requester for the CJK draft field, shared by the terminal surface
+    // (page-switch IME retargeting) and the bottom panel (field attachment).
+    val cjkFocus = remember { androidx.compose.ui.focus.FocusRequester() }
+
+    // Screen-level IME hygiene: the keyboard must not outlive its pane. Closing
+    // the last workspace/tab (backend becomes null) or leaving the screen used
+    // to leave it up, floating over Home with no terminal behind it.
+    val rootView = androidx.compose.ui.platform.LocalView.current
+    fun hideImeNow() {
+        val imm = rootView.context.getSystemService(android.content.Context.INPUT_METHOD_SERVICE)
+            as? android.view.inputmethod.InputMethodManager ?: return
+        imm.hideSoftInputFromWindow(rootView.windowToken, 0)
+    }
+    LaunchedEffect(state.backend) {
+        if (state.backend == null) hideImeNow()
+    }
+    DisposableEffect(rootView) {
+        onDispose { hideImeNow() }
+    }
 
     // App backgrounded (Home button, task switch) does NOT dispose this screen,
     // so neither DisposableEffect nor onCleared runs. Release the controller or
@@ -112,11 +136,34 @@ fun TerminalScreen(
         onDispose { lifecycle.removeObserver(observer) }
     }
 
-    // navigationBarsPadding keeps the panel above the gesture bar when the
-    // keyboard is hidden; imePadding lifts it above the keyboard when shown.
-    // The terminal Box above shrinks accordingly, so its bottom edge always
-    // sits exactly on top of the panel — never behind the keyboard.
-    Column(modifier = modifier.fillMaxSize().navigationBarsPadding().imePadding()) {
+    // One inset, not two: navigationBarsPadding() + imePadding() stack when
+    // the keyboard is up (the IME inset already includes the nav bar), which
+    // left a dead band under the floating panel. Their union takes the larger
+    // of the two, so the panel edge lands on the gesture area or the keyboard.
+    // With the keyboard hidden the raw gesture inset (48dp) leaves a second
+    // dead band under a floating card, so 24dp of it is handed back: the card
+    // hugs the pill the way the Home bottom bar does.
+    val screenDensity = androidx.compose.ui.platform.LocalDensity.current
+    val layoutDirection = androidx.compose.ui.platform.LocalLayoutDirection.current
+    val navInsets = WindowInsets.navigationBars
+    val imeInsetPx = WindowInsets.ime.getBottom(screenDensity)
+    val navInsetPx = navInsets.getBottom(screenDensity)
+    val insetBottom = if (imeInsetPx > 0) {
+        imeInsetPx
+    } else {
+        (navInsetPx - with(screenDensity) { 24.dp.roundToPx() }).coerceAtLeast(0)
+    }
+    Column(
+        modifier = modifier.fillMaxSize()
+            .windowInsetsPadding(
+                WindowInsets(
+                    left = navInsets.getLeft(screenDensity, layoutDirection),
+                    top = navInsets.getTop(screenDensity),
+                    right = navInsets.getRight(screenDensity, layoutDirection),
+                    bottom = insetBottom,
+                ),
+            ),
+    ) {
         WorkspaceRail(
             state = state,
             onNavigateHome = onNavigateHome,
@@ -196,6 +243,7 @@ fun TerminalScreen(
                     onKeyboardShowHandled = { keyboardShowHandled = it },
                     inputTick = viewModel.inputTick.collectAsStateWithLifecycle().value,
                     onGridChanged = { cols, rows -> viewModel.setAttachGrid(cols, rows) },
+                    cjkFocus = cjkFocus,
                 )
             }
         }
@@ -206,6 +254,7 @@ fun TerminalScreen(
             onSendText = { viewModel.sendText(it) },
             onExtraKey = { viewModel.sendExtraKey(it) },
             onPageChange = { viewModel.setInputPage(it) },
+            cjkFocus = cjkFocus,
         )
     }
 
@@ -526,6 +575,8 @@ private fun TerminalSurface(
     onKeyboardShowHandled: (Int) -> Unit,
     inputTick: Int,
     onGridChanged: (cols: Int, rows: Int) -> Unit,
+    /** Shared with the bottom panel so page switches can retarget the IME. */
+    cjkFocus: androidx.compose.ui.focus.FocusRequester?,
 ) {
     val backend = state.backend ?: return
     val backendState by backend.state.collectAsStateWithLifecycle(initialValue = BackendState.Idle)
@@ -592,33 +643,71 @@ private fun TerminalSurface(
     // that may show the IME. (onSingleTapUp itself only requestFocus()es;
     // whether a tap raises the IME depends on the view's soft-input-on-focus
     // behavior — verified on emulator: tap does NOT auto-show.)
-    val focusManager = androidx.compose.ui.platform.LocalFocusManager.current
+    // Page switches move the IME *target*, never the IME itself. The old code
+    // called clearFocus(force=true) when leaving the CJK page, which dismissed
+    // the keyboard — that was the "switching the input panel closes my
+    // keyboard" bug. Here focus moves to whichever surface owns the page
+    // (terminal view or CJK draft field) and an already-open IME follows it;
+    // no focus change at all happens while the keyboard is closed, so nothing
+    // can summon it.
+    @OptIn(ExperimentalLayoutApi::class)
+    val imeVisible = WindowInsets.isImeVisible
     var lastInputPage by remember { mutableStateOf(state.inputPage) }
     LaunchedEffect(state.inputPage) {
         val previous = lastInputPage
         lastInputPage = state.inputPage
-        if (previous == dev.herdr.mobile.core.model.InputPanelPage.CJK_INPUT &&
-            state.inputPage != dev.herdr.mobile.core.model.InputPanelPage.CJK_INPUT
-        ) {
-            focusManager.clearFocus(force = true)
+        if (previous == state.inputPage) return@LaunchedEffect
+        if (!imeVisible) return@LaunchedEffect
+        if (state.inputPage == dev.herdr.mobile.core.model.InputPanelPage.CJK_INPUT) {
+            cjkFocus?.requestFocus()
+        } else {
             viewRef?.requestFocus()
         }
     }
     // Tab switch/close swaps the backend under the same view; the view can be
     // left without input focus, so typing (hardware keys, IME arrows) goes
-    // nowhere until a tap. Hand it focus explicitly when the pane changes.
+    // nowhere until a tap. Hand it focus explicitly when the pane changes, and
+    // drop any IME the focus change dragged in (keyboard is button-only).
     LaunchedEffect(state.pane?.id) {
+        hostRef?.dismissKeyboard()
         if (state.inputPage != dev.herdr.mobile.core.model.InputPanelPage.CJK_INPUT) {
             viewRef?.requestFocus()
         }
     }
 
-    // Manual summon: the CJK keyboard button. Guard 0 so composition
-    // doesn't steal focus on first mount.
+    // Focus must never raise the IME. Android re-shows the soft keyboard for a
+    // focused view that owns an InputConnection whenever the window regains
+    // focus, which is why the keyboard kept coming back after one summon +
+    // background/return. Suppress it reactively: hide on resume and after
+    // pane switches unless the user pressed the keyboard button, and re-arm
+    // the latch whenever the IME goes away on its own.
+    LaunchedEffect(imeVisible) {
+        if (!imeVisible) hostRef?.onKeyboardHidden()
+    }
+    val lifecycleOwner = androidx.lifecycle.compose.LocalLifecycleOwner.current
+    DisposableEffect(lifecycleOwner) {
+        val observer = androidx.lifecycle.LifecycleEventObserver { _, event ->
+            if (event == androidx.lifecycle.Lifecycle.Event.ON_RESUME) {
+                hostRef?.hideKeyboardIfUnrequested()
+            }
+        }
+        lifecycleOwner.lifecycle.addObserver(observer)
+        onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
+    }
+
+    // Manual summon: the ONE way the keyboard appears. On the CJK page the
+    // focus must land on the draft field (it is the IME target); on the extra
+    // keys page it lands on the terminal view. Guard 0 so composition doesn't
+    // steal focus on first mount.
     LaunchedEffect(keyboardShowRequest) {
         if (keyboardShowRequest > keyboardShowHandled) {
             onKeyboardShowHandled(keyboardShowRequest)
-            hostRef?.showKeyboard()
+            when (state.inputPage) {
+                // The draft field is the IME target; Compose raises the IME
+                // when a text field gains focus.
+                dev.herdr.mobile.core.model.InputPanelPage.CJK_INPUT -> cjkFocus?.requestFocus()
+                else -> hostRef?.showKeyboard()
+            }
         }
     }
     // User input snaps a scrolled viewport home (back at the prompt). Guard 0:
@@ -924,6 +1013,7 @@ private fun BottomInputPanel(
     onSendText: (String) -> Unit,
     onExtraKey: (dev.herdr.mobile.terminal.view.TerminalKeyEncoder.Key) -> Unit,
     onPageChange: (InputPanelPage) -> Unit,
+    cjkFocus: androidx.compose.ui.focus.FocusRequester,
 ) {
     val settings = state.settings
     val pages = buildList {
@@ -948,29 +1038,20 @@ private fun BottomInputPanel(
             pagerState.scrollToPage(0)
         }
     }
-    val cjkFocus = remember { androidx.compose.ui.focus.FocusRequester() }
-    var lastPanelPage by remember { mutableStateOf<InputPanelPage?>(null) }
-    // The pager also reports the page; focus the CJK field when the user
-    // slides to it (that gesture means "type here"), but never on mount or a
-    // plain recomposition.
+    // Switching pages never touches keyboard visibility: no auto-focus of the
+    // CJK field (only the keyboard button summons the IME) and no dismiss.
     LaunchedEffect(pagerState.currentPage, pages.size) {
         val page = pages.getOrNull(pagerState.currentPage) ?: return@LaunchedEffect
         onPageChange(page)
-        if (page == InputPanelPage.CJK_INPUT &&
-            lastPanelPage != null && lastPanelPage != InputPanelPage.CJK_INPUT
-        ) {
-            runCatching { cjkFocus.requestFocus() }
-        }
-        lastPanelPage = page
     }
     Surface(
         tonalElevation = 3.dp,
         shape = MaterialTheme.shapes.extraLarge,
         modifier = Modifier
             .fillMaxWidth()
-            .padding(horizontal = 12.dp, vertical = 8.dp),
+            .padding(start = 12.dp, end = 12.dp, top = 8.dp, bottom = 6.dp),
     ) {
-        Column(modifier = Modifier.padding(12.dp)) {
+        Column(modifier = Modifier.padding(horizontal = 12.dp, vertical = 10.dp)) {
             if (pages.size > 1) {
                 HorizontalPager(state = pagerState, modifier = Modifier.fillMaxWidth()) { index ->
                     when (pages[index]) {

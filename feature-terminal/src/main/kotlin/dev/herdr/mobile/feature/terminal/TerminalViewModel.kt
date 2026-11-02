@@ -207,9 +207,50 @@ class TerminalViewModel(
                         warnOnFallback(snapshot, target)
                         openTarget(target, preserveStatusMessage = true)
                     }
+                } else {
+                    // The open target can disappear underneath us: another
+                    // client (desktop TUI, `herdr` CLI) closes the workspace, or
+                    // our own close lands after the snapshot moved on. Staying
+                    // attached to a dead target left the user staring at
+                    // "Detached (closed)" with a live workspace list behind it.
+                    reconcileVanishedTarget(snapshot, targetFlow.value!!)
                 }
             }
         }
+    }
+
+    /**
+     * Move to a surviving workspace when the current target's workspace, tab or
+     * pane is gone. Falls back to the first workspace that still has a pane;
+     * clears the target when nothing survives (empty session).
+     */
+    private fun reconcileVanishedTarget(snapshot: SessionSnapshot, target: TerminalTarget) {
+        val pane = snapshot.pane(target.paneId)
+        val alive = pane != null &&
+            pane.workspaceId == target.workspaceId &&
+            pane.tabId == target.tabId
+        if (alive) return
+        val survivor = snapshot.workspaces.asSequence()
+            .mapNotNull { workspace ->
+                val tab = workspace.tabs.firstOrNull { it.id == workspace.activeTabId }
+                    ?: workspace.tabs.firstOrNull()
+                    ?: return@mapNotNull null
+                val pane = tab.activePane ?: return@mapNotNull null
+                TerminalTarget(workspace.id, tab.id, pane.id)
+            }
+            .firstOrNull()
+        if (survivor == null) {
+            // Session drained: drop the target so the screen stops reporting a
+            // dead attach. The Home route owns navigation from here.
+            backendFlow.value = null
+            targetFlow.value = null
+            messageFlow.value = "Session closed"
+            return
+        }
+        val label = snapshot.workspace(survivor.workspaceId)?.label?.takeIf { it.isNotBlank() }
+            ?: survivor.paneId
+        messageFlow.value = "That workspace was closed — opened $label"
+        openTarget(survivor, preserveStatusMessage = true)
     }
 
     /**

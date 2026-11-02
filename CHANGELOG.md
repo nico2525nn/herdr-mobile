@@ -1,5 +1,22 @@
 # Changelog
 
+## 1.4.3 — 2026-11-02
+
+- Shell scroll fixed: Herdr TUI keeps a stale `agent` label on panes the agent
+  already exited (a plain `nico@…$` prompt still reported `agent=codex`), so
+  those panes were routed to remote scrolling and swallowed SGR wheel bytes —
+  "scroll does nothing". Live alt-screen / mouse tracking still routes remote;
+  anything else scrolls the local transcript, and a main-screen agent with no
+  local history (omp) still uses the host scrollback.
+- Keyboard is button-only now. Focus and pane switches never raise the IME,
+  and a focused terminal no longer re-shows the keyboard when the app returns
+  from the background. Switching the floating input panel keeps an open
+  keyboard open (it used to clear focus and dismiss it).
+- Closing a workspace no longer strands the screen on "Detached (closed)":
+  the app retargets the nearest surviving workspace and says so.
+- Floating input panel sat on a doubled inset (nav bar + IME); one union
+  inset now, so the card hugs the gesture area with no dead band.
+
 ## 1.4.2 — 2026-11-02
 
 - Midnight theme: pure-black AMOLED app theme + matching terminal scheme.
