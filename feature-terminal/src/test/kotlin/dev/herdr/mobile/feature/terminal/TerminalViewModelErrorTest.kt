@@ -20,7 +20,7 @@ class TerminalViewModelErrorTest {
         var statusMessage: String? = null
         try {
             focusTabForReadAck(client, "tab") { statusMessage = it }
-            assertEquals("Read acknowledgement failed: No endpoint is open", statusMessage)
+            assertEquals("No endpoint is open", statusMessage)
         } finally {
             scope.cancel()
         }

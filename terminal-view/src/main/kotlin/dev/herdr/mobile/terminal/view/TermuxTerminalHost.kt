@@ -211,14 +211,11 @@ class TermuxTerminalHost(
                 // slow drags still move. Sign matches the old view exactly:
                 // finger-down (distanceY<0) = older-ward = negative lines =
                 // direction UP; finger-up = live-ward = positive = DOWN.
-                scrollRemainder += distanceY
-                val rowPx = rowHeightPx()
-                if (rowPx <= 0f) return true
-                val rows = (scrollRemainder / rowPx).toInt()
-                if (rows != 0) {
-                    scrollRemainder -= rows * rowPx
+                val next = rowsForDrag(distanceY, scrollRemainder, rowHeightPx())
+                scrollRemainder = next.remainderPx
+                if (next.rows != 0) {
                     remoteArmed = true
-                    requestScroll(rows, immediate = false)
+                    requestScroll(next.rows, immediate = false)
                 }
                 return true
             }
@@ -383,11 +380,10 @@ class TermuxTerminalHost(
                     onRemoteScroll?.invoke(rows, "rows")
                     return
                 }
-                pageRemainder += rows
-                val pages = pageRemainder / rowsPerPage
-                if (pages != 0) {
-                    pageRemainder -= pages * rowsPerPage
-                    onRemoteScroll?.invoke(pages, "pages")
+                val pageScroll = pagesForRows(rows, rowsPerPage, pageRemainder)
+                pageRemainder = pageScroll.remainderRows
+                if (pageScroll.pages != 0) {
+                    onRemoteScroll?.invoke(pageScroll.pages, "pages")
                 }
             }
         }
@@ -528,8 +524,9 @@ class TermuxTerminalHost(
 
     /** Emit a sub-page gesture as one page when the finger lifts. */
     private fun flushPageRemainder() {
-        if (hostScrollable || pageRemainder == 0) return
-        val page = if (pageRemainder > 0) 1 else -1
+        if (hostScrollable) return
+        val page = flushPage(pageRemainder)
+        if (page == 0) return
         pageRemainder = 0
         onRemoteScroll?.invoke(page, "pages")
     }

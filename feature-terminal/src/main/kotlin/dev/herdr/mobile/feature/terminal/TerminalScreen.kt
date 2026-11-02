@@ -222,7 +222,7 @@ fun TerminalScreen(
         )
         state.statusMessage?.let { message ->
             Text(
-                text = message,
+                text = message.text(),
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.error,
                 modifier = Modifier.padding(horizontal = 16.dp, vertical = 4.dp),

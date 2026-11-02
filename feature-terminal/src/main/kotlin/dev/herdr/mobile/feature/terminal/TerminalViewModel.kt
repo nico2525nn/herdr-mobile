@@ -50,7 +50,7 @@ data class TerminalUiState(
     val backend: ConnectionTerminalBackend? = null,
     val settings: AppSettings = AppSettings(),
     val inputPage: InputPanelPage = InputPanelPage.EXTRA_KEYS,
-    val statusMessage: String? = null,
+    val statusMessage: UiMessage? = null,
     /** Sticky CTRL/ALT from Extra Keys: applies to the next extra key AND the next soft-keyboard char. */
     val stickyModifiers: Set<TerminalKeyEncoder.Modifier> = emptySet(),
 ) {
@@ -72,8 +72,13 @@ data class TerminalUiState(
         }
 }
 
+/**
+ * Read-ack side effect: opening a DONE pane focuses its tab server-side, which
+ * transitions done -> idle everywhere. [onFailure] receives the *reason* only;
+ * the UI decides how to present it ([UiMessage.CommandFailed]).
+ */
 internal suspend fun focusTabForReadAck(
-    client: HerdrClient,
+    client: dev.herdr.mobile.core.network.HerdrSession,
     tabId: String,
     onFailure: (String) -> Unit,
 ) {
@@ -82,12 +87,13 @@ internal suspend fun focusTabForReadAck(
     } catch (e: CancellationException) {
         throw e
     } catch (e: Exception) {
-        onFailure("Read acknowledgement failed: ${e.message}")
+        // Detail only: the UI renderer owns the sentence and its category.
+        onFailure(e.message ?: "unknown error")
     }
 }
 
 class TerminalViewModel(
-    private val client: HerdrClient,
+    private val client: dev.herdr.mobile.core.network.HerdrSession,
     private val initialWorkspaceId: String?,
     private val initialTabId: String?,
     private val initialPaneId: String? = null,
@@ -97,7 +103,7 @@ class TerminalViewModel(
     private val targetFlow = MutableStateFlow<TerminalTarget?>(null)
     private val backendFlow = MutableStateFlow<ConnectionTerminalBackend?>(null)
     private val pageFlow = MutableStateFlow(InputPanelPage.EXTRA_KEYS)
-    private val messageFlow = MutableStateFlow<String?>(null)
+    private val messageFlow = MutableStateFlow<UiMessage?>(null)
     private val stickyFlow =
         MutableStateFlow<Set<TerminalKeyEncoder.Modifier>>(emptySet())
 
@@ -147,7 +153,7 @@ class TerminalViewModel(
         val backend = flows[2] as ConnectionTerminalBackend?
         val settings = flows[3] as AppSettings
         val page = flows[4] as InputPanelPage
-        val message = flows[5] as String?
+        val message = flows[5] as UiMessage?
         val sticky = flows[6] as Set<TerminalKeyEncoder.Modifier>
         TerminalUiState(
             snapshot = clientState.snapshot,
@@ -205,7 +211,7 @@ class TerminalViewModel(
                         return@collect
                     }
                     targetFlow.value = null
-                    messageFlow.value = "Connection target changed — choose a session"
+                    messageFlow.value = UiMessage.TargetChanged
                     return@collect
                 }
                 if (!allowInitialTargetResolution) return@collect
@@ -242,13 +248,13 @@ class TerminalViewModel(
                 val label = snapshot.workspace(decision.next.workspaceId)
                     ?.label?.takeIf { it.isNotBlank() }
                     ?: decision.next.workspaceId
-                messageFlow.value = "That workspace was closed — opened $label"
+                messageFlow.value = UiMessage.WorkspaceClosed(label)
                 openTarget(decision.next, preserveStatusMessage = true)
             }
             TargetReconcile.Clear -> {
                 backendFlow.value = null
                 targetFlow.value = null
-                messageFlow.value = "Session closed"
+                messageFlow.value = UiMessage.SessionClosed
             }
         }
     }
@@ -311,12 +317,14 @@ class TerminalViewModel(
         if (initialPaneId == null) return // in-app navigation: no expectation to violate
         if (target.paneId != initialPaneId) {
             val pane = snapshot.pane(target.paneId)
-            messageFlow.value =
-                "Original pane is gone — opened ${pane?.displayLabel ?: target.paneId} instead"
+            messageFlow.value = UiMessage.OpenedInstead(
+                UiMessage.OpenedInstead.TargetKind.PANE,
+                pane?.displayLabel ?: target.paneId,
+            )
         } else if (initialTabId != null && target.tabId != initialTabId) {
-            messageFlow.value = "Original tab is gone — opened a neighbor tab instead"
+            messageFlow.value = UiMessage.OpenedInstead(UiMessage.OpenedInstead.TargetKind.TAB, null)
         } else if (initialWorkspaceId != null && target.workspaceId != initialWorkspaceId) {
-            messageFlow.value = "Original workspace is gone — opened another workspace instead"
+            messageFlow.value = UiMessage.OpenedInstead(UiMessage.OpenedInstead.TargetKind.WORKSPACE, null)
         }
     }
 
@@ -366,8 +374,13 @@ class TerminalViewModel(
         val paneDone = pane.status == dev.herdr.mobile.core.model.AgentStatus.DONE
         if (paneDone) {
             viewModelScope.launch {
-                focusTabForReadAck(client, target.tabId) { message ->
-                    if (client.targetGeneration == targetGeneration) messageFlow.value = message
+                focusTabForReadAck(client, target.tabId) { detail ->
+                    if (client.targetGeneration == targetGeneration) {
+                        messageFlow.value = UiMessage.CommandFailed(
+                            UiMessage.CommandFailed.Command.READ_ACK,
+                            detail,
+                        )
+                    }
                 }
             }
         }
@@ -408,7 +421,7 @@ class TerminalViewModel(
                     val canRetry = !retryUsed &&
                         e is dev.herdr.mobile.core.network.DaemonException && e.code == "not_connected"
                     if (!canRetry) {
-                        messageFlow.value = "Cannot attach: ${e.message}"
+                        messageFlow.value = UiMessage.AttachFailed(e.message)
                         return@launch
                     }
                     retryUsed = true
@@ -419,7 +432,7 @@ class TerminalViewModel(
                         }
                     } catch (_: Exception) {
                         ensureActive()
-                        messageFlow.value = "Reconnect timed out — tap Retry"
+                        messageFlow.value = UiMessage.ReconnectTimedOut
                         return@launch
                     }
                     ensureActive()
@@ -446,7 +459,7 @@ class TerminalViewModel(
                 }
                 if (!isActive) return@launch
                 if (retryUsed) {
-                    messageFlow.value = "Connection changed during attach — tap Retry"
+                    messageFlow.value = UiMessage.StreamChanged
                     return@launch
                 }
                 retryUsed = true
@@ -456,7 +469,7 @@ class TerminalViewModel(
                     }
                 } catch (_: Exception) {
                     ensureActive()
-                    messageFlow.value = "Reconnect timed out — tap Retry"
+                    messageFlow.value = UiMessage.ReconnectTimedOut
                     return@launch
                 }
                 ensureActive()
@@ -582,7 +595,7 @@ class TerminalViewModel(
             }
             ensureActive()
             if (!connected) {
-                messageFlow.value = "Reconnect timed out — tap Retry"
+                messageFlow.value = UiMessage.ReconnectTimedOut
                 return@launch
             }
             openTarget(target)
@@ -608,7 +621,7 @@ class TerminalViewModel(
                 runCatching { op(backend) }
                     .onFailure {
                         if (client.targetGeneration == generation && backendFlow.value === backend) {
-                            messageFlow.value = "Send failed: ${it.message}"
+                            messageFlow.value = UiMessage.SendFailed(it.message)
                         }
                     }
             }
@@ -637,7 +650,7 @@ class TerminalViewModel(
                 runCatching { op(backend) }
                     .onFailure {
                         if (client.targetGeneration == generation && backendFlow.value === backend) {
-                            messageFlow.value = "Send failed: ${it.message}"
+                            messageFlow.value = UiMessage.SendFailed(it.message)
                         }
                     }
             }
@@ -767,7 +780,7 @@ class TerminalViewModel(
                     }
                     openTab(workspaceId, tabId)
                 }
-                .onFailure { messageFlow.value = "Cannot create tab: ${it.message}" }
+                .onFailure { messageFlow.value = UiMessage.CommandFailed(UiMessage.CommandFailed.Command.CREATE_TAB, it.message) }
         }
     }
 
@@ -784,14 +797,14 @@ class TerminalViewModel(
                         openTarget(TerminalTarget(workspaceId, next.id, nextPane.id))
                     }
                 }
-                .onFailure { messageFlow.value = "Cannot close tab: ${it.message}" }
+                .onFailure { messageFlow.value = UiMessage.CommandFailed(UiMessage.CommandFailed.Command.CLOSE_TAB, it.message) }
         }
     }
 
     fun renameWorkspace(workspaceId: String, label: String) {
         viewModelScope.launch {
             runCatching { client.renameWorkspace(workspaceId, label.trim()) }
-                .onFailure { messageFlow.value = "Cannot rename workspace: ${it.message}" }
+                .onFailure { messageFlow.value = UiMessage.CommandFailed(UiMessage.CommandFailed.Command.RENAME_WORKSPACE, it.message) }
         }
     }
 
@@ -809,14 +822,14 @@ class TerminalViewModel(
                     val pane = tab.activePane ?: return@onSuccess
                     openTarget(TerminalTarget(remaining.id, tab.id, pane.id))
                 }
-                .onFailure { messageFlow.value = "Cannot close workspace: ${it.message}" }
+                .onFailure { messageFlow.value = UiMessage.CommandFailed(UiMessage.CommandFailed.Command.CLOSE_WORKSPACE, it.message) }
         }
     }
 
     fun renameTab(tabId: String, label: String) {
         viewModelScope.launch {
             runCatching { client.renameTab(tabId, label.trim()) }
-                .onFailure { messageFlow.value = "Cannot rename tab: ${it.message}" }
+                .onFailure { messageFlow.value = UiMessage.CommandFailed(UiMessage.CommandFailed.Command.RENAME_TAB, it.message) }
         }
     }
 
@@ -834,7 +847,7 @@ class TerminalViewModel(
                     tabId,
                     dev.herdr.mobile.core.model.Reorder.insertIndex(from, toIndex, tabs.size),
                 )
-            }.onFailure { messageFlow.value = "Cannot move tab: ${it.message}" }
+            }.onFailure { messageFlow.value = UiMessage.CommandFailed(UiMessage.CommandFailed.Command.MOVE_TAB, it.message) }
         }
     }
 
@@ -848,7 +861,7 @@ class TerminalViewModel(
                     workspaceId,
                     dev.herdr.mobile.core.model.Reorder.insertIndex(from, toIndex, workspaces.size),
                 )
-            }.onFailure { messageFlow.value = "Cannot move workspace: ${it.message}" }
+            }.onFailure { messageFlow.value = UiMessage.CommandFailed(UiMessage.CommandFailed.Command.MOVE_WORKSPACE, it.message) }
         }
     }
 
@@ -860,7 +873,7 @@ class TerminalViewModel(
     }
 
     class Factory(
-        private val client: HerdrClient,
+        private val client: dev.herdr.mobile.core.network.HerdrSession,
         private val workspaceId: String?,
         private val tabId: String?,
         private val paneId: String? = null,

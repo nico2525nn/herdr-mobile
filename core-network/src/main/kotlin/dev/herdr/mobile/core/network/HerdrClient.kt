@@ -62,7 +62,7 @@ class HerdrClient(
     private val endpointProvider: DaemonEndpointProvider,
     private val externalScope: CoroutineScope,
     http: OkHttpClient? = null,
-) {
+)  : HerdrSession {
     private val scope = CoroutineScope(externalScope.coroutineContext)
 
     private val http: OkHttpClient = http ?: OkHttpClient.Builder()
@@ -89,7 +89,7 @@ class HerdrClient(
             .build()
 
     private val _state = MutableStateFlow(HerdrClientState())
-    val state: StateFlow<HerdrClientState> = _state.asStateFlow()
+    override val state: StateFlow<HerdrClientState> = _state.asStateFlow()
 
     private val lifecycleLock = Any()
 
@@ -105,8 +105,8 @@ class HerdrClient(
     @Volatile
     private var targetInvalidated = false
 
-    val linkGeneration: Long get() = currentLinkGeneration
-    val targetGeneration: Long get() = currentTargetGeneration
+    override val linkGeneration: Long get() = currentLinkGeneration
+    override val targetGeneration: Long get() = currentTargetGeneration
 
     private fun isCurrentGeneration(generation: Long): Boolean =
         currentLinkGeneration == generation
@@ -251,7 +251,7 @@ class HerdrClient(
      * restart). No-op when already CONNECTED: every foregrounding used to tear
      * down a healthy SSE (transient STALE, resubscribe gap, extra SSH dials).
      */
-    fun kick() {
+    override fun kick() {
         if (targetInvalidated || _state.value.connection == ConnectionState.CONNECTED) return
         restartLink()
     }
@@ -320,7 +320,7 @@ class HerdrClient(
      * link is down; on a healthy link it re-GETs the snapshot without tearing
      * down the SSE (deep-link freshness, post-createTab waits).
      */
-    fun refresh() {
+    override fun refresh() {
         val generation = linkGeneration
         if (_state.value.connection != ConnectionState.CONNECTED) {
             kick()
@@ -564,11 +564,11 @@ class HerdrClient(
     // -- Actions ---------------------------------------------------------------------------
 
     /** Open a terminal stream. Caller owns it and must [TerminalConnection.release] it. */
-    fun openTerminal(
+    override fun openTerminal(
         paneId: String,
         cols: Int,
         rows: Int,
-        takeover: Boolean = false,
+        takeover: Boolean,
     ): TerminalConnection {
         val ep = endpoint ?: throw DaemonException("not_connected", "No endpoint is open")
         return TerminalSocket(http, ep, paneId, cols, rows, takeover, scope).also { it.connect() }
@@ -577,7 +577,7 @@ class HerdrClient(
     suspend fun sendInput(paneId: String, text: String) =
         withContext(Dispatchers.IO) { api().sendInput(paneId, text) }
 
-    suspend fun interrupt(paneId: String) =
+    override suspend fun interrupt(paneId: String) =
         withContext(Dispatchers.IO) { api().interrupt(paneId) }
 
     suspend fun reportAgent(paneId: String, status: AgentStatus, message: String?, agent: String? = null) =
@@ -585,31 +585,31 @@ class HerdrClient(
             api().reportAgent(AgentReport(paneId = paneId, status = status, message = message, agent = agent))
         }
 
-    suspend fun createTab(workspaceId: String, label: String?): String =
+    override suspend fun createTab(workspaceId: String, label: String?): String =
         withContext(Dispatchers.IO) { api().createTab(workspaceId, label) }
 
-    suspend fun closeTab(tabId: String) =
+    override suspend fun closeTab(tabId: String) =
         withContext(Dispatchers.IO) { api().closeTab(tabId) }
 
-    suspend fun focusTab(tabId: String) =
+    override suspend fun focusTab(tabId: String) =
         withContext(Dispatchers.IO) { api().focusTab(tabId) }
 
-    suspend fun renameTab(tabId: String, label: String) =
+    override suspend fun renameTab(tabId: String, label: String) =
         withContext(Dispatchers.IO) { api().renameTab(tabId, label) }
 
     suspend fun createWorkspace(label: String?, cwd: String?): String =
         withContext(Dispatchers.IO) { api().createWorkspace(label, cwd) }
 
-    suspend fun renameWorkspace(workspaceId: String, label: String) =
+    override suspend fun renameWorkspace(workspaceId: String, label: String) =
         withContext(Dispatchers.IO) { api().renameWorkspace(workspaceId, label) }
 
-    suspend fun closeWorkspace(workspaceId: String) =
+    override suspend fun closeWorkspace(workspaceId: String) =
         withContext(Dispatchers.IO) { api().closeWorkspace(workspaceId) }
 
-    suspend fun moveTab(tabId: String, insertIndex: Long) =
+    override suspend fun moveTab(tabId: String, insertIndex: Long) =
         withContext(Dispatchers.IO) { api().moveTab(tabId, insertIndex) }
 
-    suspend fun moveWorkspace(workspaceId: String, insertIndex: Long) =
+    override suspend fun moveWorkspace(workspaceId: String, insertIndex: Long) =
         withContext(Dispatchers.IO) { api().moveWorkspace(workspaceId, insertIndex) }
 
     suspend fun resizePane(paneId: String, cols: Int, rows: Int) =

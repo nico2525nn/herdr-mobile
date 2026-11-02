@@ -1,5 +1,27 @@
 # Changelog
 
+## 1.5.1 — 2026-11-02
+
+Refactor pass with tests written from behaviour, not implementation.
+
+- `HerdrSession`: the view-model depends on a narrow contract (state,
+  generations, openTerminal, the five commands) instead of the concrete
+  `HerdrClient`. A scripted session now drives the screen's state machine, so
+  the rules are executable: active pane opens; a workspace closed elsewhere
+  retargets and says so; an empty session drops the target; a daemon restart
+  reopens the same pane; a dropped stream re-attaches without user action;
+  input typed during re-attach is delivered.
+- `UiMessage`: the status line is data (category + parameters) with one
+  renderer, replacing 19 inline strings. Tests assert the contract: every
+  message renders, failures name the action and the reason, a missing reason
+  never leaks null, notices that name a destination include it, every command
+  has distinct wording.
+- `ScrollMath`: drag→rows, rows→pages and the sub-page flush are pure
+  functions with tests for proportionality, accumulation, direction, unknown
+  pitch and whole-screen conversion — the manual device checks are now code.
+- Kotlin 98 tests / Rust 50. Device smoke: pane renders, scroll moves 369k px,
+  keyboard opens by button and stays hidden on return from background.
+
 ## 1.5.0 — 2026-11-02
 
 Scroll is now negotiated at runtime instead of guessed from an app name.
