@@ -17,22 +17,38 @@ import dev.herdr.mobile.core.model.ThemeMode
 private val LocalHerdrColors = staticCompositionLocalOf { HerdrColorsDark }
 
 /**
- * Pure-black AMOLED scheme: every background/surface #000000 so pixels stay
- * off. Content colors follow M3 dark defaults; status dots keep the Herdr
- * dark tokens (unchanged — they read fine on black).
+ * Pure-black AMOLED scheme: every surface role is #000000, including the
+ * container ramp that cards, menus, sheets and dialogs use. Material's
+ * elevation tint is disabled (black tint) and separation comes from the
+ * outline roles instead — a 5% grey card on AMOLED is visible banding, which
+ * is exactly what this mode exists to avoid.
  */
 private fun midnightColorScheme() = darkColorScheme(
     background = Color.Black,
     onBackground = Color(0xFFE8E8E8),
     surface = Color.Black,
     onSurface = Color(0xFFE8E8E8),
-    surfaceVariant = Color(0xFF0A0A0A),
+    surfaceVariant = Color.Black,
     onSurfaceVariant = Color(0xFFB0B0B0),
+    surfaceDim = Color.Black,
+    surfaceBright = Color.Black,
     surfaceContainerLowest = Color.Black,
     surfaceContainerLow = Color.Black,
-    surfaceContainer = Color(0xFF0A0A0A),
-    surfaceContainerHigh = Color(0xFF111111),
-    surfaceContainerHighest = Color(0xFF181818),
+    surfaceContainer = Color.Black,
+    surfaceContainerHigh = Color.Black,
+    surfaceContainerHighest = Color.Black,
+    // Containers that would otherwise carry the purple default ramp.
+    primaryContainer = Color.Black,
+    onPrimaryContainer = Color(0xFFE8E8E8),
+    secondaryContainer = Color.Black,
+    onSecondaryContainer = Color(0xFFE8E8E8),
+    tertiaryContainer = Color.Black,
+    onTertiaryContainer = Color(0xFFE8E8E8),
+    errorContainer = Color.Black,
+    onErrorContainer = Color(0xFFE8E8E8),
+    // Separation on black: thin, low-key lines rather than lifted surfaces.
+    outline = Color(0xFF3A3A3A),
+    outlineVariant = Color(0xFF232323),
     inverseSurface = Color(0xFFE8E8E8),
     inverseOnSurface = Color.Black,
     surfaceTint = Color.Black,

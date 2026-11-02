@@ -1,5 +1,18 @@
 # Changelog
 
+## 1.5.3 — 2026-11-02
+
+- Midnight (AMOLED) now covers the whole app, not just the background: every
+  Material surface role — containers lowest…highest, dim/bright, variant and
+  the accent containers — is #000000, and the elevation tint is black.
+  Separation comes from hairline outlines instead of lifted greys.
+- Extra-key buttons: a tonal fill on black would render as floating text, so
+  unarmed keys carry a 1 dp outlineVariant border and the armed state is the
+  accent colour.
+- Verified on device by pixel sampling: Home 97% pure black (the rest is text
+  and status dots), dialog surfaces #000, extra-keys panel #000 with visible
+  key outlines.
+
 ## 1.5.2 — 2026-11-02
 
 - Scroll: a mirrored TUI that banked a few local rows used to be routed to the

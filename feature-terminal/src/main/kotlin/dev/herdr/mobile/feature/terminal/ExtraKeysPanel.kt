@@ -9,6 +9,7 @@ import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.FilledTonalButton
 import androidx.compose.material3.MaterialTheme
@@ -194,13 +195,22 @@ private fun RepeatableKeyButton(
             ),
         shape = ButtonDefaults.filledTonalShape,
         contentPadding = PaddingValues(horizontal = 2.dp, vertical = 8.dp),
+        // On the AMOLED theme every container role is black, so a tonal fill
+        // would render as a floating label. A hairline border keeps the key
+        // visible without lighting pixels; the armed state is the accent.
+        border = if (isArmed) null else BorderStroke(
+            1.dp,
+            MaterialTheme.colorScheme.outlineVariant,
+        ),
         colors = if (isArmed) {
             ButtonDefaults.filledTonalButtonColors(
-                containerColor = MaterialTheme.colorScheme.primaryContainer,
-                contentColor = MaterialTheme.colorScheme.onPrimaryContainer,
+                containerColor = MaterialTheme.colorScheme.primary,
+                contentColor = MaterialTheme.colorScheme.onPrimary,
             )
         } else {
-            ButtonDefaults.filledTonalButtonColors()
+            ButtonDefaults.filledTonalButtonColors(
+                containerColor = MaterialTheme.colorScheme.surfaceContainerHigh,
+            )
         },
         interactionSource = interactions,
     ) {
