@@ -668,6 +668,17 @@ class TerminalViewModel(
         }
     }
 
+    /**
+     * Clipboard/paste payload, already terminal-ready (escape-stripped and,
+     * for bracketed pastes, wrapped in 2004 markers). Sent verbatim: the
+     * normalizing [sendText] path would strip those markers and turn the
+     * block's newlines into CR, which is exactly what broke multi-line paste
+     * in TUI editors.
+     */
+    fun sendPaste(payload: String) {
+        enqueueOrSend({ backend -> backend.sendText(payload) })
+    }
+
     fun sendBytes(data: ByteArray) {
         enqueueOrSend({ backend -> backend.send(data) })
     }

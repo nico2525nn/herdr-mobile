@@ -441,9 +441,8 @@ object TerminalKeyEncoder {
         bracketed: Boolean,
         binaryBackend: Boolean,
     ): PastePayload {
-        val normalized = pasteNormalize(text)
-        if (!bracketed) return PastePayload.Text(normalized)
-        val payload = bracketedPaste(normalized)
+        if (!bracketed) return PastePayload.Text(pasteNormalize(text))
+        val payload = bracketedPaste(bracketedPasteBody(text))
         return if (binaryBackend) {
             PastePayload.Bytes(payload.toByteArray(Charsets.UTF_8))
         } else {
@@ -464,13 +463,29 @@ object TerminalKeyEncoder {
      * barely exists. Shells treat the result identically to before (CR and LF
      * both accept-line); TUIs get the safer CR.
      */
-    fun pasteNormalize(text: String): String {
-        val stripped = text.filter { c -> c != '\u001B' && (c.code < 0x80 || c.code > 0x9F) }
-        return stripped.replace(Regex("\r?\n"), "\r")
-    }
+    fun pasteNormalize(text: String): String =
+        stripEscapeInjection(text).replace(Regex("\r\n|\r|\n"), "\r")
 
     const val BRACKETED_PASTE_START = "\u001B[200~"
     const val BRACKETED_PASTE_END = "\u001B[201~"
+
+    /**
+     * Body of a 2004 paste: escape-stripped, line endings normalized to LF.
+     *
+     * Must NOT reuse [pasteNormalize]: that turns newlines into CR because a
+     * bare CR is what Enter sends, which is right for a shell typing a single
+     * line but wrong inside a bracketed block — the app treats a CR as
+     * "submit/accept" and a multi-line paste in a TUI editor (Pi, codex, omp)
+     * fires off one command per line instead of inserting the text. Per the
+     * 2004 contract the payload is literal text, so LF stays LF; CRLF collapses
+     * to LF only so CRLF clipboards do not leave stray CRs.
+     */
+    fun bracketedPasteBody(text: String): String =
+        stripEscapeInjection(text).replace(Regex("\r\n|\r"), "\n")
+
+    /** Drops ESC and C1 controls (escape injection through the clipboard). */
+    fun stripEscapeInjection(text: String): String =
+        text.filter { c -> c != '\u001B' && (c.code < 0x80 || c.code > 0x9F) }
 
     /**
      * Wrap [normalized] (already [pasteNormalize]d) in the 2004 bracketed-paste

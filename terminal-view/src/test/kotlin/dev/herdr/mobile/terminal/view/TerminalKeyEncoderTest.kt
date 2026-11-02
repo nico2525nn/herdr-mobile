@@ -214,6 +214,38 @@ class TerminalKeyEncoderTest {
     }
 
     @Test
+    fun `bracketed paste keeps LF and wraps in 2004 markers`() {
+        // The 2004 payload is literal text: a CR inside the block is
+        // "submit/accept" for TUI editors (Pi, codex, omp), so a multi-line
+        // paste used to fire one command per line instead of inserting text.
+        val payload = TerminalKeyEncoder.pastePayload(
+            text = "line one\nline two\n",
+            bracketed = true,
+            binaryBackend = false,
+        )
+        assertEquals(
+            "\u001B[200~line one\nline two\n\u001B[201~",
+            (payload as TerminalKeyEncoder.PastePayload.Text).value,
+        )
+        // CRLF clipboards collapse to LF, never to a stray CR.
+        val crlf = TerminalKeyEncoder.pastePayload("a\r\nb", bracketed = true, binaryBackend = true)
+        assertEquals(
+            "\u001B[200~a\nb\u001B[201~",
+            String((crlf as TerminalKeyEncoder.PastePayload.Bytes).value, Charsets.UTF_8),
+        )
+    }
+
+    @Test
+    fun `plain paste still sends CR for every newline`() {
+        val payload = TerminalKeyEncoder.pastePayload(
+            text = "a\nb",
+            bracketed = false,
+            binaryBackend = false,
+        )
+        assertEquals("a\rb", (payload as TerminalKeyEncoder.PastePayload.Text).value)
+    }
+
+    @Test
     fun `pasteNormalize strips ESC and C1`() {
         assertEquals("ab", TerminalKeyEncoder.pasteNormalize("a\u001Bb"))
         assertEquals("ab", TerminalKeyEncoder.pasteNormalize("a\u0085b"))
@@ -306,10 +338,12 @@ class TerminalKeyEncoderTest {
         )
 
         // Regression for bug class #1: core framing ESC bytes bypass text
-        // normalization, while TUI keeps its input.text route below.
+        // normalization, while TUI keeps its input.text route below. The
+        // embedded newline stays LF inside the 2004 block (literal-text
+        // contract); only a non-bracketed paste maps it to CR.
         assertTrue(payload is TerminalKeyEncoder.PastePayload.Bytes)
         assertArrayEquals(
-            "\u001B[200~a[200~b\r\u001B[201~".toByteArray(Charsets.UTF_8),
+            "\u001B[200~a[200~b\n\u001B[201~".toByteArray(Charsets.UTF_8),
             (payload as TerminalKeyEncoder.PastePayload.Bytes).value,
         )
 
@@ -320,7 +354,7 @@ class TerminalKeyEncoderTest {
         )
         assertTrue(tuiPayload is TerminalKeyEncoder.PastePayload.Text)
         assertEquals(
-            "\u001B[200~a[200~b\r\u001B[201~",
+            "\u001B[200~a[200~b\n\u001B[201~",
             (tuiPayload as TerminalKeyEncoder.PastePayload.Text).value,
         )
 

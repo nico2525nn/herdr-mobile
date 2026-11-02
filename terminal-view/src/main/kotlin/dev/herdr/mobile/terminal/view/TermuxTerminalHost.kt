@@ -76,6 +76,9 @@ class TermuxTerminalHost(
     /** Fractional-row carry across conventional 3-row wheel gestures. */
     private var wheelRemainder = 0.0
 
+    /** Rows carried between page-key emissions (page granularity). */
+    private var pageRemainder = 0
+
     /**
      * Scroll-request coalescing: OMP/codex repaints the whole screen per
      * request, so a drag firing per onScroll callback stutters through full
@@ -207,11 +210,13 @@ class TermuxTerminalHost(
             ): Boolean {
                 // Fling continues the drag direction: finger-up fling
                 // (velocityY < 0) heads live-ward = positive lines.
-                // Single small request, not Termux's animated decay: each
-                // remote request repaints the whole screen, so a decaying
-                // sequence would stutter through full repaints. Scaled to
-                // feel like the START of a Termux fling, not a teleport.
-                val rows = (-velocityY / 4000f).toInt().coerceIn(-12, 12)
+                // Bounded and measured in the same row unit as the drag: a
+                // fixed ±12-row jump on top of the drag's own rows is what
+                // made fast swipes overshoot unpredictably. ~0.1s of travel,
+                // capped at 6 rows, keeps the flick responsive but repeatable.
+                val rowPx = rowHeightPx()
+                if (rowPx <= 0f) return true
+                val rows = (-velocityY * 0.10f / rowPx).toInt().coerceIn(-6, 6)
                 if (rows != 0) {
                     remoteArmed = true
                     requestScroll(rows, immediate = true)
@@ -252,6 +257,7 @@ class TermuxTerminalHost(
             return false // Termux handles everything (local history scroll).
         }
         if (event.action == MotionEvent.ACTION_DOWN) {
+            pageRemainder = 0
             scrollRemainder = 0f
             remoteArmed = false
             touchMoved = false
@@ -273,6 +279,7 @@ class TermuxTerminalHost(
             // The delayed retry cannot nuke a NEW selection: starting one
             // needs its own 500ms long-press, past the 350ms retry.
             if (remoteArmed) {
+                flushPageRemainder()
                 // Flush the coalesced tail NOW: the drag's last rows must not
                 // wait for the 150ms timer (that lag reads as an eaten flick).
                 flushPending()
@@ -332,8 +339,38 @@ class TermuxTerminalHost(
                 onRemoteWheel?.invoke(notches)
             }
         } else {
-            onRemoteScroll?.invoke(rows)
+            // Page-key route: the host can only move in whole screens, so a
+            // raw row count made the same drag travel one screen or five
+            // depending on where the gesture landed. Accumulate rows and emit
+            // whole pages; flushPending() turns a sub-page gesture into one
+            // page on release, so a small flick still scrolls predictably.
+            val rowsPerPage = screenRows()
+            if (rowsPerPage <= 0) {
+                onRemoteScroll?.invoke(rows)
+                return
+            }
+            pageRemainder += rows
+            val pages = pageRemainder / rowsPerPage
+            if (pages != 0) {
+                pageRemainder -= pages * rowsPerPage
+                onRemoteScroll?.invoke(pages)
+            }
         }
+    }
+
+    /** Rows in the attached screen: one page-key scroll = one screen. */
+    private fun screenRows(): Int = try {
+        view.currentSession?.emulator?.mRows ?: 0
+    } catch (_: Exception) {
+        0
+    }
+
+    /** Emit a trailing sub-page as one page (gesture end). */
+    private fun flushPageRemainder() {
+        if (pageRemainder == 0) return
+        val page = if (pageRemainder > 0) 1 else -1
+        pageRemainder = 0
+        onRemoteScroll?.invoke(page)
     }
 
     private fun rowHeightPx(): Float {
@@ -341,6 +378,11 @@ class TermuxTerminalHost(
         // out exactly mRows rows). The old fontSpacing guess ran ~14% small
         // (typeface metrics), overscrolling every remote drag. Falls back to
         // the guess only before attach (rows unknown — never scrolled then).
+        // The renderer's own pitch is the unit Termux uses for local scrolling,
+        // so remote pans move by the same amount as a local drag. Deriving it
+        // from view.height/rows instead made the same swipe travel a different
+        // distance depending on the pane (and on whether the keyboard was up).
+        TermuxInternals.rowPitchPx(view)?.let { return it }
         val em = try {
             view.currentSession?.emulator
         } catch (_: Exception) {

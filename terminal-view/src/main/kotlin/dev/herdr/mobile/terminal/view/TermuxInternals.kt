@@ -37,6 +37,8 @@ object TermuxInternals {
         fieldOf(TerminalView::class.java, "mDefaultSelectors")
     private val rendererLineSpacingAndAscentField: Field? =
         fieldOf(TerminalRenderer::class.java, "mFontLineSpacingAndAscent")
+    private val viewRendererField: Field? =
+        fieldOf(TerminalView::class.java, "mRenderer")
 
     /** DECSET 2004 (bracketed paste) inside Termux's private flag word. */
     const val DECSET_BIT_BRACKETED_PASTE = 1024
@@ -58,6 +60,14 @@ object TermuxInternals {
     /** View scroll offset in rows (0 = bottom, negative = history). */
     fun topRow(view: TerminalView): Int? =
         viewTopRowField?.let { runCatching { it.getInt(view) }.getOrNull() }
+
+    /** The view's renderer (row pitch, metrics), or null when unavailable. */
+    fun renderer(view: TerminalView): TerminalRenderer? =
+        viewRendererField?.let { runCatching { it.get(view) as? TerminalRenderer }.getOrNull() }
+
+    /** Exact row pitch Termux draws and scrolls by, in pixels. */
+    fun rowPitchPx(view: TerminalView): Float? =
+        renderer(view)?.let { r -> r.fontLineSpacing.takeIf { it > 0 }?.toFloat() }
 
     /** Y offset of the first row inside the renderer's line box. */
     fun lineSpacingAndAscent(renderer: TerminalRenderer): Int? =

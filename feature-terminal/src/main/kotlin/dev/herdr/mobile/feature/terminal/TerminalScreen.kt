@@ -240,6 +240,7 @@ fun TerminalScreen(
                     state = state,
                     onSendBytes = { viewModel.sendBytes(it) },
                     onSendText = { viewModel.sendText(it) },
+                    onSendPaste = { viewModel.sendPaste(it) },
                     onRetry = { viewModel.retryAttach() },
                     keyboardShowRequest = keyboardShowRequest,
                     keyboardShowHandled = keyboardShowHandled,
@@ -307,6 +308,7 @@ private fun TerminalSurface(
     state: TerminalUiState,
     onSendBytes: (ByteArray) -> Unit,
     onSendText: (String) -> Unit,
+    onSendPaste: (String) -> Unit,
     onRetry: () -> Unit,
     keyboardShowRequest: Int,
     keyboardShowHandled: Int,
@@ -491,7 +493,7 @@ private fun TerminalSurface(
                             is dev.herdr.mobile.terminal.view.TerminalKeyEncoder.PastePayload.Bytes ->
                                 onSendBytes(payload.value)
                             is dev.herdr.mobile.terminal.view.TerminalKeyEncoder.PastePayload.Text ->
-                                onSendText(payload.value)
+                                onSendPaste(payload.value)
                         }
                     }
                 },

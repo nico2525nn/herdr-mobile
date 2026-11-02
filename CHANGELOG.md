@@ -1,5 +1,21 @@
 # Changelog
 
+## 1.4.5 — 2026-11-02
+
+- Clipboard multi-line paste: inside a 2004 bracketed block the payload is
+  literal text, so newlines stay LF. They used to be normalized to CR — the
+  same byte Enter sends — so a multi-line paste into Pi/codex/omp fired one
+  submit per line instead of inserting the text.
+- Paste is also no longer re-normalized on the way out: the prepared payload
+  went through the text-send path, which stripped the 2004 markers and turned
+  LF into CR a second time. Clipboard now has its own verbatim send path.
+- Scroll speed is consistent across panes: remote scrolling used
+  view.height/rows (off by the renderer's real pitch), the fling added a fixed
+  ±12-row jump on top of the drag, and page-key panes moved a whole screen per
+  request no matter how short the gesture was. Now one row unit (the renderer's
+  pitch), a fling capped at 6 rows, and page scrolls accumulated from the drag
+  distance with a single page flushed on release.
+
 ## 1.4.4 — 2026-11-02
 
 - Connection badge: a small pill appears over the terminal's top rows when the
