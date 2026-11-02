@@ -57,6 +57,8 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import dev.herdr.mobile.core.designsystem.StatusChip
+import dev.herdr.mobile.core.designsystem.UiMessage
+import dev.herdr.mobile.core.designsystem.text
 import dev.herdr.mobile.core.model.ConnectionState
 import dev.herdr.mobile.terminal.view.ImeTrigger
 import dev.herdr.mobile.terminal.view.imeCommand

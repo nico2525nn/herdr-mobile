@@ -161,10 +161,11 @@ class DaemonApi(
         post("v1/tab/${tabId.url()}/rename", body)
     }
 
-    suspend fun createWorkspace(label: String?, cwd: String?): String {
+    suspend fun createWorkspace(label: String?, cwd: String?, focus: Boolean = true): String {
         val body = buildJsonObject {
             if (label != null) put("label", label)
             if (cwd != null) put("cwd", cwd)
+            put("focus", focus)
         }.toString()
         val obj = post("v1/workspace", body)
         return obj["workspaceId"]?.jsonPrimitive?.contentOrNull

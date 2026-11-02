@@ -1,5 +1,6 @@
 package dev.herdr.mobile.feature.terminal
 
+import dev.herdr.mobile.core.designsystem.text
 import dev.herdr.mobile.core.model.AppSettings
 import dev.herdr.mobile.core.model.ConnectionState
 import dev.herdr.mobile.core.model.Pane

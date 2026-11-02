@@ -3,6 +3,7 @@ package dev.herdr.mobile.feature.home
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.viewModelScope
+import dev.herdr.mobile.core.designsystem.UiMessage
 import dev.herdr.mobile.core.model.ConnectionState
 import dev.herdr.mobile.core.model.SessionSnapshot
 import dev.herdr.mobile.core.model.Versions
@@ -41,20 +42,20 @@ data class HomeUiState(
 class HomeViewModel(
     private val client: HerdrClient,
 ) : ViewModel() {
-    private val _message = kotlinx.coroutines.flow.MutableStateFlow<String?>(null)
-    val message: StateFlow<String?> = _message
+    private val _message = kotlinx.coroutines.flow.MutableStateFlow<UiMessage?>(null)
+    val message: StateFlow<UiMessage?> = _message
 
     fun closeTab(tabId: String) {
         viewModelScope.launch {
             runCatching { client.closeTab(tabId) }
-                .onFailure { _message.value = "Cannot close tab: ${it.message}" }
+                .onFailure { _message.value = UiMessage.CommandFailed(UiMessage.CommandFailed.Command.CLOSE_TAB, it.message) }
         }
     }
 
     fun renameTab(tabId: String, label: String) {
         viewModelScope.launch {
             runCatching { client.renameTab(tabId, label.trim()) }
-                .onFailure { _message.value = "Cannot rename tab: ${it.message}" }
+                .onFailure { _message.value = UiMessage.CommandFailed(UiMessage.CommandFailed.Command.RENAME_TAB, it.message) }
         }
     }
 
@@ -65,14 +66,14 @@ class HomeViewModel(
     fun createWorkspace(label: String?, cwd: String?) {
         viewModelScope.launch {
             runCatching { client.createWorkspace(label?.trim()?.ifEmpty { null }, cwd?.trim()?.ifEmpty { null }) }
-                .onFailure { _message.value = "Cannot create workspace: ${it.message}" }
+                .onFailure { _message.value = UiMessage.CommandFailed(UiMessage.CommandFailed.Command.CREATE_WORKSPACE, it.message) }
         }
     }
 
     fun renameWorkspace(workspaceId: String, label: String) {
         viewModelScope.launch {
             runCatching { client.renameWorkspace(workspaceId, label.trim()) }
-                .onFailure { _message.value = "Cannot rename workspace: ${it.message}" }
+                .onFailure { _message.value = UiMessage.CommandFailed(UiMessage.CommandFailed.Command.RENAME_WORKSPACE, it.message) }
         }
     }
 
@@ -92,7 +93,7 @@ class HomeViewModel(
                     dev.herdr.mobile.core.model.Reorder.insertIndex(from, toIndex, workspaces.size),
                 )
             }.onFailure {
-                _message.value = "Cannot move workspace: ${it.message}"
+                _message.value = UiMessage.CommandFailed(UiMessage.CommandFailed.Command.MOVE_WORKSPACE, it.message)
             }
         }
     }
@@ -100,7 +101,7 @@ class HomeViewModel(
     fun closeWorkspace(workspaceId: String) {
         viewModelScope.launch {
             runCatching { client.closeWorkspace(workspaceId) }
-                .onFailure { _message.value = "Cannot close workspace: ${it.message}" }
+                .onFailure { _message.value = UiMessage.CommandFailed(UiMessage.CommandFailed.Command.CLOSE_WORKSPACE, it.message) }
         }
     }
 
@@ -113,7 +114,7 @@ class HomeViewModel(
         viewModelScope.launch {
             _updateRunning.value = true
             runCatching { client.runHerdrUpdate() }
-                .onFailure { _message.value = "Update failed: ${it.message}" }
+                .onFailure { _message.value = UiMessage.CommandFailed(UiMessage.CommandFailed.Command.UPDATE_HERDR, it.message) }
             _updateRunning.value = false
         }
     }

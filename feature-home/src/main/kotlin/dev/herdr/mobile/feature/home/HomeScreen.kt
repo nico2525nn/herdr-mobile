@@ -63,6 +63,7 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import dev.herdr.mobile.core.designsystem.PeerTabChip
 import dev.herdr.mobile.core.designsystem.StatusDot
 import dev.herdr.mobile.core.designsystem.contentDescription
+import dev.herdr.mobile.core.designsystem.text
 import dev.herdr.mobile.core.model.ConnectionState
 import dev.herdr.mobile.core.model.Tab
 import dev.herdr.mobile.core.model.Workspace
@@ -180,9 +181,9 @@ fun HomeScreen(
                 }
             }
         }
-        message?.let {
+        message?.let { shown ->
             Text(
-                text = it,
+                text = shown.text(),
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.error,
                 modifier = Modifier.padding(horizontal = 20.dp, vertical = 4.dp),

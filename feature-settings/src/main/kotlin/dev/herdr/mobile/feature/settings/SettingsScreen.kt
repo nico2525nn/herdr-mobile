@@ -38,6 +38,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import dev.herdr.mobile.core.designsystem.text
 import dev.herdr.mobile.core.designsystem.SettingsRow
 import dev.herdr.mobile.core.designsystem.SettingsSection
 import dev.herdr.mobile.core.model.BackendMode
@@ -63,6 +64,7 @@ fun SettingsScreen(
     modifier: Modifier = Modifier,
 ) {
     val ui by viewModel.uiState.collectAsStateWithLifecycle()
+    val error = ui.error
     val settings = ui.settings
     val activeProfile = settings.hostProfiles.firstOrNull { it.id == settings.activeProfileId }
         ?: settings.hostProfiles.firstOrNull()
@@ -85,6 +87,16 @@ fun SettingsScreen(
                 style = MaterialTheme.typography.displaySmall,
                 modifier = Modifier.padding(horizontal = 20.dp, vertical = 12.dp),
             )
+        }
+        error?.let { message ->
+            item(key = "error") {
+                Text(
+                    text = message.text(),
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.error,
+                    modifier = Modifier.padding(horizontal = 20.dp, vertical = 4.dp),
+                )
+            }
         }
         item(key = "appearance") {
             SettingsSection(title = "Appearance") {

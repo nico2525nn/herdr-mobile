@@ -539,13 +539,16 @@ async fn workspace_create(
     }
     let label = body.get("label").and_then(|v| v.as_str()).map(str::trim).filter(|l| !l.is_empty());
     let cwd = body.get("cwd").and_then(|v| v.as_str()).map(str::trim).filter(|c| !c.is_empty());
+    // Tests and scripted clients create workspaces without stealing the
+    // desktop Herdr's focus; the app keeps the default (focus).
+    let focus = body.get("focus").and_then(|v| v.as_bool()).unwrap_or(true);
     if selected_backend(&state, &headers) == crate::config::Backend::Core {
         return match state.core.create_workspace(label, cwd).await {
             Ok(workspace_id) => (StatusCode::OK, Json(json!({"ok":true,"workspaceId":workspace_id}))).into_response(),
             Err(error) => core_error(error),
         };
     }
-    match state.cache.herdr_client().workspace_create(label, cwd).await {
+    match state.cache.herdr_client().workspace_create(label, cwd, focus).await {
         Ok(workspace_id) => (StatusCode::OK, Json(json!({"ok": true, "workspaceId": workspace_id}))).into_response(),
         Err(e) => herdr_error(e),
     }

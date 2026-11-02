@@ -108,6 +108,10 @@ class TermuxTerminalHost(
             flushPending()
             lastFlushMs = android.os.SystemClock.uptimeMillis()
             fireRemote(rows)
+            // A discrete request (page jump, fling tail, replay after the local
+            // path was proved dead) must land even when it is smaller than a
+            // page: otherwise the one gesture that unlocked the pane is eaten.
+            flushPageRemainder()
             return
         }
         pendingRows += rows
@@ -135,7 +139,7 @@ class TermuxTerminalHost(
      * function (see ScrollRoute.kt for the reasoning and tests).
      */
     val remoteEffective: Boolean
-        get() = scrollOwner(
+        get() = localScrollSuspectedDead || scrollOwner(
             altScreen = altActive,
             mouseTracking = mouseTracking,
             hostBackedAgent = remoteScrollHost,
@@ -270,6 +274,13 @@ class TermuxTerminalHost(
 
     private fun onTouch(event: MotionEvent): Boolean {
         if (!remoteEffective) {
+            // Local scroll is only right when the emulator really holds the
+            // scrollback. A mirrored TUI can still bank a few rows (the shell
+            // echo that started it, a cleared screen), and then a local drag
+            // moves *that* history while the app's own viewport stays put —
+            // the user sees a dead scroll. So verify: if a real drag changed
+            // nothing on screen, hand the pane to the remote path.
+            observeLocalGesture(event)
             remoteArmed = false
             touchMoved = false
             return false // Termux handles everything (local history scroll).
@@ -389,6 +400,44 @@ class TermuxTerminalHost(
         }
     }
 
+    /**
+     * Detect the "local history exists but it is not the app's viewport" case.
+     *
+     * Cheap: accumulate the drag in pixels and compare one screen hash at
+     * gesture end. A shell that scrolled (or was already at an edge) changes
+     * the hash; a mirrored TUI does not, because Termux shifted its own
+     * buffer instead of the app. That pane is then switched to the remote path
+     * and the gesture is replayed, so the drag is not wasted.
+     */
+    private fun observeLocalGesture(event: MotionEvent) {
+        when (event.action) {
+            MotionEvent.ACTION_DOWN -> {
+                localDragPx = 0f
+                localLastY = event.y
+                // The view's own offset is the truth for a local scroll: a
+                // shell drag changes it, a mirrored TUI leaves it at 0 because
+                // Termux shifts a buffer nobody is looking at.
+                localBaseline = TermuxInternals.topRow(view) ?: 0
+                localForceRemoteArmed = !localScrollSuspectedDead && localBaseline == 0
+            }
+            MotionEvent.ACTION_MOVE -> {
+                localDragPx += localLastY - event.y
+                localLastY = event.y
+            }
+            MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
+                if (!localForceRemoteArmed) return
+                val pitch = rowHeightPx()
+                val rows = if (pitch > 0f) (localDragPx / pitch).toInt() else 0
+                if (kotlin.math.abs(rows) < 2) return
+                val topRowNow = TermuxInternals.topRow(view) ?: 0
+                if (topRowNow != localBaseline) return
+                localScrollSuspectedDead = true
+                view.post { requestScroll(rows, immediate = true) }
+            }
+            else -> Unit
+        }
+    }
+
     /** Learned winner, or the capability-derived first candidate. */
     private fun activeMechanism(): ScrollMechanism? =
         ScrollLearning.winner(diagnosticsAgent)
@@ -452,6 +501,13 @@ class TermuxTerminalHost(
 
     /** Mechanisms that proved inert for this pane in the current session. */
     private val failures = mutableSetOf<ScrollMechanism>()
+
+    /** True once a local drag proved the emulator is not the scroll source. */
+    private var localScrollSuspectedDead = false
+    private var localForceRemoteArmed = false
+    private var localDragPx = 0f
+    private var localLastY = 0f
+    private var localBaseline = 0
 
     /** Agent whose failures the current [failures] set describes. */
     private var lastProbeAgent: String? = null

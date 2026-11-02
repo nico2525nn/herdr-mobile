@@ -1,4 +1,4 @@
-package dev.herdr.mobile.feature.terminal
+package dev.herdr.mobile.core.designsystem
 
 /**
  * A user-facing status line, as data rather than a finished sentence.
@@ -44,10 +44,15 @@ sealed interface UiMessage {
             CLOSE_TAB,
             RENAME_TAB,
             MOVE_TAB,
+            CREATE_WORKSPACE,
             RENAME_WORKSPACE,
             CLOSE_WORKSPACE,
             MOVE_WORKSPACE,
             READ_ACK,
+            UPDATE_HERDR,
+            SAVE_SETTINGS,
+            TEST_CONNECTION,
+            APPROVE_HOST_KEY,
         }
     }
 }
@@ -83,4 +88,9 @@ private fun UiMessage.CommandFailed.Command.label(): String = when (this) {
     UiMessage.CommandFailed.Command.CLOSE_WORKSPACE -> "Cannot close workspace"
     UiMessage.CommandFailed.Command.MOVE_WORKSPACE -> "Cannot move workspace"
     UiMessage.CommandFailed.Command.READ_ACK -> "Read acknowledgement failed"
+    UiMessage.CommandFailed.Command.CREATE_WORKSPACE -> "Cannot create workspace"
+    UiMessage.CommandFailed.Command.UPDATE_HERDR -> "Update failed"
+    UiMessage.CommandFailed.Command.SAVE_SETTINGS -> "Cannot save settings"
+    UiMessage.CommandFailed.Command.TEST_CONNECTION -> "Connection test failed"
+    UiMessage.CommandFailed.Command.APPROVE_HOST_KEY -> "Cannot approve host key"
 }

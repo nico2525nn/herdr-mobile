@@ -1,5 +1,7 @@
 package dev.herdr.mobile.feature.terminal
 
+import dev.herdr.mobile.core.designsystem.text
+import dev.herdr.mobile.core.designsystem.UiMessage
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue

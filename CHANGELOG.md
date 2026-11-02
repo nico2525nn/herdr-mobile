@@ -1,5 +1,27 @@
 # Changelog
 
+## 1.5.2 — 2026-11-02
+
+- Scroll: a mirrored TUI that banked a few local rows used to be routed to the
+  local transcript, so a drag moved a buffer nobody was looking at and the app's
+  own viewport stayed still ("scroll is dead"). The host now verifies: if a real
+  drag leaves the view's own offset at 0, that pane switches to the remote path
+  and the same gesture is replayed. Also flushes a discrete replay immediately
+  instead of waiting for a page boundary.
+- Tests no longer touch the user's session: `workspace.create` accepts
+  `focus:false` (daemon + client), so a test workspace never takes Herdr's
+  focus. Verified: focus stayed on the user's workspace across create, attach,
+  scroll, keyboard checks and close.
+- `tools/smoke.sh`: the manual device checks are now a script — isolated
+  workspace, one-drag scroll, repeatability within a tolerance, keyboard
+  show/hide/background-return, and an explicit "focus was not taken" assertion.
+- `TerminalViewModel` split: attach/target/recovery moved to
+  `PaneSessionController` (892 -> 409 lines) with the behaviour tests covering
+  the rules end to end.
+- `UiMessage` moved to the design system and now covers Home and Settings too;
+  a settings failure that used to be swallowed is rendered.
+- Kotlin 98 tests / Rust 50; smoke OK on device.
+
 ## 1.5.1 — 2026-11-02
 
 Refactor pass with tests written from behaviour, not implementation.

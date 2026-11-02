@@ -3,6 +3,8 @@ package dev.herdr.mobile.feature.terminal
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.viewModelScope
+import dev.herdr.mobile.core.designsystem.UiMessage
+import dev.herdr.mobile.core.designsystem.text
 import dev.herdr.mobile.core.model.AppSettings
 import dev.herdr.mobile.core.model.ConnectionState
 import dev.herdr.mobile.core.model.InputPanelPage
@@ -100,48 +102,27 @@ class TerminalViewModel(
     private val settingsFlow: StateFlow<AppSettings>,
 ) : ViewModel() {
 
-    private val targetFlow = MutableStateFlow<TerminalTarget?>(null)
-    private val backendFlow = MutableStateFlow<ConnectionTerminalBackend?>(null)
     private val pageFlow = MutableStateFlow(InputPanelPage.EXTRA_KEYS)
     private val messageFlow = MutableStateFlow<UiMessage?>(null)
     private val stickyFlow =
         MutableStateFlow<Set<TerminalKeyEncoder.Modifier>>(emptySet())
 
-    // Live view grid, pushed by the screen (Termux-exact metrics): consumed as
-    // the attach geometry so the daemon's prelude blank-fill matches the real
-    // grid (a mismatched fill under-banks history). Defaults to 90x30.
-    // Declared BEFORE init (same NPE trap as pendingInput below): init's
-    // viewModelScope.launch starts undispatched and openTarget reads this.
-    private val attachGridFlow = MutableStateFlow(90 to 30)
+    /** Which pane is on screen, and how traffic reaches it. */
+    private val panes = PaneSessionController(
+        session = client,
+        scope = viewModelScope,
+        onMessage = { messageFlow.value = it },
+        initialWorkspaceId = initialWorkspaceId,
+        initialTabId = initialTabId,
+        initialPaneId = initialPaneId,
+    )
 
-    /**
-     * Increments on every user input send (text, bytes, extra keys). The
-     * terminal surface collects it to snap a scrolled viewport back to live:
-     * typing means the user is back at the prompt. Output never touches it,
-     * so reading history while output flows doesn't yank.
-     */
-    private val _inputTick = MutableStateFlow(0)
-    val inputTick: StateFlow<Int> = _inputTick.asStateFlow()
-
-    private fun tickInput() {
-        _inputTick.value += 1
-    }
-
-    // Declared BEFORE init: viewModelScope.launch on the main thread starts
-    // undispatched, so the first StateFlow emit can reach flushPending while
-    // the constructor is still running. A later declaration NPEs on monitor-enter.
-    private val pendingInput = ArrayDeque<suspend (ConnectionTerminalBackend) -> Unit>(64)
-    private var pendingFlushJob: Job? = null
-
-    private var attachJob: Job? = null
-    private var observedTargetGeneration = client.targetGeneration
-    private var targetOwnerGeneration: Long? = null
-    private var allowInitialTargetResolution = true
+    val inputTick: StateFlow<Int> = panes.inputTick
 
     val uiState: StateFlow<TerminalUiState> = combine(
         client.state,
-        targetFlow,
-        backendFlow,
+        panes.target,
+        panes.backend,
         settingsFlow,
         pageFlow,
         messageFlow,
@@ -168,354 +149,16 @@ class TerminalViewModel(
     }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), TerminalUiState())
 
     init {
-        viewModelScope.launch {
-            // Deep links (notification taps) refresh first: the cached snapshot
-            // may predate the pane (reconnect gap) or outlive it (closed).
-            // Resolving on stale state silently opens the WRONG agent — the
-            // user then types into a live session they never chose.
-            val wantPane = initialPaneId
-            if (wantPane != null) {
-                client.refresh()
-                // Await the pane (fresh snapshot wins over the cached one);
-                // 10s cap, then fall through to best-effort resolve + warning.
-                runCatching {
-                    withTimeout(10_000) {
-                        client.state.first { st ->
-                            st.snapshot?.pane(wantPane) != null &&
-                                st.connection == dev.herdr.mobile.core.model.ConnectionState.CONNECTED
-                        }
-                    }
-                }
-            }
-            // Resolve the initial target once a snapshot exists.
-            client.state.collect { s ->
-                val targetGeneration = client.targetGeneration
-                if (targetGeneration != observedTargetGeneration) {
-                    observedTargetGeneration = targetGeneration
-                    targetOwnerGeneration = null
-                    attachJob?.cancel()
-                    pendingFlushJob?.cancel()
-                    pendingFlushJob = null
-                    val keep = targetFlow.value
-                    val old = backendFlow.value
-                    backendFlow.value = null
-                    synchronized(pendingInput) { pendingInput.clear() }
-                    if (old != null) releaseBackendInBackground(old)
-                    // The daemon restarted or the tunnel re-dialled: pane ids
-                    // are stable, so re-open the same pane. Dropping the user on
-                    // "return to Home" for a transport blip was the worst part
-                    // of a daemon restart.
-                    val reopen = keep?.takeIf { s.snapshot?.pane(it.paneId) != null }
-                    if (reopen != null) {
-                        openTarget(reopen, preserveStatusMessage = true)
-                        return@collect
-                    }
-                    targetFlow.value = null
-                    messageFlow.value = UiMessage.TargetChanged
-                    return@collect
-                }
-                if (!allowInitialTargetResolution) return@collect
-                val snapshot = s.snapshot ?: return@collect
-                if (targetFlow.value == null) {
-                    val target = resolveTarget(snapshot, initialWorkspaceId, initialTabId, initialPaneId)
-                    if (target != null) {
-                        messageFlow.value = null
-                        warnOnFallback(snapshot, target)
-                        openTarget(target, preserveStatusMessage = true)
-                    }
-                } else {
-                    // The open target can disappear underneath us: another
-                    // client (desktop TUI, `herdr` CLI) closes the workspace, or
-                    // our own close lands after the snapshot moved on. Staying
-                    // attached to a dead target left the user staring at
-                    // "Detached (closed)" with a live workspace list behind it.
-                    reconcileVanishedTarget(snapshot, targetFlow.value!!)
-                }
-            }
-        }
-    }
-    init { autoReattachOnReconnect() }
-
-    /**
-     * Apply [reconcileTarget] to the open pane: keep, retarget a survivor, or
-     * clear when the session drained. Policy lives in TargetReconciler so it is
-     * covered by unit tests.
-     */
-    private fun reconcileVanishedTarget(snapshot: SessionSnapshot, target: TerminalTarget) {
-        when (val decision = reconcileTarget(snapshot, target)) {
-            TargetReconcile.Keep -> Unit
-            is TargetReconcile.Retarget -> {
-                val label = snapshot.workspace(decision.next.workspaceId)
-                    ?.label?.takeIf { it.isNotBlank() }
-                    ?: decision.next.workspaceId
-                messageFlow.value = UiMessage.WorkspaceClosed(label)
-                openTarget(decision.next, preserveStatusMessage = true)
-            }
-            TargetReconcile.Clear -> {
-                backendFlow.value = null
-                targetFlow.value = null
-                messageFlow.value = UiMessage.SessionClosed
-            }
-        }
+        panes.start()
     }
 
-    /**
-     * Daemon restart / tunnel drop kills the attach stream, not the pane.
-     * Once the link is back and the terminal still reports a transport-level
-     * detach, re-attach automatically instead of parking the user on
-     * "Detached (closed)" + Retry. Bounded retries per (pane, reason) so a
-     * pane that genuinely cannot attach does not spin; Retry stays for that.
-     */
-    private fun autoReattachOnReconnect() {
-        viewModelScope.launch {
-            var attempts = 0
-            var lastKey: Pair<String, String>? = null
-            client.state.map { it.connection }
-                .distinctUntilChanged()
-                .combine(
-                    backendFlow.flatMapLatest { backend ->
-                        backend?.state ?: kotlinx.coroutines.flow.flowOf(null)
-                    },
-                ) { connection, backendState -> connection to backendState }
-                .collect { (connection, backend) ->
-                    if (backend is dev.herdr.mobile.terminal.view.BackendState.Attached) {
-                        attempts = 0
-                        lastKey = null
-                        return@collect
-                    }
-                    if (connection != dev.herdr.mobile.core.model.ConnectionState.CONNECTED) {
-                        attempts = 0
-                        lastKey = null
-                        return@collect
-                    }
-                    val detached = backend as? dev.herdr.mobile.terminal.view.BackendState.Detached
-                        ?: return@collect
-                    val key = (targetFlow.value?.paneId ?: "?") to detached.reason
-                    if (key != lastKey) {
-                        lastKey = key
-                        attempts = 0
-                    }
-                    if (attempts >= AUTO_REATTACH_ATTEMPTS) return@collect
-                    val delayMs = AUTO_REATTACH_DELAY_MS * (1L shl attempts)
-                    attempts++
-                    // Detached job, not an inline delay: the client state keeps
-                    // emitting (events, snapshots) and would cancel the wait.
-                    viewModelScope.launch {
-                        delay(delayMs)
-                        retryAttach()
-                    }
-                }
-        }
-    }
+    fun setAttachGrid(cols: Int, rows: Int) = panes.setAttachGrid(cols, rows)
 
-    /**
-     * Deep-link safety: when the requested pane/tab/workspace is gone and
-     * resolveTarget fell back to a neighbor, say so LOUDLY (status banner)
-     * instead of silently landing input in the wrong agent.
-     */
-    private fun warnOnFallback(snapshot: SessionSnapshot, target: TerminalTarget) {
-        if (initialPaneId == null) return // in-app navigation: no expectation to violate
-        if (target.paneId != initialPaneId) {
-            val pane = snapshot.pane(target.paneId)
-            messageFlow.value = UiMessage.OpenedInstead(
-                UiMessage.OpenedInstead.TargetKind.PANE,
-                pane?.displayLabel ?: target.paneId,
-            )
-        } else if (initialTabId != null && target.tabId != initialTabId) {
-            messageFlow.value = UiMessage.OpenedInstead(UiMessage.OpenedInstead.TargetKind.TAB, null)
-        } else if (initialWorkspaceId != null && target.workspaceId != initialWorkspaceId) {
-            messageFlow.value = UiMessage.OpenedInstead(UiMessage.OpenedInstead.TargetKind.WORKSPACE, null)
-        }
-    }
+    fun openTarget(target: TerminalTarget) = panes.openTarget(target)
 
-    private fun resolveTarget(
-        snapshot: SessionSnapshot,
-        workspaceId: String?,
-        tabId: String?,
-        paneId: String? = null,
-    ): TerminalTarget? {
-        val workspace = snapshot.workspace(workspaceId)
-            ?: snapshot.workspaces.firstOrNull()
-            ?: return null
-        val tab = snapshot.tab(tabId?.takeIf { snapshot.tab(it)?.workspaceId == workspace.id })
-            ?: workspace.tabs.firstOrNull { it.id == workspace.activeTabId }
-            ?: workspace.tabs.firstOrNull()
-            ?: return null
-        // Deep link carries the alerting pane: prefer it over the tab's active
-        // pane, or a notification tap opens (and inputs into) the wrong agent.
-        val pane = paneId?.let { id -> tab.panes.firstOrNull { it.id == id } }
-            ?: tab.activePane ?: return null
-        return TerminalTarget(workspace.id, tab.id, pane.id)
-    }
+    fun openTab(workspaceId: String, tabId: String) = panes.openTab(workspaceId, tabId)
 
-    /** Switch workspace/tab. The old stream is released before the new one opens. */
-    fun setAttachGrid(cols: Int, rows: Int) {
-        attachGridFlow.value = cols to rows
-    }
-
-    fun openTarget(target: TerminalTarget) {
-        openTarget(target, preserveStatusMessage = false)
-    }
-
-    private fun openTarget(target: TerminalTarget, preserveStatusMessage: Boolean) {
-        // Read-ack (Herdr behavior): opening a DONE pane focuses its tab
-        // server-side, which transitions done->idle everywhere (desktop TUI
-        // included). Gated on DONE only — never steal desktop focus for
-        // working/idle opens. Fire-and-forget: ack failure must not break
-        // the attach, and the next snapshot heals any miss.
-        if (!preserveStatusMessage) messageFlow.value = null
-        val targetGeneration = client.targetGeneration
-        val snapshot = client.state.value.snapshot ?: return
-        val pane = snapshot.pane(target.paneId) ?: return
-        if (pane.workspaceId != target.workspaceId || pane.tabId != target.tabId) return
-        if (targetFlow.value == target && targetOwnerGeneration != null &&
-            targetOwnerGeneration != targetGeneration
-        ) return
-        val paneDone = pane.status == dev.herdr.mobile.core.model.AgentStatus.DONE
-        if (paneDone) {
-            viewModelScope.launch {
-                focusTabForReadAck(client, target.tabId) { detail ->
-                    if (client.targetGeneration == targetGeneration) {
-                        messageFlow.value = UiMessage.CommandFailed(
-                            UiMessage.CommandFailed.Command.READ_ACK,
-                            detail,
-                        )
-                    }
-                }
-            }
-        }
-        if (targetFlow.value != target) synchronized(pendingInput) { pendingInput.clear() }
-        attachJob?.cancel()
-        pendingFlushJob?.cancel()
-        pendingFlushJob = null
-        targetFlow.value = target
-        targetOwnerGeneration = targetGeneration
-        attachJob = viewModelScope.launch {
-            // Release the old backend UNCANCELLABLY: TerminalSocket.release()
-            // suspends (direct send + flush beat) and a rapid tab switch would
-            // otherwise cancel us mid-release — leaving released=true but the
-            // socket never closed, with the pump suspended forever.
-            val old = backendFlow.value
-            backendFlow.value = null
-            if (old != null) {
-                try {
-                    withContext(NonCancellable) { old.release() }
-                } catch (_: Exception) {
-                }
-            }
-            // A cancelled (superseded) job must not publish: without this check
-            // two racing attaches both reach backendFlow and the loser leaks a
-            // live controller while last-writer-wins shows the wrong pane.
-            ensureActive()
-            if (client.targetGeneration != targetGeneration) return@launch
-            val (attachCols, attachRows) = attachGridFlow.value
-            var linkGeneration = client.linkGeneration
-            var retryUsed = false
-            var openedConnection: dev.herdr.mobile.core.network.TerminalConnection? = null
-            while (openedConnection == null) {
-                val opened = try {
-                    client.openTerminal(target.paneId, cols = attachCols, rows = attachRows)
-                } catch (e: Exception) {
-                    if (e is CancellationException) throw e
-                    if (client.targetGeneration != targetGeneration) return@launch
-                    val canRetry = !retryUsed &&
-                        e is dev.herdr.mobile.core.network.DaemonException && e.code == "not_connected"
-                    if (!canRetry) {
-                        messageFlow.value = UiMessage.AttachFailed(e.message)
-                        return@launch
-                    }
-                    retryUsed = true
-                    client.kick()
-                    try {
-                        withTimeout(30_000) {
-                            client.state.first { it.connection == ConnectionState.CONNECTED }
-                        }
-                    } catch (_: Exception) {
-                        ensureActive()
-                        messageFlow.value = UiMessage.ReconnectTimedOut
-                        return@launch
-                    }
-                    ensureActive()
-                    if (client.targetGeneration != targetGeneration) return@launch
-                    linkGeneration = client.linkGeneration
-                    continue
-                }
-                if (client.targetGeneration != targetGeneration) {
-                    try {
-                        withContext(NonCancellable) { opened.release() }
-                    } catch (_: Exception) {
-                    }
-                    return@launch
-                }
-                if (client.linkGeneration == linkGeneration) {
-                    openedConnection = opened
-                    continue
-                }
-                // The daemon redialed while the terminal socket was opening.
-                // Release that orphan before waiting for the new endpoint.
-                try {
-                    withContext(NonCancellable) { opened.release() }
-                } catch (_: Exception) {
-                }
-                if (!isActive) return@launch
-                if (retryUsed) {
-                    messageFlow.value = UiMessage.StreamChanged
-                    return@launch
-                }
-                retryUsed = true
-                try {
-                    withTimeout(30_000) {
-                        client.state.first { it.connection == ConnectionState.CONNECTED }
-                    }
-                } catch (_: Exception) {
-                    ensureActive()
-                    messageFlow.value = UiMessage.ReconnectTimedOut
-                    return@launch
-                }
-                ensureActive()
-                if (client.targetGeneration != targetGeneration) return@launch
-                linkGeneration = client.linkGeneration
-            }
-            val connection = openedConnection ?: return@launch
-            // Cancelled between openTerminal (non-suspending: creates+connects)
-            // and publish: release the orphan or its controller + resize lock
-            // leak on the daemon (no idle timeout there).
-            if (!isActive || targetFlow.value != target || client.targetGeneration != targetGeneration) {
-                try {
-                    withContext(NonCancellable) { connection.release() }
-                } catch (_: Exception) {
-                }
-                return@launch
-            }
-            val backend = ConnectionTerminalBackend(connection, viewModelScope)
-            backendFlow.value = backend
-            if (!isActive || targetFlow.value != target || client.targetGeneration != targetGeneration) {
-                if (backendFlow.value === backend) backendFlow.value = null
-                releaseBackendInBackground(backend)
-                return@launch
-            }
-            flushPending(backend)
-        }
-    }
-
-    fun openTab(workspaceId: String, tabId: String) {
-        val snapshot = client.state.value.snapshot ?: return
-        val tab = snapshot.tab(tabId) ?: return
-        val pane = tab.activePane ?: return
-        openTarget(TerminalTarget(workspaceId, tabId, pane.id))
-    }
-
-    /**
-     * Re-attach the current target after a failure/disconnect. Hands the dead
-     * backend to openTarget (which releases it) — nulling backendFlow first
-     * would orphan the live controller, since openTarget releases whatever it
-     * finds in backendFlow.
-     */
-    fun retryAttach() {
-        if (targetOwnerGeneration != client.targetGeneration) return
-        val target = targetFlow.value ?: return
-        openTarget(target)
-    }
+    fun retryAttach() = panes.retryAttach()
 
     fun setInputPage(page: InputPanelPage) {
         pageFlow.value = page
@@ -542,120 +185,9 @@ class TerminalViewModel(
         draftFlow.value = draftFlow.value - tabId
     }
 
-    /** Release a detached socket without depending on this ViewModel's lifetime. */
-    private fun releaseBackendInBackground(backend: ConnectionTerminalBackend) {
-        val releaser = CoroutineScope(SupervisorJob() + Dispatchers.IO)
-        releaser.launch {
-            try {
-                withTimeout(5_000) { backend.release() }
-            } catch (_: Exception) {
-            } finally {
-                releaser.cancel()
-            }
-        }
-    }
+    fun releaseForBackground() = panes.releaseForBackground()
 
-    /** Release the visible terminal when Activity ON_STOP keeps the Compose tree alive. */
-    fun releaseForBackground() {
-        // Cancel a pending attach FIRST: openTerminal/connect are non-suspending,
-        // so an in-flight attachJob would otherwise publish a live socket after
-        // we return — leaking a controller while resumeAfterBackground no-ops.
-        attachJob?.cancel()
-        val backend = backendFlow.value
-        if (backend == null) return
-        backendFlow.value = null
-        releaseBackendInBackground(backend)
-    }
-
-    /**
-     * Called on ON_START after [releaseForBackground]. Re-attaches the kept target:
-     * without this the screen sits on "Attaching…" forever after returning from
-     * background. No-op when nothing was released or no target exists.
-     *
-     * Waits for the client link first: after minutes in background the tunnel is
-     * dead and endpoint=null, so an immediate openTerminal throws "no endpoint
-     * is open". Waiting for CONNECTED (kick → first snapshot) makes resume
-     * self-healing instead of an error the user must clear via Home.
-     */
-    fun resumeAfterBackground() {
-        val target = targetFlow.value
-        val hasBackend = backendFlow.value != null
-        if (target == null || hasBackend || targetOwnerGeneration != client.targetGeneration) return
-        attachJob?.cancel()
-        messageFlow.value = null
-        attachJob = viewModelScope.launch {
-            client.kick()
-            val connected = try {
-                withTimeout(30_000) {
-                    client.state.first { it.connection == ConnectionState.CONNECTED }
-                }
-                true
-            } catch (_: Exception) {
-                false
-            }
-            ensureActive()
-            if (!connected) {
-                messageFlow.value = UiMessage.ReconnectTimedOut
-                return@launch
-            }
-            openTarget(target)
-        }
-    }
-
-    /**
-     * Input typed while no backend is attached (attaching window): queued and
-     * flushed on the next backend, instead of silently dropped (the CJK panel
-     * already cleared its field, so a drop loses user text with no trace).
-     * Bounded at 64 entries; failures surface as a status message.
-     */
-    private fun enqueueOrSend(op: suspend (ConnectionTerminalBackend) -> Unit) {
-        tickInput()
-        val backend = backendFlow.value
-        if (backend != null) {
-            val generation = targetOwnerGeneration ?: return
-            if (generation != client.targetGeneration) return
-            viewModelScope.launch {
-                if (backendFlow.value !== backend || targetOwnerGeneration != generation ||
-                    client.targetGeneration != generation
-                ) return@launch
-                runCatching { op(backend) }
-                    .onFailure {
-                        if (client.targetGeneration == generation && backendFlow.value === backend) {
-                            messageFlow.value = UiMessage.SendFailed(it.message)
-                        }
-                    }
-            }
-            return
-        }
-        synchronized(pendingInput) {
-            if (pendingInput.size >= 64) pendingInput.removeFirst()
-            pendingInput.addLast(op)
-        }
-    }
-
-    private fun flushPending(backend: ConnectionTerminalBackend) {
-        val generation = targetOwnerGeneration ?: return
-        if (backendFlow.value !== backend || generation != client.targetGeneration) return
-        val ops = synchronized(pendingInput) {
-            val list = pendingInput.toList()
-            pendingInput.clear()
-            list
-        }
-        if (ops.isEmpty()) return
-        pendingFlushJob = viewModelScope.launch {
-            for (op in ops) {
-                if (backendFlow.value !== backend || targetOwnerGeneration != generation ||
-                    client.targetGeneration != generation
-                ) return@launch
-                runCatching { op(backend) }
-                    .onFailure {
-                        if (client.targetGeneration == generation && backendFlow.value === backend) {
-                            messageFlow.value = UiMessage.SendFailed(it.message)
-                        }
-                    }
-            }
-        }
-    }
+    fun resumeAfterBackground() = panes.resumeAfterBackground()
 
     fun sendText(text: String) {
         // Sticky CTRL/ALT from Extra Keys applies here too: one soft-keyboard
@@ -670,14 +202,14 @@ class TerminalViewModel(
         }
         if (chord != null) {
             stickyFlow.value = emptySet()
-            enqueueOrSend({ backend -> backend.send(chord) })
+            panes.send({ backend -> backend.send(chord) })
         } else if (text.length > 1) {
             // Atomic multi-char commit (CJK panel): Termux paste normalization
             // (strip ESC/C1, newlines to CR). Single chars stay verbatim —
             // Termux typing parity (per-char commits are never normalized).
-            enqueueOrSend({ backend -> backend.sendText(TerminalKeyEncoder.pasteNormalize(text)) })
+            panes.send({ backend -> backend.sendText(TerminalKeyEncoder.pasteNormalize(text)) })
         } else {
-            enqueueOrSend({ backend -> backend.sendText(text) })
+            panes.send({ backend -> backend.sendText(text) })
         }
     }
 
@@ -689,11 +221,11 @@ class TerminalViewModel(
      * in TUI editors.
      */
     fun sendPaste(payload: String) {
-        enqueueOrSend({ backend -> backend.sendText(payload) })
+        panes.send({ backend -> backend.sendText(payload) })
     }
 
     fun sendBytes(data: ByteArray) {
-        enqueueOrSend({ backend -> backend.send(data) })
+        panes.send({ backend -> backend.send(data) })
     }
 
     /**
@@ -741,28 +273,18 @@ class TerminalViewModel(
         }
         if (bytes == null) return // herdrKeys-only path: no consumer yet
         stickyFlow.value = emptySet()
-        enqueueOrSend({ backend -> backend.send(bytes) })
+        panes.send({ backend -> backend.send(bytes) })
     }
 
     fun interrupt() {
-        tickInput()
-        val target = targetFlow.value ?: return
-        val paneId = target.paneId
-        val generation = targetOwnerGeneration ?: return
-        if (generation != client.targetGeneration) return
-        val backend = backendFlow.value
-        viewModelScope.launch {
-            if (targetFlow.value != target || targetOwnerGeneration != generation ||
-                client.targetGeneration != generation || backendFlow.value !== backend
-            ) return@launch
-            // Fastest path first: raw ETX byte. The REST fallback covers panes whose
-            // controller ignores it.
-            if (backend != null) {
-                runCatching { backend.send(byteArrayOf(0x03)) }
-            } else {
-                runCatching { client.interrupt(paneId) }
-            }
+        val paneId = panes.target.value?.paneId ?: return
+        // Fastest path first: the raw ETX byte through the live stream. The REST
+        // fallback covers panes whose controller ignores it and attach windows.
+        if (panes.backend.value == null) {
+            viewModelScope.launch { runCatching { client.interrupt(paneId) } }
+            return
         }
+        panes.send { backend -> backend.send(byteArrayOf(0x03)) }
     }
 
     fun createTab(workspaceId: String, label: String?) {
@@ -866,10 +388,7 @@ class TerminalViewModel(
     }
 
     override fun onCleared() {
-        attachJob?.cancel()
-        val backend = backendFlow.value
-        backendFlow.value = null
-        if (backend != null) releaseBackendInBackground(backend)
+        panes.shutdown()
     }
 
     class Factory(

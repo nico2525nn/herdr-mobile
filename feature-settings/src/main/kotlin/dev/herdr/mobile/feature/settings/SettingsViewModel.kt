@@ -3,6 +3,7 @@ package dev.herdr.mobile.feature.settings
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.viewModelScope
+import dev.herdr.mobile.core.designsystem.UiMessage
 import dev.herdr.mobile.core.model.AppSettings
 import dev.herdr.mobile.core.model.BackendMode
 import dev.herdr.mobile.core.model.ConnectionTestResult
@@ -20,11 +21,15 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
 import java.util.UUID
 
+/** Per-action message wrapper for the generic "could not save" paths. */
+private fun saveFailed(error: Throwable): UiMessage =
+    UiMessage.CommandFailed(UiMessage.CommandFailed.Command.SAVE_SETTINGS, error.message)
+
 data class SettingsUiState(
     val settings: AppSettings = AppSettings(),
     val testing: Boolean = false,
     val testResult: ConnectionTestResult? = null,
-    val error: String? = null,
+    val error: UiMessage? = null,
     /** TOFU prompt: server presented an unknown host key during the last test. */
     val pendingHostKey: PendingHostKey? = null,
 )
@@ -59,7 +64,7 @@ class SettingsViewModel(
     private fun edit(transform: (AppSettings) -> AppSettings) {
         viewModelScope.launch {
             runCatching { repository.update(transform) }
-                .onFailure { _ui.value = _ui.value.copy(error = it.message) }
+                .onFailure { _ui.value = _ui.value.copy(error = saveFailed(it)) }
         }
     }
 
@@ -98,7 +103,7 @@ class SettingsViewModel(
                 } else {
                     repository.addProfile(profile)
                 }
-            }.onFailure { _ui.value = _ui.value.copy(error = it.message) }
+            }.onFailure { _ui.value = _ui.value.copy(error = saveFailed(it)) }
         }
     }
 
@@ -161,7 +166,7 @@ class SettingsViewModel(
                 } else {
                     repository.addProfile(merged)
                 }
-            }.onFailure { _ui.value = _ui.value.copy(error = it.message) }
+            }.onFailure { _ui.value = _ui.value.copy(error = saveFailed(it)) }
         }
     }
 
@@ -172,7 +177,7 @@ class SettingsViewModel(
                 val alias = repository.storePrivateKey(current?.privateKeyAlias, pem, label)
                 val base = current ?: HostProfile(id = profileId, label = label, host = "", username = "")
                 repository.updateProfile(base.copy(privateKeyAlias = alias, privateKeyLabel = label))
-            }.onFailure { _ui.value = _ui.value.copy(error = it.message) }
+            }.onFailure { _ui.value = _ui.value.copy(error = saveFailed(it)) }
         }
     }
 
@@ -183,7 +188,7 @@ class SettingsViewModel(
                 val alias = repository.storeBearerToken(current?.bearerTokenAlias, token)
                 val base = current ?: HostProfile(id = profileId, label = profileId, host = "", username = "")
                 repository.updateProfile(base.copy(bearerTokenAlias = alias))
-            }.onFailure { _ui.value = _ui.value.copy(error = it.message) }
+            }.onFailure { _ui.value = _ui.value.copy(error = saveFailed(it)) }
         }
     }
 
@@ -199,7 +204,7 @@ class SettingsViewModel(
                 val alias = repository.storeSshPassword(current?.passwordAlias, password)
                 val base = current ?: HostProfile(id = profileId, label = profileId, host = "", username = "")
                 repository.updateProfile(base.copy(passwordAlias = alias))
-            }.onFailure { _ui.value = _ui.value.copy(error = it.message) }
+            }.onFailure { _ui.value = _ui.value.copy(error = saveFailed(it)) }
         }
     }
 
@@ -237,7 +242,10 @@ class SettingsViewModel(
                     if (it is kotlinx.coroutines.CancellationException) throw it
                     _ui.value = _ui.value.copy(
                         testing = false,
-                        error = it.message,
+                        error = UiMessage.CommandFailed(
+                            UiMessage.CommandFailed.Command.TEST_CONNECTION,
+                            it.message,
+                        ),
                     )
                 }
         }
@@ -255,7 +263,14 @@ class SettingsViewModel(
                     _ui.value = _ui.value.copy(pendingHostKey = null)
                     testConnection()
                 }
-                .onFailure { _ui.value = _ui.value.copy(error = it.message) }
+                .onFailure {
+                    _ui.value = _ui.value.copy(
+                        error = UiMessage.CommandFailed(
+                            UiMessage.CommandFailed.Command.APPROVE_HOST_KEY,
+                            it.message,
+                        ),
+                    )
+                }
         }
     }
 

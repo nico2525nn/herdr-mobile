@@ -288,7 +288,12 @@ impl HerdrClient {
         Ok(())
     }
 
-    pub async fn workspace_create(&self, label: Option<&str>, cwd: Option<&str>) -> Result<String> {
+    pub async fn workspace_create(
+        &self,
+        label: Option<&str>,
+        cwd: Option<&str>,
+        focus: bool,
+    ) -> Result<String> {
         let mut params = serde_json::Map::new();
         if let Some(label) = label {
             params.insert("label".into(), Value::String(label.to_string()));
@@ -296,7 +301,7 @@ impl HerdrClient {
         if let Some(cwd) = cwd {
             params.insert("cwd".into(), Value::String(cwd.to_string()));
         }
-        params.insert("focus".into(), Value::Bool(true));
+        params.insert("focus".into(), Value::Bool(focus));
         let result = self.request("workspace.create", Value::Object(params)).await?;
         result
             .get("workspace")

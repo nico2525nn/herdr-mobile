@@ -597,8 +597,9 @@ class HerdrClient(
     override suspend fun renameTab(tabId: String, label: String) =
         withContext(Dispatchers.IO) { api().renameTab(tabId, label) }
 
-    suspend fun createWorkspace(label: String?, cwd: String?): String =
-        withContext(Dispatchers.IO) { api().createWorkspace(label, cwd) }
+    /** [focus] = false creates a workspace without moving the desktop's focus. */
+    suspend fun createWorkspace(label: String?, cwd: String?, focus: Boolean = true): String =
+        withContext(Dispatchers.IO) { api().createWorkspace(label, cwd, focus) }
 
     override suspend fun renameWorkspace(workspaceId: String, label: String) =
         withContext(Dispatchers.IO) { api().renameWorkspace(workspaceId, label) }
