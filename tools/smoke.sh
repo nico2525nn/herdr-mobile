@@ -40,6 +40,20 @@ cleanup() {
   if [[ -n "$WS" ]]; then
     api -X POST "$BASE_URL/v1/workspace/$WS/close" >/dev/null 2>&1 || true
   fi
+  # A killed run (Ctrl-C, cancelled job) skips the normal path: sweep any
+  # leftover fixture workspaces by label so the user's list stays clean.
+  for id in $(api "$BASE_URL/v1/snapshot" 2>/dev/null | python3 -c '
+import sys,json
+try:
+    d=json.load(sys.stdin)
+except Exception:
+    raise SystemExit
+for w in d["workspaces"]:
+    if w.get("label") in ("smoke-scroll",):
+        print(w["id"])
+' 2>/dev/null); do
+    api -X POST "$BASE_URL/v1/workspace/$id/close" >/dev/null 2>&1 || true
+  done
   cp -f "$WORKDIR"/*.png "$ARTIFACTS"/ 2>/dev/null || true
   say "screenshots: $ARTIFACTS"
   rm -rf "$WORKDIR"
