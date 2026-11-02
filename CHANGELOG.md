@@ -1,5 +1,16 @@
 # Changelog
 
+## 1.4.6 — 2026-11-02
+
+- Anything with no local transcript now scrolls remotely. Mirrored full-screen
+  TUIs (less, vim, top, agent panes) never accumulate local scrollback, so the
+  previous "local unless the pane runs an agent" rule made them dead to a
+  swipe. Routing is now "can anything actually move?" — alt-screen/mouse
+  tracking, or no local rows → remote; otherwise local.
+- Page scrolls use the view's real row count (height / renderer pitch). The
+  mirror's grid reported 22 rows for a 44-row view mid-resize, so every page
+  gesture scrolled twice as far as the gesture suggested.
+
 ## 1.4.5 — 2026-11-02
 
 - Clipboard multi-line paste: inside a 2004 bracketed block the payload is

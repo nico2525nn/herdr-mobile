@@ -30,17 +30,21 @@ enum class RemoteScrollKind {
 /**
  * Routing decision, as a pure function so it can be tested without a device.
  *
- * Alt-screen and mouse tracking mean the app paints its own viewport: the local
- * transcript is stale by definition, so scroll has to be a remote request.
+ * The rule is "can anything actually move?", not "which app is this?":
  *
- * Everything else prefers the local transcript — including panes that carry an
- * agent label. Herdr's TUI keeps a stale label after the agent exits (a plain
- * `user@host$` prompt still reports the old agent), and trusting it sent SGR
- * wheel bytes into a shell that ignores them: the user saw a dead scroll.
+ * - Alt-screen and mouse tracking mean the app paints its own viewport, so the
+ *   local transcript is stale by definition → remote.
+ * - No local transcript rows means a local scroll has nothing to shift. That is
+ *   the normal shape of a mirrored full-screen TUI (less, vim, top, agent
+ *   panes): Herdr replays content frames, so the mirror never accumulates
+ *   scrollback and the app label is irrelevant. → remote.
+ * - Otherwise the local transcript wins, including panes that still carry an
+ *   agent label. Herdr keeps the label after the agent exits (a plain
+ *   `user@host$` prompt still reports the old agent); trusting labels sent SGR
+ *   wheel bytes into a shell that ignored them.
  *
- * The one remote case left is a main-screen agent with no banked history (omp,
- * whose transcript lives in host scrollback): there is nothing local to shift,
- * so page keys are the only way to reach it.
+ * Per-app route tables therefore only choose the *unit* ([remoteScrollKind]),
+ * never whether scrolling happens at all.
  */
 fun scrollOwner(
     altScreen: Boolean,
@@ -49,7 +53,7 @@ fun scrollOwner(
     localHistoryRows: Int,
 ): ScrollOwner = when {
     altScreen || mouseTracking -> ScrollOwner.REMOTE
-    hostBackedAgent && localHistoryRows <= 0 -> ScrollOwner.REMOTE
+    localHistoryRows <= 0 -> ScrollOwner.REMOTE
     else -> ScrollOwner.LOCAL
 }
 

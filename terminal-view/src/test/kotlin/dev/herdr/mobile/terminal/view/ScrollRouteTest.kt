@@ -46,11 +46,16 @@ class ScrollRouteTest {
     }
 
     @Test
-    fun `main screen agent without local history uses host scrollback`() {
-        // omp: frames are replayed, the transcript lives on the host.
+    fun `any pane without local history scrolls remotely`() {
+        // Mirrored full-screen TUIs (less, vim, top, agent panes) never
+        // accumulate local scrollback, so a local scroll would be a no-op.
         assertEquals(
             ScrollOwner.REMOTE,
             scrollOwner(altScreen = false, mouseTracking = false, hostBackedAgent = true, localHistoryRows = 0),
+        )
+        assertEquals(
+            ScrollOwner.REMOTE,
+            scrollOwner(altScreen = false, mouseTracking = false, hostBackedAgent = false, localHistoryRows = 0),
         )
     }
 

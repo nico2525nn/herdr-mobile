@@ -358,11 +358,16 @@ class TermuxTerminalHost(
         }
     }
 
-    /** Rows in the attached screen: one page-key scroll = one screen. */
-    private fun screenRows(): Int = try {
-        view.currentSession?.emulator?.mRows ?: 0
-    } catch (_: Exception) {
-        0
+    /**
+     * Rows actually visible in the view: one page-key scroll = one screen.
+     * Measured from the view and its row pitch, not the mirror's grid — the
+     * two disagree while a resize round-trip is in flight (the mirror reported
+     * 22 rows for a 44-row view, doubling every page scroll).
+     */
+    private fun screenRows(): Int {
+        val pitch = rowHeightPx()
+        if (pitch <= 0f || view.height <= 0) return 0
+        return (view.height / pitch).toInt()
     }
 
     /** Emit a trailing sub-page as one page (gesture end). */
