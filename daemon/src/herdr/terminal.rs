@@ -7,6 +7,7 @@ use tokio::process::{Child, ChildStdin, ChildStdout};
 use tracing::{debug, warn};
 
 use crate::herdr::HerdrClient;
+use crate::scroll_policy::ScrollAction;
 
 /// One `herdr terminal session control` child: NDJSON on stdin/stdout.
 ///
@@ -93,14 +94,28 @@ impl TerminalChild {
         self.send_line(&json!({"type": "terminal.input", "bytes": encoded})).await
     }
 
-    pub async fn send_scroll(&mut self, direction: &str, lines: u32) -> Result<()> {
-        // source=page_key (not the wheel default): main-screen TUIs like codex
-        // keep no host scrollback (ghostty max_offset=0) — wheel would no-op.
-        // page_key sends PGUP/PGDN bytes when the app handles scrolling
-        // itself, else falls back to host offset. Plain shells never reach
-        // here (they scroll instant local history with zero RTT).
+    pub async fn send_scroll(&mut self, action: ScrollAction) -> Result<()> {
+        let (direction, lines, source) = match action {
+            // source=page_key (not the wheel default): main-screen TUIs like
+            // codex keep no host scrollback (ghostty max_offset=0) — wheel
+            // would no-op. page_key sends PGUP/PGDN bytes when the app handles
+            // scrolling itself, else falls back to host offset.
+            ScrollAction::PageKey { up, pages } => {
+                (if up { "up" } else { "down" }, pages, "page_key")
+            }
+            // Wheel-routed apps (mouse tracking / AgentMatrix) get the wheel
+            // source, which Herdr turns into SGR wheel reports.
+            ScrollAction::Wheel { notches } => {
+                let lines = notches.unsigned_abs().min(u32::MAX as u64) as u32;
+                (if notches < 0 { "up" } else { "down" }, lines, "wheel")
+            }
+            ScrollAction::Ignore => return Ok(()),
+        };
+        if lines == 0 {
+            return Ok(());
+        }
         self.send_line(
-            &json!({"type": "terminal.scroll", "direction": direction, "lines": lines, "source": "page_key"}),
+            &json!({"type": "terminal.scroll", "direction": direction, "lines": lines, "source": source}),
         )
         .await
     }

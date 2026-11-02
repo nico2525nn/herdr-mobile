@@ -61,20 +61,17 @@ class TermuxTerminalHost(
      * with different wheel strides (for example Qwen's documented 3 lines per
      * tick) remain a known limitation of the two-route matrix.
      */
-    @Volatile
-    var agentWheel: Boolean = false
-
     /** App-specific transcript rows advanced by one agent wheel event. */
     @Volatile
-    var agentWheelRowsPerEvent: Int = 1
+    var wheelRowsPerEvent: Int = 1
         set(value) {
             if (field == value) return
             field = value
-            agentWheelRemainder = 0.0
+            wheelNotchRemainder = 0.0
         }
 
     /** Fractional-row carry across agent wheel gestures. */
-    private var agentWheelRemainder = 0.0
+    private var wheelNotchRemainder = 0.0
 
     /** Fractional-row carry across conventional 3-row wheel gestures. */
     private var wheelRemainder = 0.0
@@ -126,21 +123,23 @@ class TermuxTerminalHost(
     }
 
     /**
-     * Effective routing. Live alt-screen or mouse tracking always means the
-     * app owns the viewport (its repaints replace content → remote scroll).
-     *
-     * Otherwise a local transcript wins: shells bank history in the emulator
-     * (the daemon prelude fills it), so Termux's own scroll is correct and
-     * instant. The agent label alone is NOT enough — Herdr TUI keeps a stale
-     * agent name on panes the agent has already exited (a plain `nico@…$`
-     * prompt still reported `agent=codex`), and routing those remotely sent
-     * SGR wheel bytes into a shell that ignores them: visible as "scroll
-     * does nothing". Only a main-screen agent with no local history (omp,
-     * whose transcript lives in Herdr's host scrollback) still needs remote.
+     * Who scrolls this pane, decided by [scrollOwner] — the single policy
+     * function (see ScrollRoute.kt for the reasoning and tests).
      */
     val remoteEffective: Boolean
-        get() = altActive || mouseTracking ||
-            (remoteScrollHost && snapshotHistorySize <= 0)
+        get() = scrollOwner(
+            altScreen = altActive,
+            mouseTracking = mouseTracking,
+            hostBackedAgent = remoteScrollHost,
+            localHistoryRows = snapshotHistorySize,
+        ) == ScrollOwner.REMOTE
+
+    /** Wheel notches vs page keys for the remote path. */
+    val remoteKind: RemoteScrollKind
+        get() = remoteScrollKind(diagnosticsAgent, mouseTracking)
+
+    /** Pane agent identity, mirrored from the screen for routing diagnostics. */
+    var diagnosticsAgent: String? = null
 
     /** Diagnostic: remote scroll requests sent (alt/agent mode). */
     var remoteScrolls: Long = 0
@@ -314,13 +313,13 @@ class TermuxTerminalHost(
         scrollEvents++
         scrolledRows += kotlin.math.abs(rows)
         remoteScrolls++
-        if (agentWheel) {
-            // Convert requested rows to events using the app's documented
-            // stride; retain fractional rows between drag callbacks.
-            agentWheelRemainder += rows.toDouble() / agentWheelRowsPerEvent
-            val notches = agentWheelRemainder.toInt()
+        if (remoteKind == RemoteScrollKind.WHEEL) {
+            // Mouse-aware agent UI: convert requested rows to notches using
+            // the app's documented stride; retain fractional rows per gesture.
+            wheelNotchRemainder += rows.toDouble() / wheelRowsPerEvent
+            val notches = wheelNotchRemainder.toInt()
             if (notches != 0) {
-                agentWheelRemainder -= notches
+                wheelNotchRemainder -= notches
                 onRemoteWheel?.invoke(notches)
             }
         } else if (mouseTracking) {
@@ -371,59 +370,18 @@ class TermuxTerminalHost(
         view.invalidate()
     }
 
-    /**
-     * Explicit keyboard summon — the ONLY path that may raise the IME.
-     * `showSoftInputOnFocus` does not exist for a plain View (TerminalView
-     * extends View), so focus alone is suppressed reactively instead: the
-     * screen hides any IME that appears without a [showKeyboard] request
-     * (see TerminalScreen's lifecycle observer).
-     */
-    fun showKeyboard() {
-        keyboardRequested = true
-        view.requestFocus()
-        val imm = view.context.getSystemService(Context.INPUT_METHOD_SERVICE)
-            as? android.view.inputmethod.InputMethodManager ?: return
-        imm.showSoftInput(view, android.view.inputmethod.InputMethodManager.SHOW_IMPLICIT)
-    }
+    /** Soft-keyboard owner (summon latch, window-focus guard, hide). */
+    val keyboard = TerminalKeyboardController(view)
 
-    /**
-     * Pane/workspace switch and screen exit: the IME belongs to the pane the
-     * user summoned it in, so it never survives a target change. Resetting the
-     * latch here is what stops a stale "requested" flag from carrying the
-     * keyboard into the next workspace.
-     */
-    fun dismissKeyboard() {
-        keyboardRequested = false
-        val imm = view.context.getSystemService(Context.INPUT_METHOD_SERVICE)
-            as? android.view.inputmethod.InputMethodManager ?: return
-        imm.hideSoftInputFromWindow(view.windowToken, 0)
-    }
+    /** Explicit summon — the only path that may raise the IME. */
+    fun showKeyboard() = keyboard.show()
 
-    /** Drop the IME unless the user asked for it (focus alone never shows it). */
-    fun hideKeyboardIfUnrequested() {
-        if (keyboardRequested) return
-        val imm = view.context.getSystemService(Context.INPUT_METHOD_SERVICE)
-            as? android.view.inputmethod.InputMethodManager ?: return
-        imm.hideSoftInputFromWindow(view.windowToken, 0)
-    }
+    /** Pane/workspace switch or screen exit: the IME never follows. */
+    fun dismissKeyboard() = keyboard.dismiss()
 
-    /** The IME went away on its own (back/gesture): re-arm the next request. */
-    fun onKeyboardHidden() {
-        keyboardRequested = false
-    }
+    /** Hide when this pane never asked for the keyboard. */
+    fun hideKeyboardIfUnrequested() = keyboard.hideIfUnrequested()
 
-    /** True between an explicit summon and the IME being dismissed. */
-    var keyboardRequested: Boolean = false
-        private set
-
-    init {
-        // The re-show that made the keyboard "come back by itself" is driven by
-        // the window regaining focus (app switch / return from background), and
-        // it fires *after* onResume — so hook the exact event and post the hide
-        // once the IME has had its chance to appear.
-        view.viewTreeObserver.addOnWindowFocusChangeListener { focused ->
-            if (!focused || keyboardRequested) return@addOnWindowFocusChangeListener
-            view.postDelayed({ hideKeyboardIfUnrequested() }, 150)
-        }
-    }
+    /** The IME went away on its own: re-arm the next summon. */
+    fun onKeyboardHidden() = keyboard.onImeHidden()
 }

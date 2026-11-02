@@ -9,7 +9,7 @@ class SshBackendTest {
     @Test
     fun selectedBackendIsExposedByProfileProvider() {
         val provider = SshTunnelProvider(
-            profile = HostProfile(id = "p1", label = "host", host = "example.test"),
+            profile = HostProfile(id = "p1", label = "host", host = "example.test", username = "nico"),
             privateKeyPem = { null },
             password = { null },
             knownHosts = { null },

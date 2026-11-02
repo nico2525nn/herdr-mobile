@@ -41,6 +41,7 @@ import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
@@ -57,6 +58,8 @@ import androidx.compose.ui.viewinterop.AndroidView
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import dev.herdr.mobile.core.designsystem.StatusChip
 import dev.herdr.mobile.core.model.ConnectionState
+import dev.herdr.mobile.terminal.view.ImeTrigger
+import dev.herdr.mobile.terminal.view.imeCommand
 import dev.herdr.mobile.core.model.InputPanelPage
 import com.termux.view.TerminalView
 import dev.herdr.mobile.terminal.view.BackendState
@@ -246,6 +249,13 @@ fun TerminalScreen(
                     cjkFocus = cjkFocus,
                 )
             }
+            // Floats over the terminal's top rows; sub-second drops never show.
+            ConnectionBadge(
+                connection = state.connection,
+                modifier = Modifier
+                    .align(Alignment.TopCenter)
+                    .padding(top = 8.dp),
+            )
         }
         BottomInputPanel(
             viewModel = viewModel,
@@ -289,278 +299,6 @@ fun TerminalScreen(
                 workspaceCloseTarget = null
             },
         )
-    }
-}
-
-/** Which tab a long-press menu refers to. */
-private data class TabMenuTarget(
-    val workspaceId: String,
-    val tabId: String,
-    val label: String,
-)
-
-/** Which workspace a long-press menu refers to. */
-private data class WorkspaceMenuTarget(
-    val workspaceId: String,
-    val label: String,
-)
-
-@Composable
-private fun RenameDialog(
-    title: String,
-    initial: String,
-    onDismiss: () -> Unit,
-    onConfirm: (String) -> Unit,
-) {
-    var label by remember(initial) { mutableStateOf(initial) }
-    androidx.compose.material3.AlertDialog(
-        onDismissRequest = onDismiss,
-        title = { Text(title) },
-        text = {
-            OutlinedTextField(
-                value = label,
-                onValueChange = { label = it },
-                label = { Text("Name") },
-                singleLine = true,
-            )
-        },
-        confirmButton = {
-            TextButton(
-                onClick = { onConfirm(label) },
-                enabled = label.trim().isNotEmpty(),
-            ) {
-                Text("Rename")
-            }
-        },
-        dismissButton = {
-            TextButton(onClick = onDismiss) { Text("Cancel") }
-        },
-    )
-}
-
-@Composable
-private fun WorkspaceCloseDialog(
-    label: String,
-    onDismiss: () -> Unit,
-    onConfirm: () -> Unit,
-) {
-    androidx.compose.material3.AlertDialog(
-        onDismissRequest = onDismiss,
-        title = { Text("Close workspace") },
-        text = { Text("Close \"$label\" and all of its tabs?") },
-        confirmButton = {
-            TextButton(onClick = onConfirm) { Text("Close") }
-        },
-        dismissButton = {
-            TextButton(onClick = onDismiss) { Text("Cancel") }
-        },
-    )
-}
-
-@Composable
-private fun WorkspaceRail(
-    state: TerminalUiState,
-    onNavigateHome: () -> Unit,
-    onSelectWorkspace: (String) -> Unit,
-    onMoveWorkspace: (workspaceId: String, toIndex: Int) -> Unit,
-    onWorkspaceLongPress: (workspaceId: String, label: String) -> Unit,
-    menuTarget: WorkspaceMenuTarget?,
-    onDismissMenu: () -> Unit,
-    onRenameMenu: (WorkspaceMenuTarget) -> Unit,
-    onCloseMenu: (WorkspaceMenuTarget) -> Unit,
-    modifier: Modifier = Modifier,
-) {
-    val snapshot = state.snapshot ?: return
-    // Home stays pinned left while the workspace chips scroll under it.
-    Row(
-        modifier = modifier
-            .fillMaxWidth()
-            .padding(horizontal = 16.dp, vertical = 4.dp),
-        horizontalArrangement = Arrangement.spacedBy(8.dp),
-        verticalAlignment = Alignment.CenterVertically,
-    ) {
-        IconButton(onClick = onNavigateHome, modifier = Modifier.size(40.dp)) {
-            Icon(Icons.Filled.Home, contentDescription = "Back to Home")
-        }
-        val reorder = dev.herdr.mobile.core.designsystem.rememberReorderState(
-            items = snapshot.workspaces,
-            key = { it.id },
-            onDrop = { ws, to -> onMoveWorkspace(ws.id, to) },
-            // Menu opens on UP-after-press (see TabRail): a press-time popup
-            // would steal the gesture stream from the drag takeover.
-            onLongPressWithoutMove = { ws -> onWorkspaceLongPress(ws.id, ws.label) },
-        )
-        androidx.compose.foundation.lazy.LazyRow(
-            state = reorder.listState,
-            modifier = Modifier
-                .weight(1f)
-                .nestedScroll(reorder.scrollBlocker),
-            horizontalArrangement = Arrangement.spacedBy(8.dp),
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
-            items(
-                items = reorder.order.value,
-                key = { it.id },
-            ) { workspace ->
-                androidx.compose.foundation.layout.Box(
-                    modifier = Modifier.animateItem() then
-                        reorder.draggedModifier(workspace) { it.id },
-                ) {
-                    StatusChip(
-                        label = workspace.label,
-                        status = workspace.status,
-                        selected = workspace.id == state.target?.workspaceId,
-                        modifier = reorder.handleModifier(workspace),
-                        onClick = { onSelectWorkspace(workspace.id) },
-                        // Consume long-presses: the menu opens on UP via the
-                        // reorder detector, like the tab rail.
-                        onLongClick = {},
-                    )
-                    val target = menuTarget?.takeIf { it.workspaceId == workspace.id }
-                    if (target != null) {
-                        // Menu lives inside the chip: Compose anchors the popup
-                        // to this layout and clamps it on screen. The old
-                        // frame/window-offset math could silently miss (menu
-                        // never appeared) depending on the workspace.
-                        DropdownMenu(expanded = true, onDismissRequest = onDismissMenu) {
-                            DropdownMenuItem(
-                                text = { Text("Rename \"${target.label}\"") },
-                                onClick = { onRenameMenu(target) },
-                            )
-                            DropdownMenuItem(
-                                text = { Text("Close \"${target.label}\"") },
-                                onClick = { onCloseMenu(target) },
-                            )
-                        }
-                    }
-                }
-            }
-        }
-    }
-}
-
-@Composable
-private fun TabRail(
-    state: TerminalUiState,
-    onSelectTab: (workspaceId: String, tabId: String) -> Unit,
-    onSummonKeyboard: () -> Unit,
-    onAddTab: () -> Unit,
-    onTabLongPress: (workspaceId: String, tabId: String, label: String) -> Unit,
-    onMoveTab: (tabId: String, toIndex: Int) -> Unit,
-    menuTarget: TabMenuTarget?,
-    onDismissMenu: () -> Unit,
-    onRenameMenu: (TabMenuTarget) -> Unit,
-    onCloseMenu: (TabMenuTarget) -> Unit,
-    modifier: Modifier = Modifier,
-) {
-    val workspace = state.workspace ?: return
-
-    // + stays pinned right while the tab chips scroll under it.
-    Row(
-        modifier = modifier
-            .fillMaxWidth()
-            .padding(horizontal = 16.dp, vertical = 4.dp),
-        horizontalArrangement = Arrangement.spacedBy(8.dp),
-        verticalAlignment = Alignment.CenterVertically,
-    ) {
-        val reorder = dev.herdr.mobile.core.designsystem.rememberReorderState(
-            items = workspace.tabs,
-            key = { it.id },
-            onDrop = { tab, to -> onMoveTab(tab.id, to) },
-            // Menu opens on UP-after-press, not on press: an open popup steals
-            // the gesture stream and drag-takeover becomes impossible.
-            onLongPressWithoutMove = { tab ->
-                onTabLongPress(workspace.id, tab.id, tab.displayLabel)
-            },
-        )
-        androidx.compose.foundation.lazy.LazyRow(
-            state = reorder.listState,
-            modifier = Modifier
-                .weight(1f)
-                .nestedScroll(reorder.scrollBlocker),
-            horizontalArrangement = Arrangement.spacedBy(8.dp),
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
-            items(
-                items = reorder.order.value,
-                key = { it.id },
-            ) { tab ->
-                val harness = tab.harnessNames.joinToString(",").takeIf { it.isNotEmpty() }
-                androidx.compose.foundation.layout.Box(
-                    modifier = Modifier.animateItem() then
-                        reorder.draggedModifier(tab) { it.id },
-                ) {
-                    StatusChip(
-                        label = if (harness != null) "${tab.displayLabel} · $harness" else tab.displayLabel,
-                        status = tab.status,
-                        selected = tab.id == state.target?.tabId,
-                        modifier = reorder.handleModifier(tab),
-                        onClick = { onSelectTab(workspace.id, tab.id) },
-                        // Consume long-presses (menu opens on UP via the drag
-                        // detector instead): without this a dwell falls through
-                        // to tap and the UP races the drag-end callback.
-                        onLongClick = {},
-                    )
-                    val target = menuTarget?.takeIf { it.tabId == tab.id }
-                    if (target != null) {
-                        DropdownMenu(expanded = true, onDismissRequest = onDismissMenu) {
-                            DropdownMenuItem(
-                                text = { Text("Rename \"${target.label}\"") },
-                                onClick = { onRenameMenu(target) },
-                            )
-                            DropdownMenuItem(
-                                text = { Text("Close \"${target.label}\"") },
-                                onClick = { onCloseMenu(target) },
-                            )
-                        }
-                    }
-                }
-            }
-        }
-        IconButton(onClick = onSummonKeyboard, modifier = Modifier.size(40.dp)) {
-            Icon(Icons.Filled.Keyboard, contentDescription = "Terminal keyboard")
-        }
-        IconButton(onClick = onAddTab, modifier = Modifier.size(40.dp)) {
-            Icon(Icons.Filled.Add, contentDescription = "New tab in ${workspace.label}")
-        }
-    }
-}
-
-@Composable
-private fun TerminalPlaceholder(connection: ConnectionState, hasTarget: Boolean) {
-    Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-        Text(
-            text = when {
-                !hasTarget && connection == ConnectionState.CONNECTED -> "No pane to attach"
-                connection == ConnectionState.CONNECTED -> "Attaching…"
-                connection == ConnectionState.FAILED -> "Connection failed"
-                else -> "Connecting…"
-            },
-            style = MaterialTheme.typography.bodyLarge,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-        )
-    }
-}
-
-@Composable
-private fun TerminalErrorBody(message: String, onRetry: (() -> Unit)? = null) {
-    Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-        Column(
-            horizontalAlignment = Alignment.CenterHorizontally,
-            verticalArrangement = Arrangement.spacedBy(12.dp),
-            modifier = Modifier.padding(20.dp),
-        ) {
-            Text(
-                text = message,
-                style = MaterialTheme.typography.bodyLarge,
-                color = MaterialTheme.colorScheme.error,
-            )
-            if (onRetry != null) {
-                TextButton(onClick = onRetry) {
-                    Text("Retry")
-                }
-            }
-        }
     }
 }
 
@@ -632,82 +370,56 @@ private fun TerminalSurface(
     val density = LocalDensity.current
     val scope = rememberCoroutineScope()
 
-    // IME ownership follows the panel page: leaving the CJK page must hand
-    // the keyboard back to the terminal. Otherwise the hidden CJK TextField
-    // keeps the input connection, so Gboard's arrows/caret keys edit the
-    // off-screen draft instead of reaching the terminal (whose DPAD mapping
-    // is already implemented). Transition-only: mounting or recomposing must
-    // not clear focus (it would dismiss an open tab menu / steal focus).
-    // Tap summoning stays in TermuxViewClient.onSingleTapUp; the keyboard
-    // button goes through host.showKeyboard — those are the only two paths
-    // that may show the IME. (onSingleTapUp itself only requestFocus()es;
-    // whether a tap raises the IME depends on the view's soft-input-on-focus
-    // behavior — verified on emulator: tap does NOT auto-show.)
-    // Page switches move the IME *target*, never the IME itself. The old code
-    // called clearFocus(force=true) when leaving the CJK page, which dismissed
-    // the keyboard — that was the "switching the input panel closes my
-    // keyboard" bug. Here focus moves to whichever surface owns the page
-    // (terminal view or CJK draft field) and an already-open IME follows it;
-    // no focus change at all happens while the keyboard is closed, so nothing
-    // can summon it.
+    // ---- Soft keyboard ---------------------------------------------------
+    // All policy is in terminal-view's ImePolicy (pure, unit-tested). These
+    // effects only turn an event into a command and hand it to the one
+    // dispatcher below; no other code touches focus or the IME.
     @OptIn(ExperimentalLayoutApi::class)
     val imeVisible = WindowInsets.isImeVisible
+    fun applyIme(cmd: dev.herdr.mobile.terminal.view.ImeCommand) {
+        if (cmd.hide) hostRef?.dismissKeyboard()
+        if (cmd.hideUnrequested) hostRef?.hideKeyboardIfUnrequested()
+        when (cmd.focus) {
+            dev.herdr.mobile.terminal.view.ImeTarget.CJK_FIELD -> cjkFocus?.requestFocus()
+            dev.herdr.mobile.terminal.view.ImeTarget.TERMINAL -> {
+                hostRef?.keyboard?.focusTerminal() ?: viewRef?.requestFocus()
+            }
+            dev.herdr.mobile.terminal.view.ImeTarget.NONE -> Unit
+        }
+        if (cmd.show) hostRef?.showKeyboard()
+    }
     var lastInputPage by remember { mutableStateOf(state.inputPage) }
     LaunchedEffect(state.inputPage) {
-        val previous = lastInputPage
+        if (lastInputPage == state.inputPage) return@LaunchedEffect
         lastInputPage = state.inputPage
-        if (previous == state.inputPage) return@LaunchedEffect
-        if (!imeVisible) return@LaunchedEffect
-        if (state.inputPage == dev.herdr.mobile.core.model.InputPanelPage.CJK_INPUT) {
-            cjkFocus?.requestFocus()
-        } else {
-            viewRef?.requestFocus()
-        }
+        applyIme(
+            imeCommand(ImeTrigger.PAGE_SWITCH, state.inputPage, imeVisible),
+        )
     }
-    // Tab switch/close swaps the backend under the same view; the view can be
-    // left without input focus, so typing (hardware keys, IME arrows) goes
-    // nowhere until a tap. Hand it focus explicitly when the pane changes, and
-    // drop any IME the focus change dragged in (keyboard is button-only).
     LaunchedEffect(state.pane?.id) {
-        hostRef?.dismissKeyboard()
-        if (state.inputPage != dev.herdr.mobile.core.model.InputPanelPage.CJK_INPUT) {
-            viewRef?.requestFocus()
-        }
+        applyIme(imeCommand(ImeTrigger.PANE_SWITCH, state.inputPage, imeVisible))
     }
-
-    // Focus must never raise the IME. Android re-shows the soft keyboard for a
-    // focused view that owns an InputConnection whenever the window regains
-    // focus, which is why the keyboard kept coming back after one summon +
-    // background/return. Suppress it reactively: hide on resume and after
-    // pane switches unless the user pressed the keyboard button, and re-arm
-    // the latch whenever the IME goes away on its own.
+    // The IME going away on its own re-arms the summon latch.
     LaunchedEffect(imeVisible) {
-        if (!imeVisible) hostRef?.onKeyboardHidden()
+        if (!imeVisible) hostRef?.keyboard?.onImeHidden()
     }
     val lifecycleOwner = androidx.lifecycle.compose.LocalLifecycleOwner.current
+    val pageState = rememberUpdatedState(state.inputPage)
     DisposableEffect(lifecycleOwner) {
         val observer = androidx.lifecycle.LifecycleEventObserver { _, event ->
             if (event == androidx.lifecycle.Lifecycle.Event.ON_RESUME) {
-                hostRef?.hideKeyboardIfUnrequested()
+                applyIme(imeCommand(ImeTrigger.FOREGROUND, pageState.value, imeVisible))
             }
         }
         lifecycleOwner.lifecycle.addObserver(observer)
         onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
     }
-
-    // Manual summon: the ONE way the keyboard appears. On the CJK page the
-    // focus must land on the draft field (it is the IME target); on the extra
-    // keys page it lands on the terminal view. Guard 0 so composition doesn't
-    // steal focus on first mount.
+    // Keyboard button: the one deliberate summon. Guard 0 so composition does
+    // not steal focus on first mount.
     LaunchedEffect(keyboardShowRequest) {
         if (keyboardShowRequest > keyboardShowHandled) {
             onKeyboardShowHandled(keyboardShowRequest)
-            when (state.inputPage) {
-                // The draft field is the IME target; Compose raises the IME
-                // when a text field gains focus.
-                dev.herdr.mobile.core.model.InputPanelPage.CJK_INPUT -> cjkFocus?.requestFocus()
-                else -> hostRef?.showKeyboard()
-            }
+            applyIme(imeCommand(ImeTrigger.KEYBOARD_BUTTON, state.inputPage, imeVisible))
         }
     }
     // User input snaps a scrolled viewport home (back at the prompt). Guard 0:
@@ -884,15 +596,11 @@ private fun TerminalSurface(
             // next hardware key when set).
             viewClientRef?.ctrlDown = dev.herdr.mobile.terminal.view.TerminalKeyEncoder.Modifier.CTRL in state.stickyModifiers
             viewClientRef?.altDown = dev.herdr.mobile.terminal.view.TerminalKeyEncoder.Modifier.ALT in state.stickyModifiers
-            // Remote scroll ownership is driven by the explicit pane app
-            // identity (core status.app), never a foreground command name.
-            // Alt-screen is OR-ed live by the pump. Missing identity keeps
-            // ordinary shells on local history; unknown explicit apps use the
-            // logged, conservative page-key fallback in AgentMatrix.
-            // Wheel route and documented stride remain per known app kind.
+            // The host decides scroll ownership itself (ScrollRoute.scrollOwner):
+            // it only needs the pane identity and the app's wheel stride.
             hostRef?.remoteScrollHost = appIdentity != null
-            hostRef?.agentWheel = dev.herdr.mobile.core.model.AgentMatrix.useWheelScroll(appIdentity)
-            hostRef?.agentWheelRowsPerEvent =
+            hostRef?.diagnosticsAgent = appIdentity
+            hostRef?.wheelRowsPerEvent =
                 dev.herdr.mobile.core.model.AgentMatrix.wheelRowsPerEvent(appIdentity)
             val vc = viewClientRef
             val h = hostRef
@@ -1003,127 +711,4 @@ private fun TerminalSurface(
 
     // Terminal bottom edge: the Box weight above shrinks with imePadding, so
     // the grid's last row always sits on the input panel, never behind it.
-}
-
-@Composable
-private fun BottomInputPanel(
-    viewModel: TerminalViewModel,
-    state: TerminalUiState,
-    onSendBytes: (ByteArray) -> Unit,
-    onSendText: (String) -> Unit,
-    onExtraKey: (dev.herdr.mobile.terminal.view.TerminalKeyEncoder.Key) -> Unit,
-    onPageChange: (InputPanelPage) -> Unit,
-    cjkFocus: androidx.compose.ui.focus.FocusRequester,
-) {
-    val settings = state.settings
-    val pages = buildList {
-        if (settings.extraKeysEnabled) add(InputPanelPage.EXTRA_KEYS)
-        if (settings.cjkInputEnabled) add(InputPanelPage.CJK_INPUT)
-    }
-    if (pages.isEmpty()) {
-        Spacer(Modifier.height(8.dp))
-        return
-    }
-    val pagerState = rememberPagerState(
-        initialPage = pages.indexOf(state.inputPage).coerceAtLeast(0),
-        pageCount = { pages.size },
-    )
-    // No page indicator: the spec allows one but the user finds the dots
-    // noise (current page is obvious from the panel itself). Pager keeps
-    // working via horizontal swipes in both directions.
-    // When a panel is disabled in Settings, pages shrinks: clamp the pager or
-    // pages[currentPage] throws IndexOutOfBounds on a stale page 1.
-    LaunchedEffect(pages.size) {
-        if (pagerState.currentPage >= pages.size) {
-            pagerState.scrollToPage(0)
-        }
-    }
-    // Switching pages never touches keyboard visibility: no auto-focus of the
-    // CJK field (only the keyboard button summons the IME) and no dismiss.
-    LaunchedEffect(pagerState.currentPage, pages.size) {
-        val page = pages.getOrNull(pagerState.currentPage) ?: return@LaunchedEffect
-        onPageChange(page)
-    }
-    Surface(
-        tonalElevation = 3.dp,
-        shape = MaterialTheme.shapes.extraLarge,
-        modifier = Modifier
-            .fillMaxWidth()
-            .padding(start = 12.dp, end = 12.dp, top = 8.dp, bottom = 6.dp),
-    ) {
-        Column(modifier = Modifier.padding(horizontal = 12.dp, vertical = 10.dp)) {
-            if (pages.size > 1) {
-                HorizontalPager(state = pagerState, modifier = Modifier.fillMaxWidth()) { index ->
-                    when (pages[index]) {
-                        InputPanelPage.EXTRA_KEYS -> ExtraKeysPanel(
-                            onKey = onExtraKey,
-                            armed = state.stickyModifiers,
-                            haptic = settings.hapticFeedback,
-                        )
-
-                        InputPanelPage.CJK_INPUT -> {
-                            val tabId = state.target?.tabId
-                            val draft by viewModel.cjkDraft(tabId).collectAsStateWithLifecycle()
-                            CjkInputPanel(
-                                text = draft,
-                                onTextChange = { viewModel.setCjkDraft(tabId, it) },
-                                onSend = {
-                                    onSendText(it)
-                                    viewModel.clearCjkDraft(tabId)
-                                },
-                                onBackspace = { onSendBytes(byteArrayOf(0x7F)) },
-                                focusRequester = cjkFocus,
-                            )
-                        }
-                    }
-                }
-            } else {
-                when (pages.first()) {
-                    InputPanelPage.EXTRA_KEYS -> ExtraKeysPanel(
-                        onKey = onExtraKey,
-                        armed = state.stickyModifiers,
-                        haptic = settings.hapticFeedback,
-                    )
-
-                    InputPanelPage.CJK_INPUT -> {
-                        val tabId = state.target?.tabId
-                        val draft by viewModel.cjkDraft(tabId).collectAsStateWithLifecycle()
-                        CjkInputPanel(
-                            text = draft,
-                            onTextChange = { viewModel.setCjkDraft(tabId, it) },
-                            onSend = {
-                                onSendText(it)
-                                viewModel.clearCjkDraft(tabId)
-                            },
-                            onBackspace = { onSendBytes(byteArrayOf(0x7F)) },
-                            focusRequester = cjkFocus,
-                        )
-                    }
-                }
-            }
-        }
-    }
-}
-
-/**
- * Grid for a view size + text size, computed EXACTLY the way Termux's own
- * updateSize does (monospace "X" advance, ceiled font spacing): the attach
- * geometry (and the daemon's prelude blank-fill) must match the view's grid
- * or history banking falls short. Same 20x5 clamp as the old view.
- */
-private fun gridFor(
-    textSizePx: Int,
-    widthPx: Int,
-    heightPx: Int,
-    familyName: String = "monospace",
-): Pair<Int, Int> {
-    if (textSizePx <= 0 || widthPx <= 0 || heightPx <= 0) return 80 to 24
-    val paint = android.graphics.Paint().apply {
-        textSize = textSizePx.toFloat()
-        typeface = android.graphics.Typeface.create(familyName, android.graphics.Typeface.NORMAL)
-    }
-    val cellWidth = paint.measureText("X").toInt().coerceAtLeast(1)
-    val cellHeight = kotlin.math.ceil(paint.fontSpacing).toInt().coerceAtLeast(1)
-    return maxOf(20, widthPx / cellWidth) to
-        maxOf(5, heightPx / cellHeight)
 }

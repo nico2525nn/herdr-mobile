@@ -71,23 +71,11 @@ class RemoteTermuxSession(
     var onRelease: (() -> Unit)? = null
 
     init {
-        // Fail fast on library upgrades that move the field (R8 keeps it; see
-        // proguard-rules.pro). Pinned to terminal-emulator v0.118.3.
-        val field = try {
-            TerminalSession::class.java.getDeclaredField("mEmulator").apply {
-                isAccessible = true
-            }
-        } catch (e: Exception) {
-            throw IllegalStateException(
-                "Termux TerminalSession.mEmulator gone — pinned v0.118.3 API changed",
-                e,
-            )
-        }
         // transcriptRows clamps 100..50000 inside Termux; pass ours through.
         session = TerminalSession("", "", null, null, scrollbackLimit, sessionClient)
         // Cell px unknown until layout; 0 is fine (resize() corrects on attach).
         emulator = TerminalEmulator(output, 80, 24, 0, 0, scrollbackLimit, sessionClient)
-        field.set(session, emulator)
+        TermuxInternals.installEmulator(session, emulator)
 
         // The emulator calls ONLY the TerminalOutput for bell/colors/OSC-52
         // (mSession.onBell()/onColorsChanged()/onCopyTextToClipboard); the

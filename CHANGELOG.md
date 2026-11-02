@@ -1,5 +1,25 @@
 # Changelog
 
+## 1.4.4 — 2026-11-02
+
+- Connection badge: a small pill appears over the terminal's top rows when the
+  link stays down for more than a second (Connecting / Reconnecting /
+  Refreshing / Connection lost) and disappears the moment it is back.
+- Reconnect keeps the pane: a daemon restart or tunnel drop used to leave
+  "Detached (closed)" behind; the app now re-attaches the same pane with a
+  bounded retry and only falls back to Retry when that really fails.
+- Scroll routing reads live mouse tracking: SGR wheel bytes are only sent to a
+  program that asked for them. Agent panes without mouse tracking page the
+  host's scrollback instead of typing inert sequences.
+- Architecture pass (no behaviour change intended, all covered by tests):
+  `ScrollRoute` (one scroll policy), `ImePolicy` (one keyboard policy),
+  `TerminalKeyboardController` (one IME owner), `TermuxInternals` (one
+  reflection door), `TargetReconciler` (pure retarget decision),
+  `TerminalScreen` split into screen/rails/dialogs/status/input-panel,
+  Home screen dialogs moved out, daemon scroll gating shared by both backends.
+- Fixed a stale `connection-ssh` test that did not compile with the current
+  `HostProfile`.
+
 ## 1.4.3 — 2026-11-02
 
 - Shell scroll fixed: Herdr TUI keeps a stale `agent` label on panes the agent

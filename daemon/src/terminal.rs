@@ -9,6 +9,7 @@ use tracing::{debug, info, warn};
 
 use crate::herdr::terminal::{ChildRecord, TerminalChild};
 use crate::herdr::HerdrClient;
+use crate::scroll_policy::{self, ScrollAction, ScrollBackend, ScrollRequest};
 
 /// Live terminal attachments, keyed by pane id. Attaching twice reuses the session; every
 /// attached bridge receives every frame.
@@ -61,11 +62,11 @@ enum SessionCommand {
     /// UTF-8 text → child stdin as `terminal.input` text.
     Text(String),
     Resize(u32, u32),
-    /// Alt-screen remote scroll (TUI has no local history): forwarded to
-    /// `terminal.scroll` (source=wheel); Herdr routes per context (host
-    /// scrollback / app arrows / mouse report). Shells never use this (they
-    /// scroll local prelude history instantly, no RTT).
-    Scroll(String, u32),
+    /// Remote scroll for an alt-screen TUI: the shared scroll policy decides
+    /// between `terminal.scroll` page keys (Herdr falls back to host
+    /// scrollback) and wheel routing. Shells never reach here (they scroll
+    /// local prelude history instantly, no RTT).
+    Scroll(ScrollAction),
     Mouse(String, String, u32, u32),
     Release,
 }
@@ -318,8 +319,8 @@ async fn run_session(
                             }
                         }
                     }
-                    SessionCommand::Scroll(direction, lines) => {
-                        if child.send_scroll(&direction, lines).await.is_err() { break; }
+                    SessionCommand::Scroll(action) => {
+                        if child.send_scroll(action).await.is_err() { break; }
                     }
                     SessionCommand::Mouse(action, button, column, row) => {
                         if child.send_mouse(&action, &button, column, row).await.is_err() { break; }
@@ -818,13 +819,25 @@ async fn handle_client_text(text: &str, input_tx: &mpsc::Sender<SessionCommand>)
             true
         }
         "scroll" => {
-            let direction = value
-                .get("direction")
-                .and_then(|d| d.as_str())
-                .unwrap_or("down")
-                .to_string();
-            let lines = value.get("lines").and_then(|l| l.as_u64()).unwrap_or(5) as u32;
-            send(SessionCommand::Scroll(direction, lines.max(1))).await;
+            let direction = value.get("direction").and_then(|d| d.as_str()).unwrap_or("down");
+            let lines = (value.get("lines").and_then(|l| l.as_u64()).unwrap_or(5) as u32).max(1);
+            let up = direction != "down";
+            let action = scroll_policy::scroll_action(ScrollRequest {
+                backend: ScrollBackend::Herdr,
+                app_identity: None,
+                alt_screen: false,
+                mouse_tracking: false,
+                // Kept for the shared contract; the Herdr transport routes
+                // page keys itself and never types into a shell.
+                allow_page_key: value
+                    .get("allowPageKey")
+                    .and_then(|a| a.as_bool())
+                    .unwrap_or(false),
+                lines: if up { -(lines as i64) } else { lines as i64 },
+            });
+            if action != ScrollAction::Ignore {
+                send(SessionCommand::Scroll(action)).await;
+            }
             true
         }
         "mouse" => {
@@ -930,7 +943,10 @@ mod tests {
         assert!(matches!(&got[0], SessionCommand::Text(t) if t == "echo hi\r"));
         assert!(matches!(&got[1], SessionCommand::Input(b) if b == &[1, 2]));
         assert!(matches!(got[2], SessionCommand::Resize(100, 30)));
-        assert!(matches!(&got[3], SessionCommand::Scroll(d, 5) if d == "up"));
+        assert!(matches!(
+            &got[3],
+            SessionCommand::Scroll(a) if *a == ScrollAction::PageKey { up: true, pages: 5 }
+        ));
         assert!(matches!(&got[4], SessionCommand::Mouse(a, b, 3, 4) if a == "down" && b == "left"));
     }
 

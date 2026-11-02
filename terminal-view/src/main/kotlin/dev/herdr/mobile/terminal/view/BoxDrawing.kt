@@ -54,20 +54,12 @@ internal object BoxDrawing {
     /** Reused by [resolveColors]: 0 = foreground, 1 = background. */
     private val colorScratch = IntArray(2)
 
-    private val topRowField: Field? = fieldOf(TerminalView::class.java, "mTopRow")
-    private val spacingAndAscentField: Field? =
-        fieldOf(TerminalRenderer::class.java, "mFontLineSpacingAndAscent")
-    private val selectorsField: Field? = fieldOf(TerminalView::class.java, "mDefaultSelectors")
-
-    private fun fieldOf(type: Class<*>, name: String): Field? = runCatching {
-        type.getDeclaredField(name).apply { isAccessible = true }
-    }.getOrNull()
 
     fun draw(canvas: Canvas, view: TerminalView, stroke: Paint, fill: Paint, arc: RectF) {
         val emu = view.mEmulator ?: return
         val renderer = view.mRenderer ?: return
-        val topRow = topRowField?.getInt(view) ?: return
-        val topOffset = spacingAndAscentField?.getInt(renderer) ?: return
+        val topRow = TermuxInternals.topRow(view) ?: return
+        val topOffset = TermuxInternals.lineSpacingAndAscent(renderer) ?: return
         val lineSpacing = renderer.fontLineSpacing
         val fontWidth = renderer.fontWidth
         if (lineSpacing <= 0 || fontWidth <= 0f) return
@@ -81,7 +73,7 @@ internal object BoxDrawing {
         val cursorVisible = emu.shouldCursorBeVisible()
         val cursorRow = emu.cursorRow
         val cursorCol = emu.cursorCol
-        val selectors = selectorsField?.get(view) as? IntArray
+        val selectors = TermuxInternals.defaultSelectors(view)
         val hasSelection = selectors != null && selectors[0] >= 0
 
         for (row in 0 until rows) {

@@ -7,6 +7,7 @@ use futures_util::{SinkExt, StreamExt};
 use serde_json::{json, Value};
 
 use super::{CoreAttachment, CoreClient, FRAME_CLOSE, FRAME_DATA, FRAME_FACTS};
+use crate::scroll_policy::{self, ScrollAction, ScrollBackend, ScrollRequest};
 
 const INITIAL_CREDIT: u32 = 1024 * 1024;
 
@@ -119,10 +120,6 @@ fn input_payload(value: &Value) -> Result<Option<Cow<'_, [u8]>>> {
     }
 }
 
-fn allows_core_page_scroll(value: &Value) -> bool {
-    value.get("allowPageKey").and_then(Value::as_bool) == Some(true)
-}
-
 async fn handle_control(attachment: &mut CoreAttachment, text: &str) -> Result<bool> {
     let Ok(value) = serde_json::from_str::<Value>(text) else { return Ok(false) };
     if let Some(bytes) = input_payload(&value)? {
@@ -140,23 +137,33 @@ async fn handle_control(attachment: &mut CoreAttachment, text: &str) -> Result<b
             }
         }
         "scroll" => {
-            // Core exposes PTY DATA, not host scrollback. Only honor page-key
-            // scrolling when the client observed an agent or alt-screen TUI;
-            // otherwise literal PgUp bytes can land in shells such as `sleep`
-            // (bug class #2).
-            if !allows_core_page_scroll(&value) {
-                return Ok(false);
-            }
-            let lines = value.get("lines").and_then(Value::as_i64).unwrap_or(0);
-            if lines != 0 {
-                // Core exposes PTY DATA, not Herdr's host-scroll RPC. Page-up/down
-                // key sequences are the terminal-native equivalent for attached TUIs.
-                let key: &[u8] = if value.get("direction").and_then(Value::as_str) == Some("down") {
-                    b"\x1b[6~"
-                } else {
-                    b"\x1b[5~"
-                };
-                for _ in 0..lines.unsigned_abs().min(200) {
+            // Core exposes PTY DATA, not host scrollback. The shared policy
+            // only allows PgUp/PgDn when the client observed an agent or
+            // alt-screen TUI; otherwise literal PgUp bytes can land in shells
+            // such as `sleep` (bug class #2).
+            let magnitude = value
+                .get("lines")
+                .and_then(Value::as_i64)
+                .unwrap_or(0)
+                .unsigned_abs()
+                .min(i64::MAX as u64) as i64;
+            let down = value.get("direction").and_then(Value::as_str) == Some("down");
+            let action = scroll_policy::scroll_action(ScrollRequest {
+                backend: ScrollBackend::Core,
+                app_identity: None,
+                alt_screen: false,
+                mouse_tracking: false,
+                allow_page_key: value
+                    .get("allowPageKey")
+                    .and_then(Value::as_bool)
+                    .unwrap_or(false),
+                lines: if down { magnitude } else { -magnitude },
+            });
+            if let ScrollAction::PageKey { up, pages } = action {
+                // Page-up/down key sequences are the terminal-native
+                // equivalent for attached TUIs.
+                let key: &[u8] = if up { b"\x1b[5~" } else { b"\x1b[6~" };
+                for _ in 0..pages.min(200) {
                     attachment.send_data(key).await?;
                 }
             }
@@ -212,7 +219,18 @@ mod tests {
     fn core_scroll_requires_agent_or_alt_screen_evidence() {
         // Regression for bug class #2: old clients without a scroll capability
         // bit must not type PgUp into non-TUI foreground programs such as sleep.
-        assert!(!allows_core_page_scroll(&json!({"type":"scroll","direction":"up","lines":5})));
-        assert!(allows_core_page_scroll(&json!({"type":"scroll","allowPageKey":true})));
+        let request = |allow_page_key| ScrollRequest {
+            backend: ScrollBackend::Core,
+            app_identity: None,
+            alt_screen: false,
+            mouse_tracking: false,
+            allow_page_key,
+            lines: -5,
+        };
+        assert_eq!(scroll_policy::scroll_action(request(false)), ScrollAction::Ignore);
+        assert_eq!(
+            scroll_policy::scroll_action(request(true)),
+            ScrollAction::PageKey { up: true, pages: 5 }
+        );
     }
 }

@@ -26,7 +26,12 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.collectLatest
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.flatMapLatest
+import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.stateIn
@@ -36,11 +41,6 @@ import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeout
 
 /** Which pane Terminal shows right now, and how it got there. */
-data class TerminalTarget(
-    val workspaceId: String,
-    val tabId: String,
-    val paneId: String,
-)
 
 /** Everything the Terminal screen renders. */
 data class TerminalUiState(
@@ -186,17 +186,27 @@ class TerminalViewModel(
                 val targetGeneration = client.targetGeneration
                 if (targetGeneration != observedTargetGeneration) {
                     observedTargetGeneration = targetGeneration
-                    allowInitialTargetResolution = false
                     targetOwnerGeneration = null
                     attachJob?.cancel()
                     pendingFlushJob?.cancel()
                     pendingFlushJob = null
-                    targetFlow.value = null
+                    val keep = targetFlow.value
                     val old = backendFlow.value
                     backendFlow.value = null
                     synchronized(pendingInput) { pendingInput.clear() }
-                    messageFlow.value = "Connection target changed — return to Home to choose a session"
                     if (old != null) releaseBackendInBackground(old)
+                    // The daemon restarted or the tunnel re-dialled: pane ids
+                    // are stable, so re-open the same pane. Dropping the user on
+                    // "return to Home" for a transport blip was the worst part
+                    // of a daemon restart.
+                    val reopen = keep?.takeIf { s.snapshot?.pane(it.paneId) != null }
+                    if (reopen != null) {
+                        openTarget(reopen, preserveStatusMessage = true)
+                        return@collect
+                    }
+                    targetFlow.value = null
+                    messageFlow.value = "Connection target changed — choose a session"
+                    return@collect
                 }
                 if (!allowInitialTargetResolution) return@collect
                 val snapshot = s.snapshot ?: return@collect
@@ -218,39 +228,78 @@ class TerminalViewModel(
             }
         }
     }
+    init { autoReattachOnReconnect() }
 
     /**
-     * Move to a surviving workspace when the current target's workspace, tab or
-     * pane is gone. Falls back to the first workspace that still has a pane;
-     * clears the target when nothing survives (empty session).
+     * Apply [reconcileTarget] to the open pane: keep, retarget a survivor, or
+     * clear when the session drained. Policy lives in TargetReconciler so it is
+     * covered by unit tests.
      */
     private fun reconcileVanishedTarget(snapshot: SessionSnapshot, target: TerminalTarget) {
-        val pane = snapshot.pane(target.paneId)
-        val alive = pane != null &&
-            pane.workspaceId == target.workspaceId &&
-            pane.tabId == target.tabId
-        if (alive) return
-        val survivor = snapshot.workspaces.asSequence()
-            .mapNotNull { workspace ->
-                val tab = workspace.tabs.firstOrNull { it.id == workspace.activeTabId }
-                    ?: workspace.tabs.firstOrNull()
-                    ?: return@mapNotNull null
-                val pane = tab.activePane ?: return@mapNotNull null
-                TerminalTarget(workspace.id, tab.id, pane.id)
+        when (val decision = reconcileTarget(snapshot, target)) {
+            TargetReconcile.Keep -> Unit
+            is TargetReconcile.Retarget -> {
+                val label = snapshot.workspace(decision.next.workspaceId)
+                    ?.label?.takeIf { it.isNotBlank() }
+                    ?: decision.next.workspaceId
+                messageFlow.value = "That workspace was closed — opened $label"
+                openTarget(decision.next, preserveStatusMessage = true)
             }
-            .firstOrNull()
-        if (survivor == null) {
-            // Session drained: drop the target so the screen stops reporting a
-            // dead attach. The Home route owns navigation from here.
-            backendFlow.value = null
-            targetFlow.value = null
-            messageFlow.value = "Session closed"
-            return
+            TargetReconcile.Clear -> {
+                backendFlow.value = null
+                targetFlow.value = null
+                messageFlow.value = "Session closed"
+            }
         }
-        val label = snapshot.workspace(survivor.workspaceId)?.label?.takeIf { it.isNotBlank() }
-            ?: survivor.paneId
-        messageFlow.value = "That workspace was closed — opened $label"
-        openTarget(survivor, preserveStatusMessage = true)
+    }
+
+    /**
+     * Daemon restart / tunnel drop kills the attach stream, not the pane.
+     * Once the link is back and the terminal still reports a transport-level
+     * detach, re-attach automatically instead of parking the user on
+     * "Detached (closed)" + Retry. Bounded retries per (pane, reason) so a
+     * pane that genuinely cannot attach does not spin; Retry stays for that.
+     */
+    private fun autoReattachOnReconnect() {
+        viewModelScope.launch {
+            var attempts = 0
+            var lastKey: Pair<String, String>? = null
+            client.state.map { it.connection }
+                .distinctUntilChanged()
+                .combine(
+                    backendFlow.flatMapLatest { backend ->
+                        backend?.state ?: kotlinx.coroutines.flow.flowOf(null)
+                    },
+                ) { connection, backendState -> connection to backendState }
+                .collect { (connection, backend) ->
+                    if (backend is dev.herdr.mobile.terminal.view.BackendState.Attached) {
+                        attempts = 0
+                        lastKey = null
+                        return@collect
+                    }
+                    if (connection != dev.herdr.mobile.core.model.ConnectionState.CONNECTED) {
+                        attempts = 0
+                        lastKey = null
+                        return@collect
+                    }
+                    val detached = backend as? dev.herdr.mobile.terminal.view.BackendState.Detached
+                        ?: return@collect
+                    val key = (targetFlow.value?.paneId ?: "?") to detached.reason
+                    if (key != lastKey) {
+                        lastKey = key
+                        attempts = 0
+                    }
+                    if (attempts >= AUTO_REATTACH_ATTEMPTS) return@collect
+                    val delayMs = AUTO_REATTACH_DELAY_MS * (1L shl attempts)
+                    attempts++
+                    // Detached job, not an inline delay: the client state keeps
+                    // emitting (events, snapshots) and would cancel the wait.
+                    viewModelScope.launch {
+                        delay(delayMs)
+                        retryAttach()
+                    }
+                }
+        }
     }
 
     /**
@@ -811,3 +860,9 @@ class TerminalViewModel(
             TerminalViewModel(client, workspaceId, tabId, paneId, settings) as T
     }
 }
+
+/** Reconnect settles (snapshot + stream) before the attach is retried. */
+private const val AUTO_REATTACH_DELAY_MS = 600L
+
+/** 0.6s, 1.2s, 2.4s, then the Retry button takes over. */
+private const val AUTO_REATTACH_ATTEMPTS = 4

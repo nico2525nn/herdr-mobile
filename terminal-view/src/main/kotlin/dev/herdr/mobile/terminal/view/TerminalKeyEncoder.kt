@@ -487,28 +487,8 @@ object TerminalKeyEncoder {
 
     /**
      * True when the attached emulator has DECSET 2004 (bracketed paste) active.
-     * Mirrors Termux's own `paste()` gate (`TerminalEmulator.java:2577-2586`,
-     * `isDecsetInternalBitSet(DECSET_BIT_BRACKETED_PASTE_MODE)`):
-     * there is no public accessor, so this reads `mCurrentDecSetFlags`
-     * reflectively (same pattern as the mEmulator injection in
-     * RemoteTermuxSession; pinned to terminal-emulator v0.118.3). The app keep
-     * rule preserves the field in release; a lookup failure logs loudly and
-     * falls back to plain paste rather than silently changing behavior.
+     * Termux has no public accessor, so [TermuxInternals] reads its flag word.
      */
-    fun isBracketedPasteMode(emulator: Any?): Boolean {
-        if (emulator == null) return false
-        return try {
-            val field = emulator.javaClass.getDeclaredField("mCurrentDecSetFlags").apply {
-                isAccessible = true
-            }
-            field.getInt(emulator) and 1024 != 0
-        } catch (error: Exception) {
-            java.util.logging.Logger.getLogger("TerminalKeyEncoder").log(
-                java.util.logging.Level.WARNING,
-                "Unable to inspect Termux DECSET 2004; using plain-paste fallback",
-                error,
-            )
-            false
-        }
-    }
+    fun isBracketedPasteMode(emulator: Any?): Boolean =
+        TermuxInternals.isBracketedPasteEnabled(emulator)
 }

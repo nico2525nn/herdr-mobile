@@ -6,6 +6,7 @@ mod events;
 mod herdr;
 mod herdrcore;
 mod model;
+mod scroll_policy;
 mod terminal;
 mod update;
 
