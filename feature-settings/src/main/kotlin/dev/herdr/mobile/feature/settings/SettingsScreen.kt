@@ -430,6 +430,7 @@ private fun ThemeMode.displayName(): String = when (this) {
     ThemeMode.SYSTEM -> "System"
     ThemeMode.LIGHT -> "Light"
     ThemeMode.DARK -> "Dark"
+    ThemeMode.MIDNIGHT -> "Midnight"
 }
 
 private fun testSummary(result: ConnectionTestResult?): String = when (result) {

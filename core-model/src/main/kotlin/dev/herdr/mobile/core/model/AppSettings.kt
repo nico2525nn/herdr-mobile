@@ -4,7 +4,9 @@ package dev.herdr.mobile.core.model
 enum class ThemeMode(val wire: String) {
     SYSTEM("system"),
     LIGHT("light"),
-    DARK("dark");
+    DARK("dark"),
+    /** Pure-black AMOLED theme: every background #000, terminal included. */
+    MIDNIGHT("midnight");
 
     companion object {
         fun fromWire(value: String?): ThemeMode = entries.firstOrNull { it.wire == value } ?: SYSTEM
@@ -20,7 +22,9 @@ enum class TerminalColorScheme(val wire: String, val displayName: String) {
     TOKYO_NIGHT("tokyo_night", "Tokyo Night"),
     DRACULA("dracula", "Dracula"),
     GRUVBOX_DARK("gruvbox_dark", "Gruvbox Dark"),
-    CAMPBELL("campbell", "Campbell");
+    CAMPBELL("campbell", "Campbell"),
+    /** Pure-black background for AMOLED; pairs with ThemeMode.MIDNIGHT. */
+    MIDNIGHT("midnight", "Midnight");
 
     companion object {
         fun fromWire(value: String?): TerminalColorScheme =

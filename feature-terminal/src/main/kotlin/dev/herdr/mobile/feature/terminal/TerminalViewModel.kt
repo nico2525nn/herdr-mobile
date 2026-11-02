@@ -68,6 +68,7 @@ data class TerminalUiState(
             TerminalColorScheme.DRACULA -> TerminalThemes.dracula()
             TerminalColorScheme.GRUVBOX_DARK -> TerminalThemes.gruvboxDark()
             TerminalColorScheme.CAMPBELL -> TerminalThemes.campbell()
+            TerminalColorScheme.MIDNIGHT -> TerminalThemes.midnight()
         }
 }
 

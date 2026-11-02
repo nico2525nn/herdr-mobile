@@ -1,5 +1,15 @@
 # Changelog
 
+## 1.4.2 — 2026-11-02
+
+- Midnight theme: pure-black AMOLED app theme + matching terminal scheme.
+  All M3 surfaces #000 (dynamic color bypassed), terminal background
+  #000000. Selectable separately in Settings > Appearance.
+- Shell scroll investigated: no app regression found — local Termux scroll
+  works in all zones when history exists (verified by zone mapping).
+  Reported symptom matches empty-history panes (nothing above to reveal)
+  or bottomed-out viewports.
+
 ## 1.4.1 — 2026-10-30
 
 - Harden herdr-core input and event routing: bracketed paste keeps ESC markers

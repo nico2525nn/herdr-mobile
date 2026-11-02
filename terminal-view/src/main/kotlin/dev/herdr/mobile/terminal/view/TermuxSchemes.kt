@@ -50,6 +50,7 @@ object TermuxSchemes {
                 dev.herdr.mobile.core.model.TerminalColorScheme.DRACULA -> TerminalThemes.dracula()
                 dev.herdr.mobile.core.model.TerminalColorScheme.GRUVBOX_DARK -> TerminalThemes.gruvboxDark()
                 dev.herdr.mobile.core.model.TerminalColorScheme.CAMPBELL -> TerminalThemes.campbell()
+                dev.herdr.mobile.core.model.TerminalColorScheme.MIDNIGHT -> TerminalThemes.midnight()
             },
         )
     }
