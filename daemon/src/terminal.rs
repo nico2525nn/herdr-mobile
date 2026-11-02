@@ -7,14 +7,19 @@ use futures_util::{SinkExt, StreamExt};
 use tokio::sync::{broadcast, mpsc, Mutex};
 use tracing::{debug, info, warn};
 
+use crate::cache::SessionCache;
 use crate::herdr::terminal::{ChildRecord, TerminalChild};
 use crate::herdr::HerdrClient;
+use crate::model::ScrollInfo;
 use crate::scroll_policy::{self, ScrollAction, ScrollBackend, ScrollRequest};
 
 /// Live terminal attachments, keyed by pane id. Attaching twice reuses the session; every
 /// attached bridge receives every frame.
 pub struct TerminalRegistry {
     herdr: HerdrClient,
+    /// Snapshot cache: fallback source for a pane's host-scroll position when
+    /// the live `pane.get` fails.
+    cache: Arc<SessionCache>,
     sessions: Mutex<HashMap<String, Arc<TerminalSession>>>,
 }
 
@@ -43,6 +48,23 @@ struct BridgeState {
     closing: bool,
 }
 
+/// Last host-scroll state seen for a session's pane. `resolved_at` only
+/// matters for scrollback-less states, which are cheap to re-read.
+struct HostScroll {
+    info: ScrollInfo,
+    resolved_at: tokio::time::Instant,
+}
+
+/// How long a scrollback-less scroll state is trusted before it is re-read
+/// (Herdr grows `max_offset_from_bottom` as new output arrives).
+const HOST_SCROLL_RECHECK: std::time::Duration = std::time::Duration::from_secs(3);
+
+impl HostScroll {
+    fn is_fresh(&self) -> bool {
+        self.resolved_at.elapsed() < HOST_SCROLL_RECHECK
+    }
+}
+
 /// Geometry to hand back to Herdr on detach.
 #[derive(Clone, Copy, Debug)]
 struct RestoreViewport {
@@ -62,19 +84,21 @@ enum SessionCommand {
     /// UTF-8 text → child stdin as `terminal.input` text.
     Text(String),
     Resize(u32, u32),
-    /// Remote scroll for an alt-screen TUI: the shared scroll policy decides
-    /// between `terminal.scroll` page keys (Herdr falls back to host
-    /// scrollback) and wheel routing. Shells never reach here (they scroll
-    /// local prelude history instantly, no RTT).
+    /// Remote scroll for an alt-screen TUI, in ROWS. `run_session` prefers
+    /// Herdr's absolute `pane.scroll` offset (one row = one row) and only
+    /// falls back to the shared policy's `terminal.scroll` page keys / wheel
+    /// routing when the pane has no host scrollback. Shells never reach here
+    /// (they scroll local prelude history instantly, no RTT).
     Scroll(ScrollAction),
     Mouse(String, String, u32, u32),
     Release,
 }
 
 impl TerminalRegistry {
-    pub fn new(herdr: HerdrClient) -> TerminalRegistry {
+    pub fn new(herdr: HerdrClient, cache: Arc<SessionCache>) -> TerminalRegistry {
         TerminalRegistry {
             herdr,
+            cache,
             sessions: Mutex::new(HashMap::new()),
         }
     }
@@ -150,6 +174,91 @@ impl TerminalRegistry {
             rows,
         )
         .await
+    }
+
+    /// Scroll a Herdr TUI pane by ROWS through the ABSOLUTE `pane.scroll` RPC.
+    ///
+    /// `terminal.scroll` is relative and its page-key fallback moves a whole
+    /// screen per press, so a 3-row swipe used to jump three screens. Herdr's
+    /// absolute host offset moves exactly the rows asked for.
+    ///
+    /// `known` is this session's last observed scroll state; it is refreshed
+    /// from every `pane.scroll` response so consecutive gestures accumulate
+    /// exactly instead of re-reading a stale base.
+    ///
+    /// Returns `false` when the caller must fall back to `terminal.scroll`:
+    /// the pane has no host scrollback, Herdr reports no scroll state for it,
+    /// or the RPC failed.
+    async fn host_scroll(
+        &self,
+        pane_id: &str,
+        up: bool,
+        rows: u32,
+        known: &mut Option<HostScroll>,
+    ) -> bool {
+        let base = match known {
+            // A state with scrollback stays authoritative: every scroll
+            // response refreshes it. A scrollback-less state is re-resolved
+            // after a TTL so history gained by later output is noticed without
+            // paying an RPC per gesture.
+            Some(known) if known.info.has_scrollback() || known.is_fresh() => known.info,
+            _ => {
+                let Some(info) = self.pane_scroll_state(pane_id).await else {
+                    *known = None;
+                    return false;
+                };
+                *known = Some(HostScroll { info, resolved_at: tokio::time::Instant::now() });
+                info
+            }
+        };
+        if !base.has_scrollback() {
+            // Main-screen TUIs keep no host scrollback: page keys are the only
+            // lever Herdr has for them.
+            return false;
+        }
+        let Some(target) = scroll_policy::host_scroll_target(
+            base.offset_from_bottom,
+            base.max_offset_from_bottom,
+            up,
+            rows,
+        ) else {
+            // Already at the clamp boundary: skip the RPC (never re-assert the
+            // same offset). Scrolling up against a max that may have grown
+            // since the last report is re-resolved next gesture; down at the
+            // live bottom is stable and keeps its state.
+            if up {
+                *known = None;
+            }
+            return true;
+        };
+        match self.herdr.pane_scroll(pane_id, target).await {
+            Ok(reported) => {
+                let info = match reported {
+                    Some(info) => info,
+                    None => ScrollInfo { offset_from_bottom: target, ..base },
+                };
+                *known = Some(HostScroll { info, resolved_at: tokio::time::Instant::now() });
+                true
+            }
+            Err(error) => {
+                warn!("pane.scroll failed for {pane_id} (target {target}): {error:#}; using page keys");
+                *known = None;
+                false
+            }
+        }
+    }
+
+    /// Live scroll state for a pane: `pane.get` first (offset_from_bottom is
+    /// view state the event stream never carries, so a cached copy can be
+    /// badly stale), then the snapshot cache as a fallback.
+    async fn pane_scroll_state(&self, pane_id: &str) -> Option<ScrollInfo> {
+        match self.herdr.pane_scroll_info(pane_id).await {
+            Ok(info) => Some(info),
+            Err(error) => {
+                debug!("pane.get has no scroll state for {pane_id}: {error:#}");
+                self.cache.pane_scroll(pane_id)
+            }
+        }
     }
 
     async fn attach(
@@ -290,6 +399,9 @@ async fn run_session(
     // restarts on every arriving command, starving sustained resize streams.
     // The deadline is set once when the first pending resize lands.
     let mut flush_at: Option<tokio::time::Instant> = None;
+    // Last host-scroll state observed for this pane, kept per session so a
+    // gesture stream accumulates rows exactly (see `host_scroll`).
+    let mut host_scroll: Option<HostScroll> = None;
     let mut end_reason = String::from("detached");
     loop {
         tokio::select! {
@@ -320,7 +432,15 @@ async fn run_session(
                         }
                     }
                     SessionCommand::Scroll(action) => {
-                        if child.send_scroll(action).await.is_err() { break; }
+                        let host_handled = match action {
+                            ScrollAction::PageKey { up, rows } => {
+                                registry.host_scroll(&pane_id, up, rows, &mut host_scroll).await
+                            }
+                            // Wheel routing is the app's own viewport, never
+                            // the host scrollback.
+                            _ => false,
+                        };
+                        if !host_handled && child.send_scroll(action).await.is_err() { break; }
                     }
                     SessionCommand::Mouse(action, button, column, row) => {
                         if child.send_mouse(&action, &button, column, row).await.is_err() { break; }
@@ -504,7 +624,7 @@ async fn run_bridge_inner(
                     }
                 }
                 Message::Text(text) => {
-                    if !handle_client_text(&text, &input_tx).await {
+                    if !handle_client_text(&text, &input_tx, rows).await {
                         // Client asked for `release`: stop pulling; the single
                         // Release for this bridge goes out from the RAII guard at
                         // the bottom (only if we are the last bridge watching).
@@ -784,7 +904,11 @@ fn strip_ansi_osc(s: &str) -> String {
 }
 
 /// Returns false when the bridge should stop (client sent `release`).
-async fn handle_client_text(text: &str, input_tx: &mpsc::Sender<SessionCommand>) -> bool {
+async fn handle_client_text(
+    text: &str,
+    input_tx: &mpsc::Sender<SessionCommand>,
+    viewport_rows: u32,
+) -> bool {
     let value: serde_json::Value = match serde_json::from_str(text) {
         Ok(value) => value,
         Err(_) => return true, // malformed JSON is ignored, not fatal
@@ -821,6 +945,15 @@ async fn handle_client_text(text: &str, input_tx: &mpsc::Sender<SessionCommand>)
         "scroll" => {
             let direction = value.get("direction").and_then(|d| d.as_str()).unwrap_or("down");
             let lines = (value.get("lines").and_then(|l| l.as_u64()).unwrap_or(5) as u32).max(1);
+            // `unit` tells us what `lines` counts. The view only has whole
+            // screens when the host has no scrollback, so it sends pages; the
+            // rest of the pipeline works in rows, and one page is one viewport.
+            let pages = value.get("unit").and_then(|u| u.as_str()) == Some("pages");
+            let rows = if pages {
+                lines.saturating_mul(viewport_rows.max(1))
+            } else {
+                lines
+            };
             let up = direction != "down";
             let action = scroll_policy::scroll_action(ScrollRequest {
                 backend: ScrollBackend::Herdr,
@@ -833,7 +966,7 @@ async fn handle_client_text(text: &str, input_tx: &mpsc::Sender<SessionCommand>)
                     .get("allowPageKey")
                     .and_then(|a| a.as_bool())
                     .unwrap_or(false),
-                lines: if up { -(lines as i64) } else { lines as i64 },
+                lines: if up { -(rows as i64) } else { rows as i64 },
             });
             if action != ScrollAction::Ignore {
                 send(SessionCommand::Scroll(action)).await;
@@ -919,35 +1052,47 @@ mod tests {
     #[tokio::test]
     async fn client_control_contract() {
         let (tx, mut rx) = mpsc::channel(8);
-        assert!(handle_client_text(r#"{"type":"input.text","text":"echo hi\r"}"#, &tx).await);
-        assert!(handle_client_text(r#"{"type":"input.text","text":""}"#, &tx).await);
-        assert!(handle_client_text(r#"{"type":"input.bytes","bytes":"AQI="}"#, &tx).await);
-        assert!(handle_client_text(r#"{"type":"input.bytes","bytes":"!!!"}"#, &tx).await);
-        assert!(handle_client_text(r#"{"type":"resize","cols":100,"rows":30}"#, &tx).await);
-        assert!(handle_client_text(r#"{"type":"scroll","direction":"up","lines":5}"#, &tx).await);
+        assert!(handle_client_text(r#"{"type":"input.text","text":"echo hi\r"}"#, &tx, 24).await);
+        assert!(handle_client_text(r#"{"type":"input.text","text":""}"#, &tx, 24).await);
+        assert!(handle_client_text(r#"{"type":"input.bytes","bytes":"AQI="}"#, &tx, 24).await);
+        assert!(handle_client_text(r#"{"type":"input.bytes","bytes":"!!!"}"#, &tx, 24).await);
+        assert!(handle_client_text(r#"{"type":"resize","cols":100,"rows":30}"#, &tx, 24).await);
+        assert!(handle_client_text(r#"{"type":"scroll","direction":"up","lines":5}"#, &tx, 24).await);
         assert!(handle_client_text(
             r#"{"type":"mouse","action":"down","button":"left","column":3,"row":4}"#,
-            &tx
+            &tx,
+            24,
         )
         .await);
-        assert!(handle_client_text("not json at all", &tx).await);
-        assert!(handle_client_text(r#"{"type":"something-new","x":1}"#, &tx).await);
-        assert!(!handle_client_text(r#"{"type":"release"}"#, &tx).await);
-        assert!(handle_client_text(r#"{"type":"resize","cols":0,"rows":0}"#, &tx).await);
+        // unit=pages is converted to rows before the action leaves the parser.
+        assert!(handle_client_text(
+            r#"{"type":"scroll","direction":"up","lines":2,"unit":"pages"}"#,
+            &tx,
+            24
+        )
+        .await);
+        assert!(handle_client_text("not json at all", &tx, 24).await);
+        assert!(handle_client_text(r#"{"type":"something-new","x":1}"#, &tx, 24).await);
+        assert!(!handle_client_text(r#"{"type":"release"}"#, &tx, 24).await);
+        assert!(handle_client_text(r#"{"type":"resize","cols":0,"rows":0}"#, &tx, 24).await);
 
         let mut got = vec![];
         while let Ok(cmd) = rx.try_recv() {
             got.push(cmd);
         }
-        assert_eq!(got.len(), 5);
+        assert_eq!(got.len(), 6);
         assert!(matches!(&got[0], SessionCommand::Text(t) if t == "echo hi\r"));
         assert!(matches!(&got[1], SessionCommand::Input(b) if b == &[1, 2]));
         assert!(matches!(got[2], SessionCommand::Resize(100, 30)));
         assert!(matches!(
             &got[3],
-            SessionCommand::Scroll(a) if *a == ScrollAction::PageKey { up: true, pages: 5 }
+            SessionCommand::Scroll(a) if *a == ScrollAction::PageKey { up: true, rows: 5 }
         ));
         assert!(matches!(&got[4], SessionCommand::Mouse(a, b, 3, 4) if a == "down" && b == "left"));
+        assert!(matches!(
+            &got[5],
+            SessionCommand::Scroll(a) if *a == ScrollAction::PageKey { up: true, rows: 48 }
+        ));
     }
 
     /// The production BridgeGuard owns exactly-once teardown: dropping it

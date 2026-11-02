@@ -23,7 +23,13 @@ data class Pane(
     val focused: Boolean = false,
     val revision: Long = 0,
     val tokens: Map<String, String> = emptyMap(),
+    /** Host scrollback state, when the daemon can report it. */
+    val scroll: PaneScroll? = null,
 ) {
+    /** True when the host can scroll this pane line-exactly (`pane.scroll`). */
+    val hostScrollable: Boolean
+        get() = (scroll?.maxOffsetFromBottom ?: 0) > 0
+
     /** Best available human label: explicit label, then agent, then short id. */
     val displayLabel: String
         get() = label?.takeIf { it.isNotBlank() }
@@ -31,6 +37,14 @@ data class Pane(
             ?: title?.takeIf { it.isNotBlank() }
             ?: id
 }
+
+/** Host-side scroll position of a pane (rows above/below the viewport). */
+@Serializable
+data class PaneScroll(
+    val offsetFromBottom: Long = 0,
+    val maxOffsetFromBottom: Long = 0,
+    val viewportRows: Long = 0,
+)
 
 /** A Herdr tab. Owns one or more [Pane]s. */
 @Serializable

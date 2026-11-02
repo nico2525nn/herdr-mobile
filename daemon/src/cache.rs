@@ -8,7 +8,7 @@ use tracing::{debug, info, warn};
 
 use crate::events::EventBus;
 use crate::herdr::{HerdrClient, HerdrEvent};
-use crate::model::{AgentStatus, Focus, HerdrInfo, HerdrPane, HerdrSnapshot, HerdrWorkspace, Pane, SemanticEvent, SessionSnapshot, Tab, Workspace};
+use crate::model::{AgentStatus, Focus, HerdrInfo, HerdrPane, HerdrSnapshot, HerdrWorkspace, Pane, ScrollInfo, SemanticEvent, SessionSnapshot, Tab, Workspace};
 
 #[derive(Clone, Debug)]
 pub struct CacheSummary {
@@ -60,6 +60,24 @@ impl SessionCache {
 
     pub fn snapshot(&self) -> Option<SessionSnapshot> {
         self.inner.read().expect("cache lock").snapshot.clone()
+    }
+
+    /// Herdr's last-reported host-scroll state for `pane_id`, if the cached
+    /// snapshot carries it. Snapshot-time data: the cache does not subscribe to
+    /// `pane.updated`/scroll events, so treat this as a cheap hint and refresh
+    /// over RPC when accuracy matters.
+    pub fn pane_scroll(&self, pane_id: &str) -> Option<ScrollInfo> {
+        self.inner
+            .read()
+            .expect("cache lock")
+            .snapshot
+            .as_ref()?
+            .workspaces
+            .iter()
+            .flat_map(|w| w.tabs.iter())
+            .flat_map(|t| t.panes.iter())
+            .find(|p| p.id == pane_id)?
+            .scroll
     }
 
     /// Every pane id in the current cache, for per-pane subscriptions.
@@ -1128,6 +1146,7 @@ fn to_pane(p: &HerdrPane) -> Pane {
         focused: p.focused,
         revision: p.revision,
         tokens: p.tokens.clone(),
+        scroll: p.scroll.map(ScrollInfo::from),
     }
 }
 
@@ -1287,6 +1306,41 @@ mod tests {
     }
 
     #[test]
+    fn pane_scroll_is_exposed_and_lookupable() {
+        let raw: HerdrSnapshot = serde_json::from_value(serde_json::json!({
+            "workspaces": [{"workspace_id": "w9", "number": 1, "label": "x"}],
+            "tabs": [{"tab_id": "w9:t1", "workspace_id": "w9", "number": 1}],
+            "panes": [
+                {"pane_id": "w9:p1", "tab_id": "w9:t1", "workspace_id": "w9",
+                 "scroll": {"offset_from_bottom": 12, "max_offset_from_bottom": 400,
+                            "viewport_rows": 52}},
+                {"pane_id": "w9:p2", "tab_id": "w9:t1", "workspace_id": "w9"}
+            ]
+        }))
+        .unwrap();
+        let snap =
+            build_snapshot(raw, 1, 0, None, None, crate::model::HerdrUpdate::default()).unwrap();
+        let panes = &snap.workspaces[0].tabs[0].panes;
+        assert_eq!(
+            panes[0].scroll,
+            Some(ScrollInfo {
+                offset_from_bottom: 12,
+                max_offset_from_bottom: 400,
+                viewport_rows: 52,
+            })
+        );
+        // Panes Herdr reports no scroll for keep the field absent on the wire.
+        assert_eq!(panes[1].scroll, None);
+        assert!(serde_json::to_value(&panes[1]).unwrap().get("scroll").is_none());
+
+        let cache = SessionCache::new(HerdrClient::new("/nonexistent.sock".into(), "herdr".into()));
+        *cache.inner.write().expect("cache lock") = Inner { snapshot: Some(snap), ..Default::default() };
+        assert_eq!(cache.pane_scroll("w9:p1").map(|s| s.offset_from_bottom), Some(12));
+        assert_eq!(cache.pane_scroll("w9:p2"), None);
+        assert_eq!(cache.pane_scroll("w9:missing"), None);
+    }
+
+    #[test]
     fn fnv_test_vectors() {
         // Standard FNV-1a-64 vectors: the Kotlin twin must match these.
         assert_eq!(format!("{:016x}", fnv1a64(b"")), "cbf29ce484222325");
@@ -1335,6 +1389,7 @@ mod tests {
                             focused: false,
                             revision: 0,
                             tokens: Default::default(),
+                            scroll: None,
                         })
                         .collect(),
                 }],

@@ -7,7 +7,7 @@ use tokio::process::{Child, ChildStdin, ChildStdout};
 use tracing::{debug, warn};
 
 use crate::herdr::HerdrClient;
-use crate::scroll_policy::ScrollAction;
+use crate::scroll_policy::{rows_to_pages, ScrollAction};
 
 /// One `herdr terminal session control` child: NDJSON on stdin/stdout.
 ///
@@ -100,7 +100,12 @@ impl TerminalChild {
             // codex keep no host scrollback (ghostty max_offset=0) — wheel
             // would no-op. page_key sends PGUP/PGDN bytes when the app handles
             // scrolling itself, else falls back to host offset.
-            ScrollAction::PageKey { up, pages } => {
+            //
+            // Herdr counts `lines` in PAGES here, while the client speaks
+            // ROWS: divide by the attach grid so a 3-row swipe does not jump
+            // three screens. The page count is capped inside rows_to_pages.
+            ScrollAction::PageKey { up, rows } => {
+                let pages = rows_to_pages(rows, self.rows);
                 (if up { "up" } else { "down" }, pages, "page_key")
             }
             // Wheel-routed apps (mouse tracking / AgentMatrix) get the wheel

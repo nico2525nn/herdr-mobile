@@ -39,6 +39,9 @@ pub async fn bridge(mut socket: WebSocket, core: CoreClient, address: String, co
     attachment.grant_credit(INITIAL_CREDIT).await?;
 
     let (mut sink, mut source) = socket.split();
+    // Current attachment geometry. The scroll path needs the row count to turn
+    // a ROW delta into whole pages (one page = one screen).
+    let mut viewport_rows = rows.max(1);
     loop {
         tokio::select! {
             frame = attachment.next_frame() => {
@@ -77,7 +80,7 @@ pub async fn bridge(mut socket: WebSocket, core: CoreClient, address: String, co
                 match message {
                     Some(Ok(Message::Binary(bytes))) => attachment.send_data(&bytes).await?,
                     Some(Ok(Message::Text(text))) => {
-                        if handle_control(&mut attachment, text.as_str()).await? {
+                        if handle_control(&mut attachment, text.as_str(), &mut viewport_rows).await? {
                             break;
                         }
                     }
@@ -120,7 +123,11 @@ fn input_payload(value: &Value) -> Result<Option<Cow<'_, [u8]>>> {
     }
 }
 
-async fn handle_control(attachment: &mut CoreAttachment, text: &str) -> Result<bool> {
+async fn handle_control(
+    attachment: &mut CoreAttachment,
+    text: &str,
+    viewport_rows: &mut u32,
+) -> Result<bool> {
     let Ok(value) = serde_json::from_str::<Value>(text) else { return Ok(false) };
     if let Some(bytes) = input_payload(&value)? {
         // Keep input byte-exact: bracketed-paste markers contain ESC and must
@@ -134,6 +141,7 @@ async fn handle_control(attachment: &mut CoreAttachment, text: &str) -> Result<b
             let rows = value.get("rows").and_then(Value::as_u64).unwrap_or(0).min(u16::MAX as u64) as u16;
             if cols > 0 && rows > 0 {
                 attachment.resize(cols, rows).await?;
+                *viewport_rows = u32::from(rows);
             }
         }
         "scroll" => {
@@ -159,11 +167,14 @@ async fn handle_control(attachment: &mut CoreAttachment, text: &str) -> Result<b
                     .unwrap_or(false),
                 lines: if down { magnitude } else { -magnitude },
             });
-            if let ScrollAction::PageKey { up, pages } = action {
+            if let ScrollAction::PageKey { up, rows } = action {
                 // Page-up/down key sequences are the terminal-native
-                // equivalent for attached TUIs.
+                // equivalent for attached TUIs. The client's magnitude is in
+                // ROWS while one key press moves a whole screen, so divide by
+                // the attachment height (and cap) before typing.
+                let pages = scroll_policy::rows_to_pages(rows, *viewport_rows);
                 let key: &[u8] = if up { b"\x1b[5~" } else { b"\x1b[6~" };
-                for _ in 0..pages.min(200) {
+                for _ in 0..pages {
                     attachment.send_data(key).await?;
                 }
             }
@@ -230,7 +241,7 @@ mod tests {
         assert_eq!(scroll_policy::scroll_action(request(false)), ScrollAction::Ignore);
         assert_eq!(
             scroll_policy::scroll_action(request(true)),
-            ScrollAction::PageKey { up: true, pages: 5 }
+            ScrollAction::PageKey { up: true, rows: 5 }
         );
     }
 }

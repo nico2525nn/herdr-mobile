@@ -76,6 +76,8 @@ be signed with the real release key, never the debug key.
   any gap or `snapshot.required` forces a snapshot refetch, never a patch.
 - `WS /v1/terminal/{paneId}` — binary frames are raw ANSI/input bytes both ways;
   JSON text frames carry `ready`/`closed`/`error` and `resize`/`scroll`/`mouse`/`release`.
+  `scroll` is `{"direction":"up"|"down","lines":N}` in ROWS; panes with host
+  scrollback move by absolute `pane.scroll` offset, the rest convert to whole pages.
 - `POST /v1/pane/{id}/input|interrupt|resize`, `/v1/agent/report`, `/v1/tab`
 
 ## Security

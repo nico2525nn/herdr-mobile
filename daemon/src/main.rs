@@ -76,7 +76,7 @@ async fn main() -> Result<()> {
     let config = Arc::new(config);
     let cache = Arc::new(SessionCache::new(herdr.clone()));
     let bus = Arc::new(EventBus::new());
-    let terminals = Arc::new(terminal::TerminalRegistry::new(herdr.clone()));
+    let terminals = Arc::new(terminal::TerminalRegistry::new(herdr.clone(), cache.clone()));
     let updater = UpdateWatcher::new(cache.clone(), bus.clone());
     updater.spawn();
 

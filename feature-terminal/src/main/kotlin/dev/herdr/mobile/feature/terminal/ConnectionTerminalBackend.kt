@@ -55,8 +55,8 @@ class ConnectionTerminalBackend(
     override suspend fun sendText(text: String) = inner.sendText(text)
 
     override suspend fun resize(cols: Int, rows: Int) = inner.resize(cols, rows)
-    override suspend fun scrollRemote(lines: Int, allowPageKey: Boolean) =
-        inner.scrollRemote(lines, allowPageKey)
+    override suspend fun scrollRemote(lines: Int, allowPageKey: Boolean, unit: String) =
+        inner.scrollRemote(lines, allowPageKey, unit)
 
 
 

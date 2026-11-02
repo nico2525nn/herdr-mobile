@@ -28,7 +28,7 @@ class TermuxTerminalHost(
     val view: TerminalView,
 ) {
     /** Alt-screen scroll: lines>0 finger-up (live-ward), lines<0 older. Host forwards. */
-    var onRemoteScroll: ((lines: Int) -> Unit)? = null
+    var onRemoteScroll: ((lines: Int, unit: String) -> Unit)? = null
     /** SGR wheel notches for mouse-aware apps (signed; positive = live-ward). */
     var onRemoteWheel: ((notches: Int) -> Unit)? = null
 
@@ -76,7 +76,7 @@ class TermuxTerminalHost(
     /** Fractional-row carry across conventional 3-row wheel gestures. */
     private var wheelRemainder = 0.0
 
-    /** Rows carried between page-key emissions (page granularity). */
+    /** Rows carried between whole-page emissions (no-host-scrollback panes). */
     private var pageRemainder = 0
 
     /**
@@ -143,6 +143,22 @@ class TermuxTerminalHost(
 
     /** Pane agent identity, mirrored from the screen for routing diagnostics. */
     var diagnosticsAgent: String? = null
+
+    /**
+     * True when the HOST can scroll this pane line-exactly (it reports
+     * scrollback). Rows then travel as rows; otherwise the view quantizes the
+     * gesture into whole screens, because the only fallback is PgUp/PgDn and
+     * one key press is one screen.
+     */
+    var hostScrollable: Boolean = false
+
+    /**
+     * The HOST's viewport height (rows), when it reports one. A page-key scroll
+     * moves the host's screenful, which is not necessarily what this view
+     * draws (herdr attached at 30 rows while the phone showed 44), so the page
+     * unit has to come from the host or gestures drift.
+     */
+    var hostViewportRows: Int = 0
 
     /** Diagnostic: remote scroll requests sent (alt/agent mode). */
     var remoteScrolls: Long = 0
@@ -338,44 +354,34 @@ class TermuxTerminalHost(
                 wheelRemainder -= notches
                 onRemoteWheel?.invoke(notches)
             }
+        } else if (hostScrollable) {
+            // Line-exact: the daemon turns rows into an absolute host scroll.
+            onRemoteScroll?.invoke(rows, "rows")
         } else {
-            // Page-key route: the host can only move in whole screens, so a
-            // raw row count made the same drag travel one screen or five
-            // depending on where the gesture landed. Accumulate rows and emit
-            // whole pages; flushPending() turns a sub-page gesture into one
-            // page on release, so a small flick still scrolls predictably.
-            val rowsPerPage = screenRows()
+            // No host scrollback: the only lever is PgUp/PgDn, one screen per
+            // press. Accumulate the gesture and emit whole pages here — doing
+            // it per request (each flush) turned a 2-screen drag into one page
+            // per coalescing tick and shot through the whole buffer.
+            val rowsPerPage = hostViewportRows.takeIf { it > 0 } ?: visibleRows()
             if (rowsPerPage <= 0) {
-                onRemoteScroll?.invoke(rows)
+                onRemoteScroll?.invoke(rows, "rows")
                 return
             }
             pageRemainder += rows
             val pages = pageRemainder / rowsPerPage
             if (pages != 0) {
                 pageRemainder -= pages * rowsPerPage
-                onRemoteScroll?.invoke(pages)
+                onRemoteScroll?.invoke(pages, "pages")
             }
         }
     }
 
-    /**
-     * Rows actually visible in the view: one page-key scroll = one screen.
-     * Measured from the view and its row pitch, not the mirror's grid — the
-     * two disagree while a resize round-trip is in flight (the mirror reported
-     * 22 rows for a 44-row view, doubling every page scroll).
-     */
-    private fun screenRows(): Int {
-        val pitch = rowHeightPx()
-        if (pitch <= 0f || view.height <= 0) return 0
-        return (view.height / pitch).toInt()
-    }
-
-    /** Emit a trailing sub-page as one page (gesture end). */
+    /** Emit a sub-page gesture as one page when the finger lifts. */
     private fun flushPageRemainder() {
-        if (pageRemainder == 0) return
+        if (hostScrollable || pageRemainder == 0) return
         val page = if (pageRemainder > 0) 1 else -1
         pageRemainder = 0
-        onRemoteScroll?.invoke(page)
+        onRemoteScroll?.invoke(page, "pages")
     }
 
     private fun rowHeightPx(): Float {
@@ -403,12 +409,23 @@ class TermuxTerminalHost(
 
     /** Shift+PgUp/PgDn page scroll (Termux parity: remote panes page remotely). */
     fun pageRemote(up: Boolean) {
-        val rows = try {
+        val rows = visibleRows()
+        if (rows > 0) requestScroll(if (up) -rows else rows, immediate = true)
+    }
+
+    /**
+     * Rows the view actually shows. Measured from the view and its row pitch,
+     * not the mirror's grid: the two disagree while a resize round-trip is in
+     * flight (the mirror reported 22 rows for a 44-row view).
+     */
+    private fun visibleRows(): Int {
+        val pitch = rowHeightPx()
+        if (pitch > 0f && view.height > 0) return (view.height / pitch).toInt()
+        return try {
             view.currentSession?.emulator?.mRows ?: 0
         } catch (_: Exception) {
             0
         }
-        if (rows > 0) requestScroll(if (up) -rows else rows, immediate = true)
     }
 
     /** Snap a scrolled viewport home (user input = back at the prompt). */

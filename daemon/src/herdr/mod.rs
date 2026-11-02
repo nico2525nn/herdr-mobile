@@ -9,7 +9,7 @@ use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::UnixStream;
 use tracing::debug;
 
-use crate::model::{HerdrInfo, HerdrSnapshot};
+use crate::model::{HerdrInfo, HerdrScroll, HerdrSnapshot, ScrollInfo};
 
 static REQUEST_COUNTER: AtomicU64 = AtomicU64::new(1);
 
@@ -212,6 +212,35 @@ impl HerdrClient {
             .and_then(|t| t.as_str())
             .map(str::to_string)
             .context("pane.read response has no read.text")
+    }
+
+    /// Herdr's host-scroll state for a pane (`pane.get`), used to seed an
+    /// absolute scroll position when the cache has no hint.
+    pub async fn pane_scroll_info(&self, pane_id: &str) -> Result<ScrollInfo> {
+        let result = self.request("pane.get", json!({"pane_id": pane_id})).await?;
+        let pane = result.get("pane").context("pane.get response has no pane")?;
+        let scroll = pane.get("scroll").context("pane.get response has no pane.scroll")?;
+        let scroll: HerdrScroll = serde_json::from_value(scroll.clone())
+            .context("cannot decode pane.get pane.scroll")?;
+        Ok(ScrollInfo::from(scroll))
+    }
+
+    /// Set the pane's ABSOLUTE host-scroll offset, in rows from the live
+    /// bottom. Unlike `terminal.scroll` this is not relative and never types
+    /// PgUp/PgDn, so one row moves one row. Returns the updated scroll state,
+    /// which Herdr reports in the response; `None` when it was omitted.
+    pub async fn pane_scroll(&self, pane_id: &str, offset_from_bottom: u64) -> Result<Option<ScrollInfo>> {
+        let result = self
+            .request(
+                "pane.scroll",
+                json!({"pane_id": pane_id, "offset_from_bottom": offset_from_bottom}),
+            )
+            .await?;
+        Ok(result
+            .get("pane")
+            .and_then(|pane| pane.get("scroll"))
+            .and_then(|scroll| serde_json::from_value::<HerdrScroll>(scroll.clone()).ok())
+            .map(ScrollInfo::from))
     }
 
     /// Tab geometry for a pane: `(cols, rows)` of the pane rect as Herdr's layout

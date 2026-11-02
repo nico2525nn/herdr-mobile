@@ -72,6 +72,12 @@ object TerminalProtocol {
         val lines: Int,
         /** Core transports can send PgUp/PgDn only for agent/alt-screen views. */
         val allowPageKey: Boolean = false,
+        /**
+         * What [lines] counts. "rows" is line-exact (the daemon turns it into
+         * an absolute host scroll); "pages" is already quantized by the view,
+         * for panes whose host has no scrollback and only understands PgUp.
+         */
+        @EncodeDefault val unit: String = UNIT_ROWS,
         @EncodeDefault val type: String = TYPE,
     ) {
         init {
@@ -80,6 +86,8 @@ object TerminalProtocol {
 
         companion object {
             const val TYPE = "scroll"
+            const val UNIT_ROWS = "rows"
+            const val UNIT_PAGES = "pages"
             const val UP = "up"
             const val DOWN = "down"
         }

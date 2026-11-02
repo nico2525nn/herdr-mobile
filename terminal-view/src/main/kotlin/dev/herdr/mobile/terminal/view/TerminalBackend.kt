@@ -35,7 +35,7 @@ interface TerminalBackend {
      * [allowPageKey] is true only for an explicit app identity or active
      * alt-screen; core backends must not synthesize PageUp/PageDown otherwise.
      */
-    suspend fun scrollRemote(lines: Int, allowPageKey: Boolean)
+    suspend fun scrollRemote(lines: Int, allowPageKey: Boolean, unit: String)
 
     /** Mouse event for mouse-mode apps (vim, less, tmux mouse). */
     suspend fun mouse(action: String, button: String, column: Int, row: Int)

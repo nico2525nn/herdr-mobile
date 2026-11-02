@@ -41,7 +41,7 @@ interface TerminalConnection {
     suspend fun send(data: ByteArray)
     suspend fun sendText(text: String)
     suspend fun resize(cols: Int, rows: Int)
-    suspend fun scrollRemote(lines: Int, allowPageKey: Boolean)
+    suspend fun scrollRemote(lines: Int, allowPageKey: Boolean, unit: String)
     suspend fun mouse(action: String, button: String, column: Int, row: Int)
     suspend fun release()
 
@@ -246,7 +246,7 @@ class TerminalSocket(
         outbound.send(OutboundFrame.Text(record))
     }
 
-    override suspend fun scrollRemote(lines: Int, allowPageKey: Boolean) {
+    override suspend fun scrollRemote(lines: Int, allowPageKey: Boolean, unit: String) {
         if (lines == 0) return
         // Sign matches view scrollRows: positive = finger up = toward live =
         // direction down; negative = toward older = direction up. Core cannot
@@ -259,6 +259,7 @@ class TerminalSocket(
                 direction = if (lines > 0) TerminalProtocol.Scroll.DOWN else TerminalProtocol.Scroll.UP,
                 lines = kotlin.math.abs(lines),
                 allowPageKey = endpoint.backendMode == BackendMode.CORE && allowPageKey,
+                unit = unit,
             ),
         )
         outbound.send(OutboundFrame.Text(record))

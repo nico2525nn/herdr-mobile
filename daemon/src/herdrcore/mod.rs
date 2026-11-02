@@ -533,6 +533,9 @@ pub fn translate_snapshot(seq: i64, terminals: &[Value], version: Option<String>
             focused: false,
             revision: seq,
             tokens: BTreeMap::new(),
+            // The core protocol exposes PTY data only: there is no host
+            // scrollback offset to report.
+            scroll: None,
         };
 
         let workspace_index = *workspace_indices.entry(workspace_id.clone()).or_insert_with(|| {

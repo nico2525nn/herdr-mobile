@@ -1,5 +1,22 @@
 # Changelog
 
+## 1.4.7 — 2026-11-02
+
+- Host scrolling: Herdr exposes `pane.scroll { offset_from_bottom }`, so panes
+  that have host scrollback now scroll line-exactly instead of in page jumps.
+  The daemon calls it, clamps to `[0, max_offset_from_bottom]`, memoizes the
+  live offset and falls back to page keys when a pane has no scrollback.
+- The snapshot now carries `scroll` per pane (`offsetFromBottom`,
+  `maxOffsetFromBottom`, `viewportRows`), and the app uses `viewportRows` as
+  the page unit — Herdr attached at 30 rows while the phone drew 44, so page
+  gestures drifted between screens.
+- Scroll requests carry an explicit `unit` ("rows" | "pages") so the daemon
+  never has to guess what `lines` counts: rows go through `pane.scroll`, pages
+  are used verbatim by the PgUp/PgDn fallback. Verified on device: two
+  identical drags move the same distance on `less` (one screen each), and the
+  local-transcript path is unchanged.
+- Daemon tests: 50 (scroll policy, pane.scroll clamping, unit conversion).
+
 ## 1.4.6 — 2026-11-02
 
 - Anything with no local transcript now scrolls remotely. Mirrored full-screen
@@ -10,6 +27,13 @@
 - Page scrolls use the view's real row count (height / renderer pitch). The
   mirror's grid reported 22 rows for a 44-row view mid-resize, so every page
   gesture scrolled twice as far as the gesture suggested.
+- Daemon: remote scroll of a pane with host scrollback now moves by the exact
+  requested rows through Herdr's absolute `pane.scroll` offset instead of
+  whole-screen jumps; falls back to page keys where the app owns the viewport.
+- Daemon: the `scroll` frame's `lines` is treated as ROWS on every backend —
+  page-key fallbacks convert with the attachment height (min 1 page, max 3).
+- `/v1/snapshot` panes carry `scroll` (`offsetFromBottom`, `maxOffsetFromBottom`,
+  `viewportRows`) when Herdr reports it.
 
 ## 1.4.5 — 2026-11-02
 

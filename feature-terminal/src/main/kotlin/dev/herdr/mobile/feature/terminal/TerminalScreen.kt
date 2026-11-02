@@ -533,13 +533,14 @@ private fun TerminalSurface(
             // Font zoom is applied through settings; the host clamps it.
         }
         viewClient.onPageScroll = { up -> host.pageRemote(up) }
-        host.onRemoteScroll = { lines ->
+        host.onRemoteScroll = { lines, unit ->
             bridgeRef.value?.scrollRemote(
                 lines,
                 allowPageKey = dev.herdr.mobile.core.model.AgentMatrix.allowPageKey(
                     appIdentity = appIdentity,
                     altActive = host.altActive,
                 ),
+                unit = unit,
             )
         }
         host.onRemoteWheel = { notches ->
@@ -602,6 +603,9 @@ private fun TerminalSurface(
             // it only needs the pane identity and the app's wheel stride.
             hostRef?.remoteScrollHost = appIdentity != null
             hostRef?.diagnosticsAgent = appIdentity
+            // Line-exact host scrolling when the daemon reports scrollback.
+            hostRef?.hostScrollable = state.pane?.hostScrollable == true
+            hostRef?.hostViewportRows = state.pane?.scroll?.viewportRows?.toInt() ?: 0
             hostRef?.wheelRowsPerEvent =
                 dev.herdr.mobile.core.model.AgentMatrix.wheelRowsPerEvent(appIdentity)
             val vc = viewClientRef

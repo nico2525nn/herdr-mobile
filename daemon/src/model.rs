@@ -84,6 +84,31 @@ pub struct Pane {
     pub revision: i64,
     #[serde(default)]
     pub tokens: std::collections::BTreeMap<String, String>,
+    /// Herdr's host-scroll viewport for this pane, when the server reports it.
+    /// Absent for panes without host scrollback (main-screen TUIs often keep
+    /// none) and for the herdr-core backend, which exposes no such state.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub scroll: Option<ScrollInfo>,
+}
+
+/// Absolute host-scroll position, in rows from the live bottom.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ScrollInfo {
+    #[serde(default)]
+    pub offset_from_bottom: u64,
+    #[serde(default)]
+    pub max_offset_from_bottom: u64,
+    #[serde(default)]
+    pub viewport_rows: u32,
+}
+
+impl ScrollInfo {
+    /// True when herdr has scrollback for this pane, i.e. `pane.scroll` can
+    /// move the view at all.
+    pub fn has_scrollback(self) -> bool {
+        self.max_offset_from_bottom > 0
+    }
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -273,6 +298,31 @@ pub struct HerdrPane {
     pub revision: i64,
     #[serde(default)]
     pub tokens: std::collections::BTreeMap<String, String>,
+    /// Viewport/scrollback state; `None` for herdr builds that omit it.
+    #[serde(default)]
+    pub scroll: Option<HerdrScroll>,
+}
+
+/// Herdr's snake_case pane `scroll` object (also returned by `pane.get` and
+/// `pane.scroll`).
+#[derive(Clone, Copy, Debug, Default, Deserialize)]
+pub struct HerdrScroll {
+    #[serde(default)]
+    pub offset_from_bottom: u64,
+    #[serde(default)]
+    pub max_offset_from_bottom: u64,
+    #[serde(default)]
+    pub viewport_rows: u64,
+}
+
+impl From<HerdrScroll> for ScrollInfo {
+    fn from(scroll: HerdrScroll) -> ScrollInfo {
+        ScrollInfo {
+            offset_from_bottom: scroll.offset_from_bottom,
+            max_offset_from_bottom: scroll.max_offset_from_bottom,
+            viewport_rows: scroll.viewport_rows.min(u32::MAX as u64) as u32,
+        }
+    }
 }
 
 #[derive(Clone, Debug, Default, Deserialize)]
@@ -377,6 +427,7 @@ mod tests {
             focused: false,
             revision: 3,
             tokens: Default::default(),
+            scroll: None,
         };
         let v = serde_json::to_value(&pane).unwrap();
         assert_eq!(v["tabId"], "w1:t1");
@@ -384,6 +435,36 @@ mod tests {
         assert_eq!(v["terminalId"], "term_x");
         assert!(v.get("label").is_none());
         assert_eq!(v["status"], "idle");
+        // Panes without host scroll state must not grow a null field.
+        assert!(v.get("scroll").is_none());
+    }
+
+    #[test]
+    fn pane_scroll_serializes_as_camel_case() {
+        let pane = Pane {
+            id: "w1:p1".into(),
+            tab_id: "w1:t1".into(),
+            workspace_id: "w1".into(),
+            label: None,
+            title: None,
+            agent: None,
+            status: AgentStatus::Idle,
+            cwd: None,
+            terminal_id: None,
+            focused: true,
+            revision: 1,
+            tokens: Default::default(),
+            scroll: Some(ScrollInfo {
+                offset_from_bottom: 12,
+                max_offset_from_bottom: 400,
+                viewport_rows: 52,
+            }),
+        };
+        let v = serde_json::to_value(&pane).unwrap();
+        assert_eq!(v["scroll"]["offsetFromBottom"], 12);
+        assert_eq!(v["scroll"]["maxOffsetFromBottom"], 400);
+        assert_eq!(v["scroll"]["viewportRows"], 52);
+        assert!(pane.scroll.unwrap().has_scrollback());
     }
 
     #[test]

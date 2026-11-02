@@ -100,6 +100,24 @@ Direct tailnet (bind the tailnet address explicitly):
 Terminal socket client→daemon frames: binary = raw input bytes; text = `resize`, `scroll`,
 `mouse`, `release` control records. Unknown text frames are ignored, never fatal.
 
+`scroll` carries `{"direction":"up"|"down","lines":N}` with `N` counted in terminal
+ROWS (not pages). Per backend:
+
+- Herdr TUI + pane has host scrollback → absolute `pane.scroll {pane_id,
+  offset_from_bottom}`, `target = clamp(current ± N, 0, max)`. The base offset is
+  seeded from `pane.get` (cache fallback) and then kept from each response, so
+  consecutive gestures accumulate exactly. A target equal to the current offset
+  is skipped.
+- Herdr TUI + no host scrollback, or the RPC fails → `terminal.scroll`
+  `source=page_key` with `lines` = whole pages (`ceil(N / attach rows)`, min 1,
+  capped at 3).
+- herdr-core → PgUp/PgDn bytes, same rows→pages conversion with the attachment
+  height.
+
+The `/v1/snapshot` pane object exposes Herdr's scroll state when reported:
+`"scroll":{"offsetFromBottom":N,"maxOffsetFromBottom":M,"viewportRows":R}`
+(omitted otherwise).
+
 Semantic event types: `stream.ready`, `snapshot.required`, `workspace.created|closed|
 renamed|status_changed`, `tab.created|closed|renamed|status_changed`,
 `pane.created|closed|status_changed`. `seq` is global and strictly increasing; a gap means

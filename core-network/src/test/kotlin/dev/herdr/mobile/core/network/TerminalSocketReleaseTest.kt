@@ -146,7 +146,7 @@ class TerminalSocketReleaseTest {
             scope = kotlinx.coroutines.CoroutineScope(kotlinx.coroutines.Dispatchers.Unconfined),
         )
         socket.connect()
-        socket.scrollRemote(5, allowPageKey = true)
+        socket.scrollRemote(5, allowPageKey = true, unit = "rows")
         assertTrue(fake.sentText.single().contains("\"allowPageKey\":true"))
 
         val tuiFake = FakeWebSocket()
@@ -160,7 +160,7 @@ class TerminalSocketReleaseTest {
             scope = kotlinx.coroutines.CoroutineScope(kotlinx.coroutines.Dispatchers.Unconfined),
         )
         tui.connect()
-        tui.scrollRemote(5, allowPageKey = true)
+        tui.scrollRemote(5, allowPageKey = true, unit = "rows")
         assertTrue(tuiFake.sentText.single().contains("\"type\":\"scroll\""))
         assertTrue(!tuiFake.sentText.single().contains("allowPageKey"))
     }
