@@ -1,5 +1,25 @@
 # Changelog
 
+## 1.5.0 — 2026-11-02
+
+Scroll is now negotiated at runtime instead of guessed from an app name.
+
+- **Mechanisms**: host offset (`pane.scroll`, line-exact), page keys (whole
+  screens), SGR wheel notches. Candidate order comes from capabilities: host
+  scrollback first, then wheel for wheel-known apps, page keys always.
+- **Probe**: the first request of a pane hashes the visible screen
+  (`TerminalBuffer.transcriptText`), sends, and checks again 260 ms later. An
+  inert mechanism is swapped for the next candidate and the same rows are
+  re-sent, so the gesture is never lost; a working one is remembered per app
+  (process lifetime). This is how Codex/OMP/OpenCode/Pi/Grok/Claude Code and
+  arbitrary TUIs get an answer without a hand-maintained table.
+- **Verified on device**: `less` in a mirrored pane — two identical drags move
+  exactly 43 rows each (one screen), no double-apply from the probe; panes with
+  a local transcript keep native scrolling.
+- `unit: rows | pages` on the wire, page size from the host viewport, and
+  `scroll{offsetFromBottom,maxOffsetFromBottom,viewportRows}` in the snapshot
+  (from 1.4.7) remain the transport underneath the negotiation.
+
 ## 1.4.7 — 2026-11-02
 
 - Host scrolling: Herdr exposes `pane.scroll { offset_from_bottom }`, so panes

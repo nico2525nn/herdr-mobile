@@ -27,6 +27,11 @@ import com.termux.view.TerminalView
 class TermuxTerminalHost(
     val view: TerminalView,
 ) {
+    companion object {
+        /** Repaint + network round trip for a remote scroll. */
+        private const val PROBE_SETTLE_MS = 260L
+    }
+
     /** Alt-screen scroll: lines>0 finger-up (live-ward), lines<0 older. Host forwards. */
     var onRemoteScroll: ((lines: Int, unit: String) -> Unit)? = null
     /** SGR wheel notches for mouse-aware apps (signed; positive = live-ward). */
@@ -273,6 +278,14 @@ class TermuxTerminalHost(
             return false // Termux handles everything (local history scroll).
         }
         if (event.action == MotionEvent.ACTION_DOWN) {
+            // A new gesture owns the probe: drop the pending check so a stale
+            // comparison cannot "fail" a mechanism that was still settling.
+            view.removeCallbacks(probeCheck)
+            probe = null
+            if (lastProbeAgent != diagnosticsAgent) {
+                lastProbeAgent = diagnosticsAgent
+                failures.clear()
+            }
             pageRemainder = 0
             scrollRemainder = 0f
             remoteArmed = false
@@ -336,82 +349,124 @@ class TermuxTerminalHost(
         scrollEvents++
         scrolledRows += kotlin.math.abs(rows)
         remoteScrolls++
-        if (remoteKind == RemoteScrollKind.WHEEL) {
-            // Mouse-aware agent UI: convert requested rows to notches using
-            // the app's documented stride; retain fractional rows per gesture.
-            wheelNotchRemainder += rows.toDouble() / wheelRowsPerEvent
-            val notches = wheelNotchRemainder.toInt()
-            if (notches != 0) {
-                wheelNotchRemainder -= notches
-                onRemoteWheel?.invoke(notches)
-            }
-        } else if (mouseTracking) {
-            // Conventional mouse apps (vim/less) scroll 3 lines per wheel
-            // notch (xterm default): accumulate fractional rows across events.
-            wheelRemainder += rows / 3.0
-            val notches = wheelRemainder.toInt()
-            if (notches != 0) {
-                wheelRemainder -= notches
-                onRemoteWheel?.invoke(notches)
-            }
-        } else if (hostScrollable) {
-            // Line-exact: the daemon turns rows into an absolute host scroll.
-            onRemoteScroll?.invoke(rows, "rows")
-        } else {
-            // No host scrollback: the only lever is PgUp/PgDn, one screen per
-            // press. Accumulate the gesture and emit whole pages here — doing
-            // it per request (each flush) turned a 2-screen drag into one page
-            // per coalescing tick and shot through the whole buffer.
-            val rowsPerPage = hostViewportRows.takeIf { it > 0 } ?: visibleRows()
-            if (rowsPerPage <= 0) {
+        val mechanism = activeMechanism() ?: return
+        // Probe the first request of a pane: capture the screen before it moves
+        // so the settle check can tell "the app honoured this" from "inert".
+        if (probe == null) probe = ScrollProbe(mechanism, screenSignature(), rows)
+        dispatch(mechanism, rows)
+        scheduleProbeCheck()
+    }
+
+    /** What to send, and in which unit. */
+    private fun dispatch(mechanism: ScrollMechanism, rows: Int) {
+        when (mechanism) {
+            ScrollMechanism.HOST ->
                 onRemoteScroll?.invoke(rows, "rows")
-                return
+
+            ScrollMechanism.WHEEL -> {
+                // Wheel notches: agent UIs use their documented stride, plain
+                // mouse apps the xterm default of 3 rows per notch.
+                val stride = if (remoteKind == RemoteScrollKind.WHEEL) wheelRowsPerEvent else 3
+                wheelNotchRemainder += rows.toDouble() / stride
+                val notches = wheelNotchRemainder.toInt()
+                if (notches != 0) {
+                    wheelNotchRemainder -= notches
+                    onRemoteWheel?.invoke(notches)
+                }
             }
-            pageRemainder += rows
-            val pages = pageRemainder / rowsPerPage
-            if (pages != 0) {
-                pageRemainder -= pages * rowsPerPage
-                onRemoteScroll?.invoke(pages, "pages")
+
+            ScrollMechanism.PAGE_KEY -> {
+                // Whole screens only; accumulate the gesture so a long drag is
+                // more than one page and a short one flushes exactly one on UP.
+                val rowsPerPage = hostViewportRows.takeIf { it > 0 } ?: visibleRows()
+                if (rowsPerPage <= 0) {
+                    onRemoteScroll?.invoke(rows, "rows")
+                    return
+                }
+                pageRemainder += rows
+                val pages = pageRemainder / rowsPerPage
+                if (pages != 0) {
+                    pageRemainder -= pages * rowsPerPage
+                    onRemoteScroll?.invoke(pages, "pages")
+                }
             }
         }
     }
 
-    /** Emit a sub-page gesture as one page when the finger lifts. */
-    private fun flushPageRemainder() {
-        if (hostScrollable || pageRemainder == 0) return
-        val page = if (pageRemainder > 0) 1 else -1
-        pageRemainder = 0
-        onRemoteScroll?.invoke(page, "pages")
-    }
+    /** Learned winner, or the capability-derived first candidate. */
+    private fun activeMechanism(): ScrollMechanism? =
+        ScrollLearning.winner(diagnosticsAgent)
+            ?: candidates().firstOrNull()
 
-    private fun rowHeightPx(): Float {
-        // Live-exact: the renderer's row pitch is view height over rows (it lays
-        // out exactly mRows rows). The old fontSpacing guess ran ~14% small
-        // (typeface metrics), overscrolling every remote drag. Falls back to
-        // the guess only before attach (rows unknown — never scrolled then).
-        // The renderer's own pitch is the unit Termux uses for local scrolling,
-        // so remote pans move by the same amount as a local drag. Deriving it
-        // from view.height/rows instead made the same swipe travel a different
-        // distance depending on the pane (and on whether the keyboard was up).
-        TermuxInternals.rowPitchPx(view)?.let { return it }
-        val em = try {
-            view.currentSession?.emulator
+    /** Candidates still worth trying for this pane. */
+    private fun candidates(): List<ScrollMechanism> =
+        scrollMechanisms(hostScrollable, remoteKind == RemoteScrollKind.WHEEL)
+
+    /**
+     * A scroll request whose effect is being verified.
+     *
+     * The app cannot know statically whether a TUI honours PgUp, wheel bytes or
+     * a host offset, and the mirror carries no DECSET state to ask. So the
+     * first request per pane is a probe: hash the visible screen, send, then
+     * check whether anything moved. Inert mechanisms are swapped out and the
+     * same rows are re-sent, so the user's gesture is never lost.
+     */
+    private data class ScrollProbe(
+        val mechanism: ScrollMechanism,
+        val signature: Int,
+        val rows: Int,
+    )
+
+    private var probe: ScrollProbe? = null
+
+    /** Hash of the visible screen: cheap, and stable while the pane is idle. */
+    private fun screenSignature(): Int {
+        val text = try {
+            view.currentSession?.emulator?.screen?.transcriptText
         } catch (_: Exception) {
             null
+        } ?: return 0
+        var hash = 0x811c9dc5.toInt()
+        for (c in text) {
+            hash = (hash xor c.code) * 0x01000193
         }
-        val rows = em?.mRows ?: 0
-        if (rows > 0 && view.height > 0) return view.height.toFloat() / rows
-        val px = textSizePx
-        if (px <= 0) return 0f
-        measurePaint.textSize = px.toFloat()
-        return measurePaint.fontSpacing
+        return hash
     }
 
-    /** Shift+PgUp/PgDn page scroll (Termux parity: remote panes page remotely). */
-    fun pageRemote(up: Boolean) {
-        val rows = visibleRows()
-        if (rows > 0) requestScroll(if (up) -rows else rows, immediate = true)
+    /** Called on a timer after a probed request: did the pane actually move? */
+    fun settleProbe() {
+        val pending = probe ?: return
+        probe = null
+        val failed = if (screenSignature() == pending.signature) {
+            ScrollLearning.forget(diagnosticsAgent)
+            failures += pending.mechanism
+            true
+        } else {
+            ScrollLearning.remember(diagnosticsAgent, pending.mechanism)
+            failures.clear()
+            false
+        }
+        if (!failed) return
+        val next = nextMechanism(candidates(), failures) ?: return
+        // Same gesture, different lever: never silent, never double-applied.
+        dispatch(next, pending.rows)
+        probe = ScrollProbe(next, screenSignature(), pending.rows)
+        scheduleProbeCheck()
     }
+
+    /** Mechanisms that proved inert for this pane in the current session. */
+    private val failures = mutableSetOf<ScrollMechanism>()
+
+    /** Agent whose failures the current [failures] set describes. */
+    private var lastProbeAgent: String? = null
+
+    /** Re-check the current probe once the repaint had time to land. */
+    fun scheduleProbeCheck() {
+        view.removeCallbacks(probeCheck)
+        view.postDelayed(probeCheck, PROBE_SETTLE_MS)
+    }
+
+    private val probeCheck = Runnable { settleProbe() }
 
     /**
      * Rows the view actually shows. Measured from the view and its row pitch,
@@ -448,4 +503,40 @@ class TermuxTerminalHost(
 
     /** The IME went away on its own: re-arm the next summon. */
     fun onKeyboardHidden() = keyboard.onImeHidden()
+    private fun rowHeightPx(): Float {
+        // Live-exact: the renderer's row pitch is view height over rows (it lays
+        // out exactly mRows rows). The old fontSpacing guess ran ~14% small
+        // (typeface metrics), overscrolling every remote drag. Falls back to
+        // the guess only before attach (rows unknown — never scrolled then).
+        // The renderer's own pitch is the unit Termux uses for local scrolling,
+        // so remote pans move by the same amount as a local drag. Deriving it
+        // from view.height/rows instead made the same swipe travel a different
+        // distance depending on the pane (and on whether the keyboard was up).
+        TermuxInternals.rowPitchPx(view)?.let { return it }
+        val em = try {
+            view.currentSession?.emulator
+        } catch (_: Exception) {
+            null
+        }
+        val rows = em?.mRows ?: 0
+        if (rows > 0 && view.height > 0) return view.height.toFloat() / rows
+        val px = textSizePx
+        if (px <= 0) return 0f
+        measurePaint.textSize = px.toFloat()
+        return measurePaint.fontSpacing
+    }
+
+    /** Emit a sub-page gesture as one page when the finger lifts. */
+    private fun flushPageRemainder() {
+        if (hostScrollable || pageRemainder == 0) return
+        val page = if (pageRemainder > 0) 1 else -1
+        pageRemainder = 0
+        onRemoteScroll?.invoke(page, "pages")
+    }
+
+    /** Shift+PgUp/PgDn page scroll (Termux parity: remote panes page remotely). */
+    fun pageRemote(up: Boolean) {
+        val rows = visibleRows()
+        if (rows > 0) requestScroll(if (up) -rows else rows, immediate = true)
+    }
 }
