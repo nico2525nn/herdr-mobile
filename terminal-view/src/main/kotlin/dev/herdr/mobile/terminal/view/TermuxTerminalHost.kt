@@ -30,27 +30,31 @@ class TermuxTerminalHost(
     companion object {
         /** Repaint + network round trip for a remote scroll. */
         private const val PROBE_SETTLE_MS = 260L
+
+        /** Upper bound for the scroll estimate (a page is well below this). */
+        private const val MAX_MEASURED_ROWS = 200
     }
 
     /** Alt-screen scroll: lines>0 finger-up (live-ward), lines<0 older. Host forwards. */
     var onRemoteScroll: ((lines: Int, unit: String) -> Unit)? = null
-    /** SGR wheel notches for mouse-aware apps (signed; positive = live-ward). */
-    var onRemoteWheel: ((notches: Int) -> Unit)? = null
 
     /**
-     * Host part of remote-scroll routing: true when the pane runs an agent
-     * (main-screen TUIs like codex whose transcript lives in HOST scrollback,
-     * not local history). Set by the screen from snapshot state.
+     * Page keys sent as INPUT to the pane, for full-screen apps.
+     *
+     * Verified on device: Herdr's `terminal.scroll` does not forward PgUp to a
+     * pane without host scrollback (codex ignores it), while the same key sent
+     * as input bytes scrolls it. The app therefore types the key itself.
      */
-    var remoteScrollHost: Boolean = false
-        set(value) {
-            if (field == value) return
-            field = value
-            if (value) {
-                view.topRow = 0
-                view.invalidate()
-            }
-        }
+    var onPageKey: ((up: Boolean, pages: Int) -> Unit)? = null
+    /**
+     * Reset the local viewport. Called when routing changes so a pane that was
+     * being scrolled locally does not open mid-scroll once the app owns it.
+     */
+    fun resetLocalViewport() {
+        if (view.topRow == 0) return
+        view.topRow = 0
+        view.invalidate()
+    }
 
     /** Live alt-screen flag, refreshed by the session pump after every chunk. */
     @Volatile
@@ -66,21 +70,6 @@ class TermuxTerminalHost(
      * with different wheel strides (for example Qwen's documented 3 lines per
      * tick) remain a known limitation of the two-route matrix.
      */
-    /** App-specific transcript rows advanced by one agent wheel event. */
-    @Volatile
-    var wheelRowsPerEvent: Int = 1
-        set(value) {
-            if (field == value) return
-            field = value
-            wheelNotchRemainder = 0.0
-        }
-
-    /** Fractional-row carry across agent wheel gestures. */
-    private var wheelNotchRemainder = 0.0
-
-    /** Fractional-row carry across conventional 3-row wheel gestures. */
-    private var wheelRemainder = 0.0
-
     /** Rows carried between whole-page emissions (no-host-scrollback panes). */
     private var pageRemainder = 0
 
@@ -135,27 +124,31 @@ class TermuxTerminalHost(
     }
 
     /**
-     * Who scrolls this pane, decided by [scrollOwner] — the single policy
-     * function (see ScrollRoute.kt for the reasoning and tests).
+     * Where this gesture goes, from the transport's own evidence
+     * ([scrollSource]): host offset when herdr reports scrollback, app input
+     * for full-screen panes, the local transcript for shells.
+     *
+     * [inputDead] is the runtime escape hatch: if every input mechanism proved
+     * inert (an exited agent left its label on a shell), the pane is handed
+     * back to Termux.
      */
     val remoteEffective: Boolean
-        get() = when {
-            // The remote path proved inert (all candidates exhausted): this pane
-            // is a local one that merely carries a label (agent exited to a
-            // prompt), so let Termux scroll it again.
-            remoteSuspectedDead -> false
-            localScrollSuspectedDead -> true
-            else -> scrollOwner(
-            altScreen = altActive,
-            mouseTracking = mouseTracking,
-            hostBackedAgent = remoteScrollHost,
-                localHistoryRows = snapshotHistorySize,
-            ) == ScrollOwner.REMOTE
+        get() {
+            if (inputDead) return false
+            return when (source()) {
+                ScrollSource.HOST, ScrollSource.APP_INPUT -> true
+                ScrollSource.LOCAL, ScrollSource.NONE -> false
+            }
         }
 
-    /** Wheel notches vs page keys for the remote path. */
-    val remoteKind: RemoteScrollKind
-        get() = remoteScrollKind(diagnosticsAgent, mouseTracking)
+    private fun source(): ScrollSource = scrollSource(
+        hostScrollKnown = hostScrollKnown,
+        hostScrollable = hostScrollable,
+        agentPane = diagnosticsAgent != null,
+        altScreen = altActive,
+        mouseTracking = mouseTracking,
+        localHistoryRows = snapshotHistorySize,
+    )
 
     /** Pane agent identity, mirrored from the screen for routing diagnostics. */
     var diagnosticsAgent: String? = null
@@ -167,6 +160,9 @@ class TermuxTerminalHost(
      * one key press is one screen.
      */
     var hostScrollable: Boolean = false
+
+    /** True when the daemon actually reported scroll state for this pane. */
+    var hostScrollKnown: Boolean = false
 
     /**
      * The HOST's viewport height (rows), when it reports one. A page-key scroll
@@ -281,13 +277,6 @@ class TermuxTerminalHost(
 
     private fun onTouch(event: MotionEvent): Boolean {
         if (!remoteEffective) {
-            // Local scroll is only right when the emulator really holds the
-            // scrollback. A mirrored TUI can still bank a few rows (the shell
-            // echo that started it, a cleared screen), and then a local drag
-            // moves *that* history while the app's own viewport stays put —
-            // the user sees a dead scroll. So verify: if a real drag changed
-            // nothing on screen, hand the pane to the remote path.
-            observeLocalGesture(event)
             remoteArmed = false
             touchMoved = false
             return false // Termux handles everything (local history scroll).
@@ -367,7 +356,7 @@ class TermuxTerminalHost(
         val mechanism = activeMechanism() ?: return
         // Probe the first request of a pane: capture the screen before it moves
         // so the settle check can tell "the app honoured this" from "inert".
-        if (probe == null) probe = ScrollProbe(mechanism, screenSignature(), rows)
+        if (probe == null) probe = ScrollProbe(mechanism, screenSignature(), rows, visibleLines())
         dispatch(mechanism, rows)
         scheduleProbeCheck()
     }
@@ -377,18 +366,6 @@ class TermuxTerminalHost(
         when (mechanism) {
             ScrollMechanism.HOST ->
                 onRemoteScroll?.invoke(rows, "rows")
-
-            ScrollMechanism.WHEEL -> {
-                // Wheel notches: agent UIs use their documented stride, plain
-                // mouse apps the xterm default of 3 rows per notch.
-                val stride = if (remoteKind == RemoteScrollKind.WHEEL) wheelRowsPerEvent else 3
-                wheelNotchRemainder += rows.toDouble() / stride
-                val notches = wheelNotchRemainder.toInt()
-                if (notches != 0) {
-                    wheelNotchRemainder -= notches
-                    onRemoteWheel?.invoke(notches)
-                }
-            }
 
             ScrollMechanism.PAGE_KEY -> {
                 // Whole screens only; accumulate the gesture so a long drag is
@@ -401,47 +378,9 @@ class TermuxTerminalHost(
                 val pageScroll = pagesForRows(rows, rowsPerPage, pageRemainder)
                 pageRemainder = pageScroll.remainderRows
                 if (pageScroll.pages != 0) {
-                    onRemoteScroll?.invoke(pageScroll.pages, "pages")
+                    onPageKey?.invoke(pageScroll.pages < 0, kotlin.math.abs(pageScroll.pages))
                 }
             }
-        }
-    }
-
-    /**
-     * Detect the "local history exists but it is not the app's viewport" case.
-     *
-     * Cheap: accumulate the drag in pixels and compare one screen hash at
-     * gesture end. A shell that scrolled (or was already at an edge) changes
-     * the hash; a mirrored TUI does not, because Termux shifted its own
-     * buffer instead of the app. That pane is then switched to the remote path
-     * and the gesture is replayed, so the drag is not wasted.
-     */
-    private fun observeLocalGesture(event: MotionEvent) {
-        when (event.action) {
-            MotionEvent.ACTION_DOWN -> {
-                localDragPx = 0f
-                localLastY = event.y
-                // The view's own offset is the truth for a local scroll: a
-                // shell drag changes it, a mirrored TUI leaves it at 0 because
-                // Termux shifts a buffer nobody is looking at.
-                localBaseline = TermuxInternals.topRow(view) ?: 0
-                localForceRemoteArmed = !localScrollSuspectedDead && localBaseline == 0
-            }
-            MotionEvent.ACTION_MOVE -> {
-                localDragPx += localLastY - event.y
-                localLastY = event.y
-            }
-            MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
-                if (!localForceRemoteArmed) return
-                val pitch = rowHeightPx()
-                val rows = if (pitch > 0f) (localDragPx / pitch).toInt() else 0
-                if (kotlin.math.abs(rows) < 2) return
-                val topRowNow = TermuxInternals.topRow(view) ?: 0
-                if (topRowNow != localBaseline) return
-                localScrollSuspectedDead = true
-                view.post { requestScroll(rows, immediate = true) }
-            }
-            else -> Unit
         }
     }
 
@@ -452,10 +391,7 @@ class TermuxTerminalHost(
 
     /** Candidates still worth trying for this pane. */
     private fun candidates(): List<ScrollMechanism> =
-        scrollMechanisms(
-            hostScrollable = hostScrollable,
-            wheelAgent = dev.herdr.mobile.core.model.AgentMatrix.useWheelScroll(diagnosticsAgent),
-        )
+        scrollMechanisms(hostScrollable = hostScrollable, agentPane = diagnosticsAgent != null)
 
     /**
      * A scroll request whose effect is being verified.
@@ -470,17 +406,16 @@ class TermuxTerminalHost(
         val mechanism: ScrollMechanism,
         val signature: Int,
         val rows: Int,
+        /** Visible lines when the probe started (the scroll anchor set). */
+        val lines: List<String>,
     )
 
     private var probe: ScrollProbe? = null
 
+    /** Notches sent during the current probe (for stride calibration). */
     /** Hash of the visible screen: cheap, and stable while the pane is idle. */
     private fun screenSignature(): Int {
-        val text = try {
-            view.currentSession?.emulator?.screen?.transcriptText
-        } catch (_: Exception) {
-            null
-        } ?: return 0
+        val text = screenText() ?: return 0
         var hash = 0x811c9dc5.toInt()
         for (c in text) {
             hash = (hash xor c.code) * 0x01000193
@@ -488,50 +423,98 @@ class TermuxTerminalHost(
         return hash
     }
 
-    /** Called on a timer after a probed request: did the pane actually move? */
+    private fun screenText(): String? = try {
+        view.currentSession?.emulator?.screen?.transcriptText
+    } catch (_: Exception) {
+        null
+    }
+
+    private fun visibleLines(): List<String> =
+        screenText()?.split('\n')?.map { it.trimEnd() }.orEmpty()
+
+    /**
+     * Rows the transcript moved, estimated by finding the vertical shift that
+     * best matches the old screen against the new one.
+     *
+     * A single anchor line is fragile: live panes repaint rows (spinners,
+     * counters) and a diagnostics overlay may own the first line. Voting over
+     * every non-blank line rejects those outliers. Returns 0 unless a shift
+     * explains a meaningful fraction of the screen, so a live repaint is not
+     * mistaken for a scroll.
+     */
+    private fun movedRows(before: List<String>): Int {
+        val after = visibleLines()
+        if (before.isEmpty() || after.isEmpty()) return 0
+        val anchors = before.count { it.isNotBlank() }
+        if (anchors == 0) return 0
+        var bestShift = 0
+        var bestScore = 0
+        val maxShift = minOf(after.size - 1, MAX_MEASURED_ROWS)
+        for (shift in 1..maxShift) {
+            var score = 0
+            for (i in 0 until minOf(before.size, after.size - shift)) {
+                if (before[i].isNotBlank() && before[i] == after[i + shift]) score++
+            }
+            if (score > bestScore) {
+                bestScore = score
+                bestShift = shift
+            }
+        }
+        return if (bestScore >= maxOf(3, anchors / 3)) bestShift else 0
+    }
+
+    /**
+     * Called on a timer after a probed request: did the pane actually move?
+     *
+     * Success records the mechanism and, for wheel, the measured stride. Failure
+     * advances to the next mechanism and replays the same rows; when nothing is
+     * left the pane is handed back to Termux for good (a stale agent label).
+     */
     fun settleProbe() {
         val pending = probe ?: return
         probe = null
-        val failed = if (screenSignature() == pending.signature) {
-            ScrollLearning.forget(diagnosticsAgent)
-            failures += pending.mechanism
-            true
-        } else {
+        val moved = movedRows(pending.lines)
+        val changed = screenSignature() != pending.signature
+        // A live pane repaints constantly (spinners, clocks), so "the screen
+        // changed" is not proof that the gesture scrolled. The anchor line
+        // moving down the screen is: that is the transcript scrolling.
+        val scrolled = if (pending.lines.any { it.isNotBlank() }) moved > 0 else changed
+        if (scrolled) {
             ScrollLearning.remember(diagnosticsAgent, pending.mechanism)
             failures.clear()
-            false
+            return
         }
-        if (!failed) return
+        ScrollLearning.forget(diagnosticsAgent)
+        failures += pending.mechanism
         val next = nextMechanism(candidates(), failures)
         if (next == null) {
-            // Nothing reached the app remotely: treat it as a local pane and
-            // apply the gesture to the transcript ourselves (a normal local
-            // drag would have done exactly this).
-            remoteSuspectedDead = true
-            applyLocalScroll(pending.rows)
+            // Nothing reached the app. Only fall back to the local transcript
+            // when the host told us nothing about this pane: a pane the host
+            // reported as full-screen must never move the terminal buffer —
+            // that is the "it scrolled the whole terminal" bug.
+            if (!hostScrollKnown) {
+                inputDead = true
+                applyLocalScroll(pending.rows)
+            }
             return
         }
         // Same gesture, different lever: never silent, never double-applied.
         dispatch(next, pending.rows)
-        probe = ScrollProbe(next, screenSignature(), pending.rows)
+        // A replay has no finger-lift to flush the page remainder, so send it
+        // now — otherwise the fallback quietly emits nothing.
+        if (next == ScrollMechanism.PAGE_KEY) flushPageRemainder()
+        probe = ScrollProbe(next, screenSignature(), pending.rows, visibleLines())
         scheduleProbeCheck()
     }
 
     /** Mechanisms that proved inert for this pane in the current session. */
     private val failures = mutableSetOf<ScrollMechanism>()
 
-    /** True once a local drag proved the emulator is not the scroll source. */
-    private var localScrollSuspectedDead = false
-
-    /** True once every remote mechanism proved inert for this pane. */
-    private var remoteSuspectedDead = false
-    private var localForceRemoteArmed = false
-    private var localDragPx = 0f
-    private var localLastY = 0f
-    private var localBaseline = 0
-
     /** Agent whose failures the current [failures] set describes. */
     private var lastProbeAgent: String? = null
+
+    /** True once every input mechanism failed: hand the pane back to Termux. */
+    private var inputDead = false
 
     /** Re-check the current probe once the repaint had time to land. */
     fun scheduleProbeCheck() {

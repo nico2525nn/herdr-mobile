@@ -415,10 +415,11 @@ private fun TerminalSurface(
     // the local path forever.
     val scrollInfo = state.pane?.scroll
     LaunchedEffect(hostRef, appIdentity, scrollInfo) {
-        hostRef?.remoteScrollHost = appIdentity != null
         hostRef?.diagnosticsAgent = appIdentity
         hostRef?.hostScrollable = state.pane?.hostScrollable == true
+        hostRef?.hostScrollKnown = scrollInfo != null
         hostRef?.hostViewportRows = scrollInfo?.viewportRows?.toInt() ?: 0
+        if (hostRef?.remoteEffective == true) hostRef?.resetLocalViewport()
     }
     // The IME going away on its own re-arms the summon latch.
     LaunchedEffect(imeVisible) {
@@ -562,8 +563,14 @@ private fun TerminalSurface(
                 unit = unit,
             )
         }
-        host.onRemoteWheel = { notches ->
-            bridgeRef.value?.scrollWheel(notches)
+        // Full-screen panes: type the page key. Sending it through Herdr's
+        // scroll control does not reach apps without host scrollback; the same
+        // bytes on the input channel do (verified on codex: PgUp scrolls).
+        host.onPageKey = { up, pages ->
+            val key = if (up) PAGE_UP_BYTES else PAGE_DOWN_BYTES
+            val payload = ByteArray(key.size * pages)
+            for (i in 0 until pages) key.copyInto(payload, i * key.size)
+            onSendBytes(payload)
         }
     }
 
@@ -620,8 +627,6 @@ private fun TerminalSurface(
             viewClientRef?.altDown = dev.herdr.mobile.terminal.view.TerminalKeyEncoder.Modifier.ALT in state.stickyModifiers
             // The host decides scroll ownership itself (ScrollRoute.scrollOwner):
             // it only needs the pane identity and the app's wheel stride.
-            hostRef?.wheelRowsPerEvent =
-                dev.herdr.mobile.core.model.AgentMatrix.wheelRowsPerEvent(appIdentity)
             val vc = viewClientRef
             val h = hostRef
             if (vc != null && h != null) bindTermuxCallbacks(vc, h)
@@ -675,7 +680,7 @@ private fun TerminalSurface(
                 append(v?.scrolledRows ?: 0)
                 append(" rem=")
                 append(v?.remoteScrolls ?: 0)
-                if (v?.remoteScrollHost == true) append("(R)")
+                if (v?.remoteEffective == true) append("(R)")
                 if (attached != null) {
                     append(" pre=")
                     append(attached.historyRows)
@@ -732,3 +737,7 @@ private fun TerminalSurface(
     // Terminal bottom edge: the Box weight above shrinks with imePadding, so
     // the grid's last row always sits on the input panel, never behind it.
 }
+
+/** xterm page keys, the sequence every audited TUI (and less/vim) understands. */
+private val PAGE_UP_BYTES = byteArrayOf(0x1B, '['.code.toByte(), '5'.code.toByte(), '~'.code.toByte())
+private val PAGE_DOWN_BYTES = byteArrayOf(0x1B, '['.code.toByte(), '6'.code.toByte(), '~'.code.toByte())

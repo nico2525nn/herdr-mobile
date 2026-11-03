@@ -3,73 +3,122 @@ package dev.herdr.mobile.terminal.view
 import dev.herdr.mobile.core.model.AgentMatrix
 
 /**
- * Who owns vertical scrolling for the attached pane.
+ * Where a scroll gesture should go.
  *
- * This is the whole routing policy in one place. It used to be a chain of
- * booleans spread over the host (`remoteScrollHost`), the screen
- * (`appIdentity != null`) and the view client, and the gap between them is
- * exactly where "scrolling does nothing on a shell" came from.
+ * Decided from what the transport can actually prove, not from an app name:
+ *
+ * - [HOST] — herdr reports scrollback for the pane
+ *   (`max_offset_from_bottom > 0`). The host offset is line-exact and works for
+ *   any app, so it always wins.
+ * - [APP_INPUT] — the pane is a full-screen program: it enabled the alternate
+ *   screen and/or mouse tracking, or the mirror never saw those flags because
+ *   the TUI backend replays frames instead of bytes. Full-screen apps paint
+ *   their own viewport, so the only levers are wheel notches and page keys.
+ * - [LOCAL] — a plain shell with a real transcript in this emulator.
+ * - [NONE] — nothing to move.
  */
-enum class ScrollOwner {
-    /** Termux shifts its own transcript (instant, no round trip). */
-    LOCAL,
+enum class ScrollSource { HOST, APP_INPUT, LOCAL, NONE }
 
-    /** The pane's content is repainted from the host, so scrolling is a request. */
-    REMOTE,
-}
-
-/** How a [ScrollOwner.REMOTE] pane wants the scroll delivered. */
-enum class RemoteScrollKind {
-    /** SGR mouse-wheel notches: agent UIs that track the mouse. */
-    WHEEL,
-
-    /** Page keys: panes whose transcript lives in the host's scrollback. */
-    PAGE_KEY,
-}
-
-/**
- * Routing decision, as a pure function so it can be tested without a device.
- *
- * The rule is "can anything actually move?", not "which app is this?":
- *
- * - Alt-screen and mouse tracking mean the app paints its own viewport, so the
- *   local transcript is stale by definition → remote.
- * - An agent/TUI pane (a label is present) is remote too: its content is
- *   replayed from the host, so any local rows are the prelude, not a scrollback
- *   the user can usefully move. This is the case that broke Codex and Pi: a
- *   single banked row made the pane "local", and a drag moved that one row
- *   while the app's viewport stayed put.
- * - No local rows → remote (nothing to shift locally).
- * - Otherwise (plain shells) the local transcript wins.
- *
- * The label can outlive the agent (Herdr keeps `agent=codex` on a pane that
- * exited to a prompt). That is not decided here: the host probes the remote
- * path and falls back to local scrolling when nothing moves, so a stale label
- * costs one gesture, not a dead pane.
- *
- * Per-app route tables therefore only choose the *unit* ([remoteScrollKind]),
- * never whether scrolling happens at all.
- */
-fun scrollOwner(
+fun scrollSource(
+    hostScrollKnown: Boolean,
+    hostScrollable: Boolean,
+    agentPane: Boolean,
     altScreen: Boolean,
     mouseTracking: Boolean,
-    hostBackedAgent: Boolean,
     localHistoryRows: Int,
-): ScrollOwner = when {
-    altScreen || mouseTracking -> ScrollOwner.REMOTE
-    hostBackedAgent -> ScrollOwner.REMOTE
-    localHistoryRows <= 0 -> ScrollOwner.REMOTE
-    else -> ScrollOwner.LOCAL
+): ScrollSource = when {
+    // The host's report is authoritative and covers every app: scrollback
+    // means the host can move lines (shells and main-screen apps); no
+    // scrollback means the pane is a full-screen program painting its own
+    // viewport. This is the signal that does not need app labels or a DECSET
+    // the TUI mirror never sees.
+    hostScrollKnown && hostScrollable -> ScrollSource.HOST
+    hostScrollKnown -> ScrollSource.APP_INPUT
+    hostScrollable -> ScrollSource.HOST
+    altScreen || mouseTracking -> ScrollSource.APP_INPUT
+    agentPane -> ScrollSource.APP_INPUT
+    localHistoryRows > 0 -> ScrollSource.LOCAL
+    else -> ScrollSource.APP_INPUT
 }
 
 /**
- * Wheel notches only when the app has actually enabled mouse tracking: SGR
- * wheel bytes are inert input for a program that never asked for them, which
- * looks exactly like a dead scroll. Everything else — alt-screen agent UIs
- * included — is paged through the host's own scrollback.
+ * How input reaches a full-screen app.
+ *
+ * Every TUI audited here (codex, omp, opencode, grok, pi) enables SGR mouse
+ * reporting (`?1000h`/`?1002h`/`?1003h` + `?1006h`) and the alternate screen,
+ * so a wheel notch is the fine-grained lever and a page key is the coarse one.
+ * The order is measured at runtime: wheel first, page keys when a wheel gesture
+ * moves nothing.
  */
-fun remoteScrollKind(agent: String?, mouseTracking: Boolean): RemoteScrollKind = when {
-    !mouseTracking -> RemoteScrollKind.PAGE_KEY
-    AgentMatrix.useWheelScroll(agent) -> RemoteScrollKind.WHEEL
-    else -> RemoteScrollKind.PAGE_KEY
+enum class ScrollMechanism { HOST, PAGE_KEY }
+
+fun scrollMechanisms(hostScrollable: Boolean, agentPane: Boolean): List<ScrollMechanism> = buildList {
+    // Two levers only, both measured on the device: the host offset when the
+    // daemon reports scrollback, and page keys for panes that own their
+    // viewport. SGR wheel was tried and does not move codex/omp in this setup,
+    // and mistaking a repaint for a scroll silently disabled the real path.
+    if (hostScrollable) add(ScrollMechanism.HOST)
+    add(ScrollMechanism.PAGE_KEY)
 }
+
+/** The next mechanism to try after [failed] proved inert, or null. */
+fun nextMechanism(
+    candidates: List<ScrollMechanism>,
+    failed: Set<ScrollMechanism>,
+): ScrollMechanism? = candidates.firstOrNull { it !in failed }
+
+/**
+ * What the app has learned about scrolling, per pane app identity.
+ *
+ * Process-wide and in-memory: a wrong lesson must not outlive the app, and
+ * re-learning costs one gesture.
+ */
+object ScrollLearning {
+    private fun key(agent: String?): String = agent?.trim()?.lowercase().orEmpty()
+
+    private val winners = java.util.concurrent.ConcurrentHashMap<String, ScrollMechanism>()
+
+    /** Measured lines moved per wheel notch (defaults to the xterm norm). */
+    private val rowsPerNotch = java.util.concurrent.ConcurrentHashMap<String, Double>()
+
+    fun winner(agent: String?): ScrollMechanism? = winners[key(agent)]
+
+    fun remember(agent: String?, mechanism: ScrollMechanism) {
+        winners[key(agent)] = mechanism
+    }
+
+    fun forget(agent: String?) {
+        winners.remove(key(agent))
+    }
+
+    fun rowsPerNotch(agent: String?): Double = rowsPerNotch[key(agent)] ?: DEFAULT_ROWS_PER_NOTCH
+
+    /**
+     * Fold one observation into the per-agent stride. Wheel gestures are
+     * accumulated before this is called, so [notches] and [movedRows] describe
+     * the same gesture; the estimate is clamped and exponentially smoothed so
+     * a single odd repaint cannot derail it.
+     */
+    fun observeRowsPerNotch(agent: String?, notches: Int, movedRows: Int) {
+        if (notches <= 0 || movedRows <= 0) return
+        val sample = movedRows.toDouble() / notches
+        if (sample < MIN_ROWS_PER_NOTCH || sample > MAX_ROWS_PER_NOTCH) return
+        val previous = rowsPerNotch(agent)
+        rowsPerNotch[key(agent)] = previous * 0.5 + sample * 0.5
+    }
+
+    fun reset() {
+        winners.clear()
+        rowsPerNotch.clear()
+    }
+
+    private const val DEFAULT_ROWS_PER_NOTCH = 3.0
+    private const val MIN_ROWS_PER_NOTCH = 0.25
+    private const val MAX_ROWS_PER_NOTCH = 12.0
+}
+
+/** Wheel stride for [agent], used to convert rows into notches. */
+fun rowsPerNotch(agent: String?): Double = ScrollLearning.rowsPerNotch(agent)
+
+/** True when the app is known to scroll through mouse-wheel reports. */
+fun wheelScrollable(agent: String?): Boolean = AgentMatrix.useWheelScroll(agent)

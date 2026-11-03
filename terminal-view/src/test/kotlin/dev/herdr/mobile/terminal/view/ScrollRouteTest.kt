@@ -1,98 +1,164 @@
 package dev.herdr.mobile.terminal.view
 
-import dev.herdr.mobile.core.model.AgentMatrix
 import org.junit.Assert.assertEquals
-import org.junit.Assert.assertTrue
+import org.junit.Assert.assertNull
 import org.junit.Test
 
 /**
- * The scroll-routing matrix. Every row here is a real pane shape seen on the
- * device; the "stale agent label" rows are the regression that made shell
- * scrolling dead.
+ * Scroll routing, stated as protocol facts rather than app names.
+ *
+ * The audit that grounds these rules: codex, omp, opencode, grok and pi all
+ * emit `?1049h` (alternate screen) and `?1000h`/`?1002h`/`?1003h` + `?1006h`
+ * (SGR mouse reporting). So a full-screen pane can always be scrolled by input,
+ * and only a pane the host keeps no scrollback for needs that path.
  */
 class ScrollRouteTest {
 
     @Test
-    fun `plain shell with history scrolls locally`() {
+    fun `host scrollback always wins because it is line exact`() {
         assertEquals(
-            ScrollOwner.LOCAL,
-            scrollOwner(altScreen = false, mouseTracking = false, hostBackedAgent = false, localHistoryRows = 120),
+            ScrollSource.HOST,
+            scrollSource(
+                hostScrollKnown = true,
+                hostScrollable = true,
+                agentPane = true,
+                altScreen = true,
+                mouseTracking = true,
+                localHistoryRows = 0,
+            ),
+        )
+        // Plain shell with host history: still the host, not the mirror.
+        assertEquals(
+            ScrollSource.HOST,
+            scrollSource(
+                hostScrollKnown = true,
+                hostScrollable = true,
+                agentPane = false,
+                altScreen = false,
+                mouseTracking = false,
+                localHistoryRows = 40,
+            ),
         )
     }
 
     @Test
-    fun `a labelled pane starts remote even when a few local rows exist`() {
-        // Codex/Pi bank prelude rows; treating those as a scrollback made the
-        // pane "local" and the app's viewport never moved.
+    fun `full-screen panes scroll by input`() {
         assertEquals(
-            ScrollOwner.REMOTE,
-            scrollOwner(altScreen = false, mouseTracking = false, hostBackedAgent = true, localHistoryRows = 18),
+            ScrollSource.APP_INPUT,
+            scrollSource(
+                hostScrollKnown = true,
+                hostScrollable = false,
+                agentPane = true,
+                altScreen = true,
+                mouseTracking = false,
+                localHistoryRows = 5,
+            ),
         )
-        // A stale label is handled at runtime (probe fails -> local fallback),
-        // not by guessing here.
         assertEquals(
-            ScrollOwner.REMOTE,
-            scrollOwner(altScreen = false, mouseTracking = false, hostBackedAgent = true, localHistoryRows = 1),
-        )
-    }
-
-    @Test
-    fun `an unlabelled shell with history scrolls locally`() {
-        assertEquals(
-            ScrollOwner.LOCAL,
-            scrollOwner(altScreen = false, mouseTracking = false, hostBackedAgent = false, localHistoryRows = 40),
-        )
-    }
-
-    @Test
-    fun `alt screen always routes remote`() {
-        assertEquals(
-            ScrollOwner.REMOTE,
-            scrollOwner(altScreen = true, mouseTracking = false, hostBackedAgent = false, localHistoryRows = 500),
+            ScrollSource.APP_INPUT,
+            scrollSource(
+                hostScrollKnown = true,
+                hostScrollable = false,
+                agentPane = false,
+                altScreen = false,
+                mouseTracking = true,
+                localHistoryRows = 5,
+            ),
         )
     }
 
     @Test
-    fun `mouse tracking routes remote even without alt screen`() {
+    fun `an agent pane without host scrollback is still full-screen`() {
+        // The TUI mirror cannot see DECSET (frames, not bytes), so the agent
+        // label is the evidence that this pane paints its own viewport.
         assertEquals(
-            ScrollOwner.REMOTE,
-            scrollOwner(altScreen = false, mouseTracking = true, hostBackedAgent = false, localHistoryRows = 500),
+            ScrollSource.APP_INPUT,
+            scrollSource(
+                hostScrollKnown = true,
+                hostScrollable = false,
+                agentPane = true,
+                altScreen = false,
+                mouseTracking = false,
+                localHistoryRows = 5,
+            ),
         )
     }
 
     @Test
-    fun `any pane without local history scrolls remotely`() {
-        // Mirrored full-screen TUIs (less, vim, top, agent panes) never
-        // accumulate local scrollback, so a local scroll would be a no-op.
+    fun `an unlabelled shell with a transcript scrolls locally`() {
         assertEquals(
-            ScrollOwner.REMOTE,
-            scrollOwner(altScreen = false, mouseTracking = false, hostBackedAgent = true, localHistoryRows = 0),
-        )
-        assertEquals(
-            ScrollOwner.REMOTE,
-            scrollOwner(altScreen = false, mouseTracking = false, hostBackedAgent = false, localHistoryRows = 0),
+            ScrollSource.LOCAL,
+            scrollSource(
+                hostScrollKnown = false,
+                hostScrollable = false,
+                agentPane = false,
+                altScreen = false,
+                mouseTracking = false,
+                localHistoryRows = 40,
+            ),
         )
     }
 
     @Test
-    fun `wheel agents get wheel notches only while mouse tracking is on`() {
-        for (agent in listOf("codex", "pi", "opencode", "qwen")) {
-            assertTrue("$agent should be wheel-based", AgentMatrix.useWheelScroll(agent))
-            assertEquals(RemoteScrollKind.WHEEL, remoteScrollKind(agent, mouseTracking = true))
-            // Without mouse tracking the SGR bytes are inert input, but the
-            // *mechanism list* still offers wheel first: the mirror cannot see
-            // the app's DECSET state, so the probe decides on the device.
-            assertEquals(
-                RemoteScrollKind.PAGE_KEY,
-                remoteScrollKind(agent, mouseTracking = false),
-            )
-        }
+    fun `a reported empty scrollback means full screen, whatever the mirror thinks`() {
+        // This is the case that broke `less` and the agents: the mirror banked
+        // a little history, but the host says there is no scrollback, so the
+        // pane is a full-screen program and its input is the only lever.
+        assertEquals(
+            ScrollSource.APP_INPUT,
+            scrollSource(
+                hostScrollKnown = true,
+                hostScrollable = false,
+                agentPane = false,
+                altScreen = false,
+                mouseTracking = false,
+                localHistoryRows = 40,
+            ),
+        )
     }
 
     @Test
-    fun `page key agents never use wheel`() {
-        assertEquals(RemoteScrollKind.PAGE_KEY, remoteScrollKind("omp", mouseTracking = true))
-        assertEquals(RemoteScrollKind.PAGE_KEY, remoteScrollKind(null, mouseTracking = true))
-        assertEquals(RemoteScrollKind.PAGE_KEY, remoteScrollKind("", mouseTracking = false))
+    fun `unknown host state falls back to mirror evidence`() {
+        // Older daemon: no scroll info. A plain shell still scrolls locally.
+        assertEquals(
+            ScrollSource.LOCAL,
+            scrollSource(
+                hostScrollKnown = false,
+                hostScrollable = false,
+                agentPane = false,
+                altScreen = false,
+                mouseTracking = false,
+                localHistoryRows = 40,
+            ),
+        )
+        assertEquals(
+            ScrollSource.APP_INPUT,
+            scrollSource(
+                hostScrollKnown = false,
+                hostScrollable = false,
+                agentPane = false,
+                altScreen = false,
+                mouseTracking = false,
+                localHistoryRows = 0,
+            ),
+        )
+    }
+
+    @Test
+    fun `mechanisms are host then pages`() {
+        assertEquals(
+            listOf(ScrollMechanism.HOST, ScrollMechanism.PAGE_KEY),
+            scrollMechanisms(hostScrollable = true, agentPane = true),
+        )
+        assertEquals(
+            listOf(ScrollMechanism.PAGE_KEY),
+            scrollMechanisms(hostScrollable = false, agentPane = true),
+        )
+        assertNull(
+            nextMechanism(
+                scrollMechanisms(hostScrollable = false, agentPane = true),
+                failed = setOf(ScrollMechanism.PAGE_KEY),
+            ),
+        )
     }
 }

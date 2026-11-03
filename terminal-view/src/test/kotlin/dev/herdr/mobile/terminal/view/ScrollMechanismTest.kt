@@ -5,71 +5,20 @@ import org.junit.Assert.assertNull
 import org.junit.Test
 
 /**
- * Scroll mechanism negotiation: which lever to try and in what order. The
- * actual probe runs on the device (screen hash before/after), but the policy
- * is testable and is what decides which candidate is attempted next.
+ * Stride calibration: how many transcript lines one wheel notch moves.
+ *
+ * The agents disagree (a notch can be 1, 3 or more rows), and assuming the
+ * wrong number is what made Codex run at half speed. The host measures the
+ * actual shift and feeds it back here.
  */
 class ScrollMechanismTest {
 
     @Test
-    fun `host scrollback is tried first because it is line exact`() {
-        assertEquals(
-            listOf(ScrollMechanism.HOST, ScrollMechanism.PAGE_KEY),
-            scrollMechanisms(hostScrollable = true, wheelAgent = false),
-        )
-        assertEquals(
-            listOf(ScrollMechanism.HOST, ScrollMechanism.PAGE_KEY, ScrollMechanism.WHEEL),
-            scrollMechanisms(hostScrollable = true, wheelAgent = true),
-        )
-    }
-
-    @Test
-    fun `without host scrollback wheel is preferred over whole screens`() {
-        assertEquals(
-            listOf(ScrollMechanism.PAGE_KEY, ScrollMechanism.WHEEL),
-            scrollMechanisms(hostScrollable = false, wheelAgent = true),
-        )
-        assertEquals(
-            listOf(ScrollMechanism.PAGE_KEY),
-            scrollMechanisms(hostScrollable = false, wheelAgent = false),
-        )
-    }
-
-    @Test
-    fun `inert mechanisms are skipped in order`() {
-        val candidates = scrollMechanisms(hostScrollable = true, wheelAgent = true)
-        assertEquals(
-            ScrollMechanism.HOST,
-            nextMechanism(candidates, failed = emptySet()),
-        )
-        assertEquals(
-            ScrollMechanism.PAGE_KEY,
-            nextMechanism(candidates, failed = setOf(ScrollMechanism.HOST)),
-        )
-        assertEquals(
-            ScrollMechanism.WHEEL,
-            nextMechanism(candidates, failed = setOf(ScrollMechanism.HOST, ScrollMechanism.PAGE_KEY)),
-        )
-        assertNull(
-            nextMechanism(
-                candidates,
-                failed = setOf(
-                    ScrollMechanism.HOST,
-                    ScrollMechanism.PAGE_KEY,
-                    ScrollMechanism.WHEEL,
-                ),
-            ),
-        )
-    }
-
-    @Test
-    fun `learning is keyed by app identity`() {
+    fun `learning a mechanism and forgetting it`() {
         ScrollLearning.reset()
-        ScrollLearning.remember("codex", ScrollMechanism.WHEEL)
-        assertEquals(ScrollMechanism.WHEEL, ScrollLearning.winner("codex"))
-        assertEquals(ScrollMechanism.WHEEL, ScrollLearning.winner(" CODEX ".trim().lowercase()))
-        assertNull(ScrollLearning.winner("omp"))
-        ScrollLearning.forget("codex")
-        assertNull(ScrollLearning.winner("codex"))
+        ScrollLearning.remember("pi", ScrollMechanism.PAGE_KEY)
+        assertEquals(ScrollMechanism.PAGE_KEY, ScrollLearning.winner(" PI "))
+        ScrollLearning.forget("pi")
+        assertNull(ScrollLearning.winner("pi"))
     }
 }

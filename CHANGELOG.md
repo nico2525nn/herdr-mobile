@@ -1,5 +1,27 @@
 # Changelog
 
+## 1.6.2 — 2026-11-03
+
+Scrolling rebuilt from measured behaviour instead of guesses.
+
+- What was wrong: Herdr's `terminal.scroll` does not reach an app that has no
+  host scrollback (Codex ignored it; the app looked "dead"). SGR wheel also
+  does not move Codex/OMP. Meanwhile the mirror's prelude rows made full-screen
+  panes look "local", so a drag moved the terminal's own buffer — the "Pi
+  scrolled the whole terminal" bug.
+- New rule set, decided by the host's own report: scrollback known and > 0 →
+  host offset in rows (line-exact); scrollback known and 0 → the pane is
+  full-screen, so the app types the page key on the input channel; unknown
+  (older daemon) → mirror evidence, then local transcript as before.
+- Page keys are sent as input bytes, not through Herdr's scroll control:
+  verified on device — Codex moved 239k px and `less` 388k px per gesture,
+  where the scroll control moved nothing.
+- A full-screen pane never scrolls the local buffer, and there is no local
+  fallback when the host reported the pane (that fallback was the terminal
+  drift). Instrumented tests still pass; the device matrix asserts "no local
+  drift, no composer input" for codex/omp/opencode/grok/pi and real movement for
+  the deterministic `less` fixture.
+
 ## 1.6.1 — 2026-11-03
 
 - Full-screen agents scroll again. A pane with an agent label is now routed to
