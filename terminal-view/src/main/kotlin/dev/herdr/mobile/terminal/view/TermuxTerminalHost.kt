@@ -139,12 +139,19 @@ class TermuxTerminalHost(
      * function (see ScrollRoute.kt for the reasoning and tests).
      */
     val remoteEffective: Boolean
-        get() = localScrollSuspectedDead || scrollOwner(
+        get() = when {
+            // The remote path proved inert (all candidates exhausted): this pane
+            // is a local one that merely carries a label (agent exited to a
+            // prompt), so let Termux scroll it again.
+            remoteSuspectedDead -> false
+            localScrollSuspectedDead -> true
+            else -> scrollOwner(
             altScreen = altActive,
             mouseTracking = mouseTracking,
             hostBackedAgent = remoteScrollHost,
-            localHistoryRows = snapshotHistorySize,
-        ) == ScrollOwner.REMOTE
+                localHistoryRows = snapshotHistorySize,
+            ) == ScrollOwner.REMOTE
+        }
 
     /** Wheel notches vs page keys for the remote path. */
     val remoteKind: RemoteScrollKind
@@ -445,7 +452,10 @@ class TermuxTerminalHost(
 
     /** Candidates still worth trying for this pane. */
     private fun candidates(): List<ScrollMechanism> =
-        scrollMechanisms(hostScrollable, remoteKind == RemoteScrollKind.WHEEL)
+        scrollMechanisms(
+            hostScrollable = hostScrollable,
+            wheelAgent = dev.herdr.mobile.core.model.AgentMatrix.useWheelScroll(diagnosticsAgent),
+        )
 
     /**
      * A scroll request whose effect is being verified.
@@ -492,7 +502,15 @@ class TermuxTerminalHost(
             false
         }
         if (!failed) return
-        val next = nextMechanism(candidates(), failures) ?: return
+        val next = nextMechanism(candidates(), failures)
+        if (next == null) {
+            // Nothing reached the app remotely: treat it as a local pane and
+            // apply the gesture to the transcript ourselves (a normal local
+            // drag would have done exactly this).
+            remoteSuspectedDead = true
+            applyLocalScroll(pending.rows)
+            return
+        }
         // Same gesture, different lever: never silent, never double-applied.
         dispatch(next, pending.rows)
         probe = ScrollProbe(next, screenSignature(), pending.rows)
@@ -504,6 +522,9 @@ class TermuxTerminalHost(
 
     /** True once a local drag proved the emulator is not the scroll source. */
     private var localScrollSuspectedDead = false
+
+    /** True once every remote mechanism proved inert for this pane. */
+    private var remoteSuspectedDead = false
     private var localForceRemoteArmed = false
     private var localDragPx = 0f
     private var localLastY = 0f
@@ -576,6 +597,14 @@ class TermuxTerminalHost(
         if (px <= 0) return 0f
         measurePaint.textSize = px.toFloat()
         return measurePaint.fontSpacing
+    }
+
+    /** Shift the local transcript by [rows], clamped to the banked history. */
+    private fun applyLocalScroll(rows: Int) {
+        val history = snapshotHistorySize
+        if (history <= 0 || rows == 0) return
+        view.topRow = (view.topRow + rows).coerceIn(-history, 0)
+        view.invalidate()
     }
 
     /** Emit a sub-page gesture as one page when the finger lifts. */

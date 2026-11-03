@@ -408,6 +408,18 @@ private fun TerminalSurface(
     LaunchedEffect(state.pane?.id) {
         applyIme(imeCommand(ImeTrigger.PANE_SWITCH, state.inputPage, imeVisible))
     }
+
+    // Scroll routing follows the pane's identity as it arrives: the snapshot
+    // can land after the stream is attached (agent detection is asynchronous),
+    // and a one-shot write from the session-creation effect left such panes on
+    // the local path forever.
+    val scrollInfo = state.pane?.scroll
+    LaunchedEffect(hostRef, appIdentity, scrollInfo) {
+        hostRef?.remoteScrollHost = appIdentity != null
+        hostRef?.diagnosticsAgent = appIdentity
+        hostRef?.hostScrollable = state.pane?.hostScrollable == true
+        hostRef?.hostViewportRows = scrollInfo?.viewportRows?.toInt() ?: 0
+    }
     // The IME going away on its own re-arms the summon latch.
     LaunchedEffect(imeVisible) {
         if (!imeVisible) hostRef?.keyboard?.onImeHidden()
@@ -608,11 +620,6 @@ private fun TerminalSurface(
             viewClientRef?.altDown = dev.herdr.mobile.terminal.view.TerminalKeyEncoder.Modifier.ALT in state.stickyModifiers
             // The host decides scroll ownership itself (ScrollRoute.scrollOwner):
             // it only needs the pane identity and the app's wheel stride.
-            hostRef?.remoteScrollHost = appIdentity != null
-            hostRef?.diagnosticsAgent = appIdentity
-            // Line-exact host scrolling when the daemon reports scrollback.
-            hostRef?.hostScrollable = state.pane?.hostScrollable == true
-            hostRef?.hostViewportRows = state.pane?.scroll?.viewportRows?.toInt() ?: 0
             hostRef?.wheelRowsPerEvent =
                 dev.herdr.mobile.core.model.AgentMatrix.wheelRowsPerEvent(appIdentity)
             val vc = viewClientRef

@@ -1,5 +1,22 @@
 # Changelog
 
+## 1.6.1 — 2026-11-03
+
+- Full-screen agents scroll again. A pane with an agent label is now routed to
+  the remote path even when the mirror banked a few rows (Codex/Pi prelude):
+  those rows made the pane "local", and a drag moved that tiny buffer while the
+  app's own viewport stayed still. Verified on the live Codex pane: 400k/204k
+  changed pixels per drag where it previously did nothing.
+- Scroll routing follows the agent identity as it arrives. The routing flags
+  were written once when the stream was created; if the snapshot learned the
+  agent later (Pi), the pane stayed local for its lifetime.
+- Wheel is offered before page keys for wheel-known agents, so a gesture moves
+  notches (a few lines) instead of a full screen; the runtime probe still falls
+  back to page keys when the app ignores wheel, and to local scrolling when
+  every remote mechanism is inert (stale agent label on an exited shell).
+- Instrumented UI tests and `tools/ci.sh` still green; live session verified
+  untouched by the runner.
+
 ## 1.6.0 — 2026-11-03
 
 Architecture and test infrastructure; no intended behaviour change.

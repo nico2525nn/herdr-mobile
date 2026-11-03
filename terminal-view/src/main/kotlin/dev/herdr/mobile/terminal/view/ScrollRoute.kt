@@ -34,14 +34,18 @@ enum class RemoteScrollKind {
  *
  * - Alt-screen and mouse tracking mean the app paints its own viewport, so the
  *   local transcript is stale by definition → remote.
- * - No local transcript rows means a local scroll has nothing to shift. That is
- *   the normal shape of a mirrored full-screen TUI (less, vim, top, agent
- *   panes): Herdr replays content frames, so the mirror never accumulates
- *   scrollback and the app label is irrelevant. → remote.
- * - Otherwise the local transcript wins, including panes that still carry an
- *   agent label. Herdr keeps the label after the agent exits (a plain
- *   `user@host$` prompt still reports the old agent); trusting labels sent SGR
- *   wheel bytes into a shell that ignored them.
+ * - An agent/TUI pane (a label is present) is remote too: its content is
+ *   replayed from the host, so any local rows are the prelude, not a scrollback
+ *   the user can usefully move. This is the case that broke Codex and Pi: a
+ *   single banked row made the pane "local", and a drag moved that one row
+ *   while the app's viewport stayed put.
+ * - No local rows → remote (nothing to shift locally).
+ * - Otherwise (plain shells) the local transcript wins.
+ *
+ * The label can outlive the agent (Herdr keeps `agent=codex` on a pane that
+ * exited to a prompt). That is not decided here: the host probes the remote
+ * path and falls back to local scrolling when nothing moves, so a stale label
+ * costs one gesture, not a dead pane.
  *
  * Per-app route tables therefore only choose the *unit* ([remoteScrollKind]),
  * never whether scrolling happens at all.
@@ -53,6 +57,7 @@ fun scrollOwner(
     localHistoryRows: Int,
 ): ScrollOwner = when {
     altScreen || mouseTracking -> ScrollOwner.REMOTE
+    hostBackedAgent -> ScrollOwner.REMOTE
     localHistoryRows <= 0 -> ScrollOwner.REMOTE
     else -> ScrollOwner.LOCAL
 }
