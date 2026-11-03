@@ -47,6 +47,9 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.semantics.LiveRegionMode
+import androidx.compose.ui.semantics.liveRegion
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.layout.positionInWindow
 import androidx.compose.ui.layout.onSizeChanged
@@ -58,7 +61,7 @@ import androidx.compose.ui.viewinterop.AndroidView
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import dev.herdr.mobile.core.designsystem.StatusChip
 import dev.herdr.mobile.core.designsystem.UiMessage
-import dev.herdr.mobile.core.designsystem.text
+import dev.herdr.mobile.core.designsystem.LocalUiCopy
 import dev.herdr.mobile.core.model.ConnectionState
 import dev.herdr.mobile.terminal.view.ImeTrigger
 import dev.herdr.mobile.terminal.view.imeCommand
@@ -224,10 +227,12 @@ fun TerminalScreen(
         )
         state.statusMessage?.let { message ->
             Text(
-                text = message.text(),
+                text = message.let { LocalUiCopy.current.render(it) },
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.error,
-                modifier = Modifier.padding(horizontal = 16.dp, vertical = 4.dp),
+                modifier = Modifier
+                    .padding(horizontal = 16.dp, vertical = 4.dp)
+                    .semantics { liveRegion = LiveRegionMode.Polite },
             )
         }
         Box(modifier = Modifier.weight(1f).fillMaxWidth()) {

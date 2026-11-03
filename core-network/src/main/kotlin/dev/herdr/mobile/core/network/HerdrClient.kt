@@ -1,6 +1,5 @@
 package dev.herdr.mobile.core.network
 
-import dev.herdr.mobile.core.model.AgentReport
 import dev.herdr.mobile.core.model.AgentStatus
 import dev.herdr.mobile.core.model.ConnectionState
 import dev.herdr.mobile.core.model.ConnectionTestResult
@@ -8,29 +7,12 @@ import dev.herdr.mobile.core.model.FailureKind
 import dev.herdr.mobile.core.model.HealthReport
 import dev.herdr.mobile.core.model.SemanticEvent
 import dev.herdr.mobile.core.model.SessionSnapshot
-import dev.herdr.mobile.core.model.SnapshotReducer
-import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.Job
-import kotlinx.coroutines.SupervisorJob
-import kotlinx.coroutines.cancelAndJoin
-import kotlinx.coroutines.channels.Channel
-import kotlinx.coroutines.delay
-import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.flow.StateFlow
-import kotlinx.coroutines.flow.asStateFlow
-import kotlinx.coroutines.flow.update
-import kotlinx.coroutines.isActive
-import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import okhttp3.OkHttpClient
-import java.io.IOException
-import java.net.SocketTimeoutException
-import java.net.UnknownHostException
-import java.util.concurrent.TimeUnit
-import kotlin.coroutines.coroutineContext
-import kotlin.math.min
 
 /** Everything Home and Terminal observe about the daemon link. */
 data class HerdrClientState(
@@ -47,6 +29,13 @@ data class HerdrClientState(
 /**
  * The single owner of the daemon link for the whole app.
  *
+ * This class is only the composition root plus the command surface. The moving parts live
+ * behind narrow types so each can be reasoned about (and tested) on its own:
+ * - [DaemonTransport] — provider dialling, REST, event stream and terminal sockets;
+ * - [LinkState] — published state, both generation counters, installed endpoint, activity;
+ * - [SnapshotSync] — event folding, gap/`snapshot.required` handling, authoritative refetch;
+ * - [LinkLifecycle] — bootstrap, redial with exponential backoff, watchdog, kick/start/stop.
+ *
  * Policy, in one place:
  * - one REST bootstrap (`/v1/health` + `/v1/snapshot`), then one `/v1/events` stream;
  * - events fold into the cached snapshot only while [SemanticEvent.seq] advances by exactly
@@ -60,508 +49,49 @@ data class HerdrClientState(
  */
 class HerdrClient(
     private val endpointProvider: DaemonEndpointProvider,
-    private val externalScope: CoroutineScope,
+    externalScope: CoroutineScope,
     http: OkHttpClient? = null,
-)  : HerdrSession {
+) : HerdrSession {
+
     private val scope = CoroutineScope(externalScope.coroutineContext)
+    private val transport: DaemonTransport = HttpDaemonTransport.create(endpointProvider, http)
+    private val clock: LinkClock = SystemLinkClock
+    private val linkState = LinkState(clock)
+    private val sync = SnapshotSync(linkState, transport, clock)
+    private val lifecycle = LinkLifecycle(linkState, transport, sync, scope, clock)
+    private val commands = SessionCommands(linkState, transport)
 
-    private val http: OkHttpClient = http ?: OkHttpClient.Builder()
-        .connectTimeout(10, TimeUnit.SECONDS)
-        .readTimeout(0, TimeUnit.MILLISECONDS)
-        .writeTimeout(10, TimeUnit.SECONDS)
-        .pingInterval(25, TimeUnit.SECONDS)
-        .retryOnConnectionFailure(true)
-        .build()
+    override val state: StateFlow<HerdrClientState> = linkState.state
 
-    /**
-     * REST calls (health/snapshot/refetch) must never share the WebSocket
-     * client's infinite readTimeout: a stalled daemon would hang them forever
-     * with no recovery. Bounded client for one-shot calls only.
-     */
-    private val restHttp: OkHttpClient = http?.newBuilder()
-        ?.readTimeout(15, TimeUnit.SECONDS)
-        ?.build()
-        ?: OkHttpClient.Builder()
-            .connectTimeout(10, TimeUnit.SECONDS)
-            .readTimeout(15, TimeUnit.SECONDS)
-            .writeTimeout(10, TimeUnit.SECONDS)
-            .retryOnConnectionFailure(true)
-            .build()
-
-    private val _state = MutableStateFlow(HerdrClientState())
-    override val state: StateFlow<HerdrClientState> = _state.asStateFlow()
-
-    private val lifecycleLock = Any()
-
-    /** Invalidates work from a previous redial, without discarding its cache. */
-    @Volatile
-    private var currentLinkGeneration = 0L
-
-    /** Invalidates pane targets when the app switches to a different profile/transport. */
-    @Volatile
-    private var currentTargetGeneration = 0L
-
-    /** Prevents an external kick from reconnecting through the outgoing provider during debounce. */
-    @Volatile
-    private var targetInvalidated = false
-
-    override val linkGeneration: Long get() = currentLinkGeneration
-    override val targetGeneration: Long get() = currentTargetGeneration
-
-    private fun isCurrentGeneration(generation: Long): Boolean =
-        currentLinkGeneration == generation
-
-    internal fun updateForGeneration(
-        generation: Long,
-        transform: (HerdrClientState) -> HerdrClientState,
-    ) {
-        synchronized(lifecycleLock) {
-            if (currentLinkGeneration != generation) return
-            _state.update(transform)
-        }
-    }
-
-    internal fun installEndpoint(generation: Long, value: DaemonEndpoint): Boolean =
-        synchronized(lifecycleLock) {
-            if (currentLinkGeneration != generation || targetInvalidated) {
-                false
-            } else {
-                endpoint = value
-                true
-            }
-        }
+    override val linkGeneration: Long get() = linkState.linkGeneration
+    override val targetGeneration: Long get() = linkState.targetGeneration
 
     /**
-     * Every semantic event as it arrives, BEFORE folding. Notifications consume
-     * this (exact transitions, no coalescing loss); snapshots remain the UI
-     * source. Replay 0 + conflated buffer: slow collectors drop interim
-     * events, and the snapshot-diff backstop in NotificationRelay covers gaps.
-     *
-     * Single SharedFlow (never swapped): the previous generation swapped the
-     * inner flow on invalidate, and collectLatest re-collection raced
-     * in-flight emissions → "Flow invariant is violated" crash. Stale events
-     * are instead dropped at emit time by the generation check in
-     * [applyEvent], which is the only writer.
+     * Every semantic event as it arrives for NotificationRelay. Notifications need exact
+     * transitions; the snapshot remains the UI source.
      */
-    private val _events = kotlinx.coroutines.flow.MutableSharedFlow<SemanticEvent>(
-        replay = 0,
-        extraBufferCapacity = 64,
-        onBufferOverflow = kotlinx.coroutines.channels.BufferOverflow.DROP_OLDEST,
-    )
-    val events: kotlinx.coroutines.flow.SharedFlow<SemanticEvent> = _events
-
-    private var loop: Job? = null
-
-    /**
-     * Single kick actor: start/stop/kick funnel through here so overlapping
-     * calls serialize instead of spawning duplicate reconnect loops.
-     */
-    private sealed interface LoopCommand {
-        data object Restart : LoopCommand
-        data object Stop : LoopCommand
-    }
-
-    private val kickQueue = kotlinx.coroutines.channels.Channel<LoopCommand>(capacity = Channel.CONFLATED)
-
-    /** Last tick or event observed: the idle fallback below keys off it. */
-    @Volatile
-    private var lastTickOrEventAt: Long = 0
-
-    /** True once any tick arrived: distinguishes dead streams from old daemons. */
-    @Volatile
-    private var tickSeen: Boolean = false
-
-    init {
-        // Stream watchdog: ticks arrive every 60s on a healthy link, so 90s
-        // of silence means a wedged stream (half-open TCP neither side
-        // detects — infinite readTimeout + NAT-only pings never fire) and
-        // the ONLY cure is a full redial: a REST refetch would heal the data
-        // but leave the dead SSE in place. Against tickless old daemons
-        // (tickSeen false) a quiet link is normal — refetch data only.
-        scope.launch {
-            while (true) {
-                kotlinx.coroutines.delay(60_000)
-                if (_state.value.connection == ConnectionState.CONNECTED &&
-                    System.currentTimeMillis() - lastTickOrEventAt > 90_000
-                ) {
-                    if (tickSeen) {
-                        restartLink()
-                    } else {
-                        runCatching { refresh() }
-                    }
-                }
-            }
-        }
-        scope.launch {
-            for (cmd in kickQueue) {
-                when (cmd) {
-                    LoopCommand.Restart -> {
-                        loop?.cancelAndJoin()
-                        loop = scope.launch { run(linkGeneration) }
-                    }
-                    LoopCommand.Stop -> {
-                        loop?.cancelAndJoin()
-                        loop = null
-                        try {
-                            endpointProvider.close()
-                        } catch (_: Exception) {
-                        }
-                        endpoint = null
-                        _state.update {
-                            if (it.connection == ConnectionState.CONNECTED ||
-                                it.connection == ConnectionState.RECONNECTING ||
-                                it.connection == ConnectionState.STALE ||
-                                it.connection == ConnectionState.FAILED
-                            ) {
-                                it.copy(connection = ConnectionState.IDLE, stale = it.snapshot != null)
-                            } else {
-                                it
-                            }
-                        }
-                    }
-                }
-            }
-        }
-    }
-
-    @Volatile
-    private var endpoint: DaemonEndpoint? = null
-
-    private fun api(): DaemonApi {
-        val ep = endpoint ?: throw DaemonException("not_connected", "No endpoint is open")
-        return DaemonApi(restHttp, ep)
-    }
+    val events: SharedFlow<SemanticEvent> = sync.events
 
     /** Start (or restart) the link. Safe to call repeatedly; replaces any running loop. */
-    fun start() {
-        restartLink()
-    }
+    fun start() = lifecycle.start()
 
     /** Stop retrying and close the transport. State keeps the last snapshot for offline reading. */
-    fun stop() {
-        synchronized(lifecycleLock) {
-            currentLinkGeneration++
-            endpoint = null
-        }
-        kickQueue.trySend(LoopCommand.Stop)
-    }
+    fun stop() = lifecycle.stop()
 
     /**
-     * Retry now instead of waiting out the backoff (network regained, sticky
-     * restart). No-op when already CONNECTED: every foregrounding used to tear
-     * down a healthy SSE (transient STALE, resubscribe gap, extra SSH dials).
+     * Drop data and event subscriptions for a changed profile/transport before provider
+     * construction or teardown can suspend. The caller starts the new link with
+     * [restartLink] after installing its provider.
      */
-    override fun kick() {
-        if (targetInvalidated || _state.value.connection == ConnectionState.CONNECTED) return
-        restartLink()
-    }
-
-    /**
-     * Drop data and event subscriptions for a changed profile/transport before
-     * provider construction or teardown can suspend. The caller starts the new
-     * link with [restartLink] after installing its provider.
-     */
-    fun invalidateTarget() {
-        synchronized(lifecycleLock) {
-            currentLinkGeneration++
-            invalidateTargetLocked()
-        }
-    }
-
-    private fun invalidateTargetLocked() {
-        currentTargetGeneration++
-        targetInvalidated = true
-        // _events is never swapped (Flow invariant); stale emissions die at
-        // the generation check in applyEvent, the only writer.
-        endpoint = null
-        tickSeen = false
-        lastTickOrEventAt = 0
-        _state.update {
-            it.copy(
-                connection = ConnectionState.CONNECTING,
-                snapshot = null,
-                stale = false,
-                error = null,
-                endpointDescription = null,
-                lastSyncAt = 0,
-            )
-        }
-    }
+    fun invalidateTarget() = lifecycle.invalidateTarget()
 
     /** Forced full redial, even when connected (transport or backend settings changed). */
-    fun restartLink(clearCachedSnapshot: Boolean = false) {
-        synchronized(lifecycleLock) {
-            currentLinkGeneration++
-            if (clearCachedSnapshot) {
-                invalidateTargetLocked()
-            } else {
-                endpoint = null
-                tickSeen = false
-                lastTickOrEventAt = 0
-                _state.update {
-                    it.copy(
-                        connection = if (it.snapshot == null) {
-                            ConnectionState.CONNECTING
-                        } else {
-                            ConnectionState.RECONNECTING
-                        },
-                        stale = it.snapshot != null,
-                        error = null,
-                    )
-                }
-            }
-            targetInvalidated = false
-        }
-        kickQueue.trySend(LoopCommand.Restart)
-    }
+    fun restartLink(clearCachedSnapshot: Boolean = false) =
+        lifecycle.restart(clearCachedSnapshot)
 
-    /**
-     * Force an authoritative refetch, folding nothing. Redials only when the
-     * link is down; on a healthy link it re-GETs the snapshot without tearing
-     * down the SSE (deep-link freshness, post-createTab waits).
-     */
-    override fun refresh() {
-        val generation = linkGeneration
-        if (_state.value.connection != ConnectionState.CONNECTED) {
-            kick()
-            return
-        }
-        scope.launch {
-            runCatching { refetch("manual", generation) }
-        }
-    }
+    override fun kick() = lifecycle.kick()
 
-    private suspend fun run(generation: Long) {
-        var backoffMs = INITIAL_BACKOFF_MS
-        while (coroutineContext.isActive && isCurrentGeneration(generation) && !targetInvalidated) {
-            try {
-                updateForGeneration(generation) {
-                    it.copy(
-                        connection = if (it.snapshot == null) {
-                            ConnectionState.CONNECTING
-                        } else {
-                            ConnectionState.RECONNECTING
-                        },
-                        error = null,
-                    )
-                }
-                val ep = endpointProvider.open()
-                if (!installEndpoint(generation, ep)) return
-                updateForGeneration(generation) { it.copy(endpointDescription = ep.description) }
-
-                val health = api().health()
-                if (!isCurrentGeneration(generation)) return
-                checkProtocol(health)
-                if (!health.ok || !health.herdrConnected) {
-                    throw DaemonException(
-                        "daemon_unavailable",
-                        health.error ?: "Daemon is up but Herdr is not reachable",
-                    )
-                }
-
-                val snapshot = api().snapshot()
-                if (!isCurrentGeneration(generation)) return
-                updateForGeneration(generation) {
-                    it.copy(
-                        connection = ConnectionState.CONNECTED,
-                        snapshot = snapshot,
-                        stale = false,
-                        error = null,
-                        lastSyncAt = System.currentTimeMillis(),
-                    )
-                }
-                backoffMs = INITIAL_BACKOFF_MS
-
-                consumeEvents(generation)
-
-                // Stream ended without an exception: reconnect, the daemon went quiet.
-                throw DaemonException("stream_closed", "Event stream closed")
-            } catch (e: DaemonException) {
-                if (coroutineContext.isActive && isCurrentGeneration(generation)) {
-                    // Transport failure (not auth/protocol): invalidate the tunnel
-                    // so the next retry dials fresh. JSch isConnected stays true
-                    // on half-open TCP (keepalive needs up to 45s), and reusing
-                    // the dead session would loop forever without this close.
-                    if (e.code != "unauthorized" && e.code != "protocol_mismatch") {
-                        runCatching { endpointProvider.close() }
-                        synchronized(lifecycleLock) {
-                            if (currentLinkGeneration == generation) endpoint = null
-                        }
-                    }
-                    updateForGeneration(generation) {
-                        it.copy(
-                            connection = if (e.code == "unauthorized" || e.code == "protocol_mismatch") {
-                                ConnectionState.FAILED
-                            } else if (it.snapshot != null) {
-                                ConnectionState.RECONNECTING
-                            } else {
-                                ConnectionState.CONNECTING
-                            },
-                            stale = it.snapshot != null,
-                            error = userMessage(e),
-                        )
-                    }
-                    if (e.code == "unauthorized" || e.code == "protocol_mismatch") {
-                        // Auth/protocol failures need a human (token rotation,
-                        // daemon upgrade) — but parking FOREVER (bare return)
-                        // leaves a live process silently dead: no kick source
-                        // fires while backgrounded, so monitoring never revives
-                        // even after the user fixes the cause elsewhere. Retry
-                        // on a long timer: one cheap dial per 5 min, and any
-                        // settings edit/provider rebuild kicks immediately.
-                        delay(FAILED_RETRY_MS)
-                        continue
-                    }
-                    delay(backoffMs + (0..250).random())
-                    backoffMs = min(backoffMs * 2, MAX_BACKOFF_MS)
-                }
-            } catch (e: Exception) {
-                if (coroutineContext.isActive && isCurrentGeneration(generation)) {
-                    // Same invalidation for non-daemon transport errors.
-                    runCatching { endpointProvider.close() }
-                    synchronized(lifecycleLock) {
-                        if (currentLinkGeneration == generation) endpoint = null
-                    }
-                    updateForGeneration(generation) {
-                        it.copy(
-                            connection = if (it.snapshot != null) {
-                                ConnectionState.RECONNECTING
-                            } else {
-                                ConnectionState.CONNECTING
-                            },
-                            stale = it.snapshot != null,
-                            error = userMessage(e),
-                        )
-                    }
-                    delay(backoffMs + (0..250).random())
-                    backoffMs = min(backoffMs * 2, MAX_BACKOFF_MS)
-                }
-            }
-        }
-    }
-
-    private fun checkProtocol(health: HealthReport) {
-        if (health.protocol != HealthReport.PROTOCOL) {
-            throw DaemonException(
-                "protocol_mismatch",
-                "Daemon speaks protocol ${health.protocol}, this client implements ${HealthReport.PROTOCOL}",
-            )
-        }
-    }
-
-    private suspend fun consumeEvents(generation: Long) {
-        val socket = EventSocket(http) {
-            if (!isCurrentGeneration(generation)) {
-                throw DaemonException("not_connected", "Connection was replaced")
-            }
-            endpoint ?: throw DaemonException("not_connected", "No endpoint is open")
-        }
-        socket.stream().collect { signal ->
-            if (!isCurrentGeneration(generation)) return@collect
-            when (signal) {
-                is EventSocket.Signal.Ready -> {
-                    // The daemon announces its cursor with no replay: events that
-                    // landed between our snapshot GET and this subscribe are
-                    // already gone. If the cursor moved past our snapshot, refetch
-                    // before consuming, or the gap is silently lost.
-                    val held = _state.value.snapshot?.seq ?: -1
-                    if (signal.seq != held) {
-                        refetch("cursor moved ${held} -> ${signal.seq} during subscribe", generation)
-                    }
-                }
-
-                is EventSocket.Signal.Event -> applyEvent(signal.event, generation)
-
-                is EventSocket.Signal.Closed ->
-                    throw DaemonException("stream_closed", signal.reason.ifBlank { "Event stream closed" })
-            }
-        }
-    }
-
-    private suspend fun applyEvent(event: SemanticEvent, generation: Long) {
-        // Emit before folding: Gap/Refetch outcomes drop the event from the
-        // snapshot, but its transition (working->done) still happened and
-        // notifications must fire exactly once for it.
-        val accepted = synchronized(lifecycleLock) {
-            if (currentLinkGeneration != generation) {
-                false
-            } else {
-                _events.tryEmit(event)
-                lastTickOrEventAt = System.currentTimeMillis()
-                true
-            }
-        }
-        if (!accepted) return
-        val current = _state.value.snapshot ?: run {
-            refetch("event without snapshot", generation)
-            return
-        }
-        when (val outcome = SnapshotReducer.apply(current, event)) {
-            is SnapshotReducer.Outcome.Applied -> {
-                updateForGeneration(generation) {
-                    it.copy(
-                        snapshot = outcome.snapshot,
-                        stale = false,
-                        lastSyncAt = System.currentTimeMillis(),
-                    )
-                }
-                // Consistency tick: the reducer already advanced the cursor
-                // (ticks fold as no-ops), so a hash mismatch means the fold
-                // diverged despite contiguous seqs — refetch authoritatively.
-                // Match = proof, zero bytes beyond the ~70B tick.
-                if (event.type == dev.herdr.mobile.core.model.SemanticEvent.TYPE_SNAPSHOT_TICK) {
-                    synchronized(lifecycleLock) {
-                        if (currentLinkGeneration == generation) tickSeen = true
-                    }
-                    val want = (event.detail?.get("hash") as? kotlinx.serialization.json.JsonPrimitive)?.content
-                    val have = outcome.snapshot.statusHash()
-                    if (want != null && want != have) {
-                        refetch("tick hash drift (want $want, have $have)", generation)
-                    }
-                }
-            }
-
-            is SnapshotReducer.Outcome.Gap -> {
-                updateForGeneration(generation) {
-                    it.copy(connection = ConnectionState.STALE, stale = true)
-                }
-                refetch("seq gap: expected ${outcome.expectedSeq}, got ${outcome.receivedSeq}", generation)
-            }
-
-            SnapshotReducer.Outcome.Refetch -> {
-                refetch("daemon requested refetch (${event.type})", generation)
-            }
-        }
-    }
-
-    internal suspend fun refetch(reason: String, generation: Long) {
-        if (!isCurrentGeneration(generation)) return
-        try {
-            val snapshot = api().snapshot()
-            updateForGeneration(generation) {
-                it.copy(
-                    connection = ConnectionState.CONNECTED,
-                    snapshot = snapshot,
-                    stale = false,
-                    error = null,
-                    lastSyncAt = System.currentTimeMillis(),
-                )
-            }
-        } catch (e: CancellationException) {
-            throw e
-        } catch (e: Exception) {
-            updateForGeneration(generation) {
-                it.copy(
-                    connection = if (it.snapshot != null) ConnectionState.RECONNECTING else ConnectionState.CONNECTING,
-                    stale = it.snapshot != null,
-                    error = "Refetch failed ($reason): ${userMessage(e)}",
-                )
-            }
-            throw e
-        }
-    }
-
-    // -- Actions ---------------------------------------------------------------------------
+    override fun refresh() = lifecycle.refresh()
 
     /** Open a terminal stream. Caller owns it and must [TerminalConnection.release] it. */
     override fun openTerminal(
@@ -570,59 +100,57 @@ class HerdrClient(
         rows: Int,
         takeover: Boolean,
     ): TerminalConnection {
-        val ep = endpoint ?: throw DaemonException("not_connected", "No endpoint is open")
-        return TerminalSocket(http, ep, paneId, cols, rows, takeover, scope).also { it.connect() }
+        val endpoint = linkState.endpoint
+            ?: throw DaemonException("not_connected", "No endpoint is open")
+        return transport.terminal(endpoint, paneId, cols, rows, takeover, scope)
     }
 
-    suspend fun sendInput(paneId: String, text: String) =
-        withContext(Dispatchers.IO) { api().sendInput(paneId, text) }
+    // -- Actions ---------------------------------------------------------------------------
 
-    override suspend fun interrupt(paneId: String) =
-        withContext(Dispatchers.IO) { api().interrupt(paneId) }
+    suspend fun sendInput(paneId: String, text: String) = commands.sendInput(paneId, text)
 
-    suspend fun reportAgent(paneId: String, status: AgentStatus, message: String?, agent: String? = null) =
-        withContext(Dispatchers.IO) {
-            api().reportAgent(AgentReport(paneId = paneId, status = status, message = message, agent = agent))
-        }
+    override suspend fun interrupt(paneId: String) = commands.interrupt(paneId)
+
+    suspend fun reportAgent(
+        paneId: String,
+        status: AgentStatus,
+        message: String?,
+        agent: String? = null,
+    ) = commands.reportAgent(paneId, status, message, agent)
 
     override suspend fun createTab(workspaceId: String, label: String?): String =
-        withContext(Dispatchers.IO) { api().createTab(workspaceId, label) }
+        commands.createTab(workspaceId, label)
 
-    override suspend fun closeTab(tabId: String) =
-        withContext(Dispatchers.IO) { api().closeTab(tabId) }
+    override suspend fun closeTab(tabId: String) = commands.closeTab(tabId)
 
-    override suspend fun focusTab(tabId: String) =
-        withContext(Dispatchers.IO) { api().focusTab(tabId) }
+    override suspend fun focusTab(tabId: String) = commands.focusTab(tabId)
 
-    override suspend fun renameTab(tabId: String, label: String) =
-        withContext(Dispatchers.IO) { api().renameTab(tabId, label) }
+    override suspend fun renameTab(tabId: String, label: String) = commands.renameTab(tabId, label)
 
     /** [focus] = false creates a workspace without moving the desktop's focus. */
     suspend fun createWorkspace(label: String?, cwd: String?, focus: Boolean = true): String =
-        withContext(Dispatchers.IO) { api().createWorkspace(label, cwd, focus) }
+        commands.createWorkspace(label, cwd, focus)
 
     override suspend fun renameWorkspace(workspaceId: String, label: String) =
-        withContext(Dispatchers.IO) { api().renameWorkspace(workspaceId, label) }
+        commands.renameWorkspace(workspaceId, label)
 
     override suspend fun closeWorkspace(workspaceId: String) =
-        withContext(Dispatchers.IO) { api().closeWorkspace(workspaceId) }
+        commands.closeWorkspace(workspaceId)
 
     override suspend fun moveTab(tabId: String, insertIndex: Long) =
-        withContext(Dispatchers.IO) { api().moveTab(tabId, insertIndex) }
+        commands.moveTab(tabId, insertIndex)
 
     override suspend fun moveWorkspace(workspaceId: String, insertIndex: Long) =
-        withContext(Dispatchers.IO) { api().moveWorkspace(workspaceId, insertIndex) }
+        commands.moveWorkspace(workspaceId, insertIndex)
 
     suspend fun resizePane(paneId: String, cols: Int, rows: Int) =
-        withContext(Dispatchers.IO) { api().resizePane(paneId, cols, rows) }
+        commands.resizePane(paneId, cols, rows)
 
     /** Fresh update check (network hit). Snapshot block stays the source of truth. */
-    suspend fun herdrUpdateStatus() =
-        withContext(Dispatchers.IO) { api().herdrUpdateStatus() }
+    suspend fun herdrUpdateStatus() = commands.herdrUpdateStatus()
 
     /** Run the install; returns the updater's own log on success. */
-    suspend fun runHerdrUpdate(): String =
-        withContext(Dispatchers.IO) { api().runHerdrUpdate() }
+    suspend fun runHerdrUpdate(): String = commands.runHerdrUpdate()
 
     // -- One-shot connection test for Settings ---------------------------------------------
 
@@ -651,11 +179,10 @@ class HerdrClient(
                 }
                 cause = cause.cause
             }
-            return ConnectionTestResult.Failure(classify(e), userMessage(e))
+            return ConnectionTestResult.Failure(classifyFailure(e), userMessage(e))
         }
         return try {
-            val api = DaemonApi(restHttp, ep)
-            val health = api.health()
+            val health = transport.health(ep)
             if (health.protocol != HealthReport.PROTOCOL) {
                 return ConnectionTestResult.Failure(
                     FailureKind.PROTOCOL_MISMATCH,
@@ -668,7 +195,7 @@ class HerdrClient(
                     health.error ?: "Daemon is up but Herdr is not reachable",
                 )
             }
-            val snapshot = api.snapshot()
+            val snapshot = transport.snapshot(ep)
             ConnectionTestResult.Success(
                 latencyMs = System.currentTimeMillis() - started,
                 herdr = snapshot.herdr,
@@ -676,7 +203,7 @@ class HerdrClient(
                 workspaceCount = snapshot.workspaces.size,
             )
         } catch (e: Exception) {
-            ConnectionTestResult.Failure(classify(e), userMessage(e))
+            ConnectionTestResult.Failure(classifyFailure(e), userMessage(e))
         } finally {
             if (provider !== endpointProvider) {
                 try {
@@ -685,63 +212,5 @@ class HerdrClient(
                 }
             }
         }
-    }
-
-    private fun classify(e: Throwable): FailureKind {
-        var cause: Throwable? = e
-        while (cause != null) {
-            when (cause) {
-                is UnknownHostException -> return FailureKind.DNS
-                is SocketTimeoutException -> return FailureKind.UNREACHABLE
-                is java.net.ConnectException ->
-                    return if ((cause.message ?: "").contains("refused", ignoreCase = true)) {
-                        FailureKind.UNREACHABLE
-                    } else {
-                        FailureKind.UNKNOWN
-                    }
-                is DaemonException -> return when (cause.code) {
-                    "unauthorized" -> FailureKind.AUTH
-                    "host_key_mismatch" -> FailureKind.HOST_KEY_MISMATCH
-                    "daemon_unavailable" -> FailureKind.DAEMON_UNAVAILABLE
-                    "protocol_mismatch" -> FailureKind.PROTOCOL_MISMATCH
-                    else -> FailureKind.UNKNOWN
-                }
-            }
-            if (cause.message?.contains("reject HostKey", ignoreCase = true) == true) {
-                return FailureKind.HOST_KEY_UNKNOWN
-            }
-            if (cause.message?.contains("HostKey", ignoreCase = true) == true ||
-                cause.message?.contains("host key", ignoreCase = true) == true
-            ) {
-                return FailureKind.HOST_KEY_MISMATCH
-            }
-            if (cause.message?.contains("Auth fail", ignoreCase = true) == true ||
-                cause.message?.contains("authentication", ignoreCase = true) == true
-            ) {
-                return FailureKind.AUTH
-            }
-            cause = cause.cause
-        }
-        return FailureKind.UNKNOWN
-    }
-
-    private fun userMessage(e: Throwable): String {
-        if (e is DaemonException) return e.message
-        var cause: Throwable? = e
-        while (cause != null) {
-            when (cause) {
-                is UnknownHostException -> return "Cannot resolve ${cause.message}"
-                is SocketTimeoutException -> return "Timed out reaching the daemon"
-                is java.net.ConnectException -> return "Connection refused: ${cause.message}"
-            }
-            cause = cause.cause
-        }
-        return e.message ?: e.javaClass.simpleName
-    }
-
-    companion object {
-        private const val INITIAL_BACKOFF_MS = 500L
-        private const val MAX_BACKOFF_MS = 15_000L
-        private const val FAILED_RETRY_MS = 300_000L
     }
 }

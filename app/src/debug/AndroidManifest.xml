@@ -6,5 +6,10 @@
         <activity
             android:name="dev.herdr.mobile.ClipSeedActivity"
             android:exported="true" />
+        <!-- tools/ci.sh only: points the debug app at a throwaway daemon and
+             restores the developer's saved URL. Debug source set only. -->
+        <activity
+            android:name="dev.herdr.mobile.DebugDaemonUrlActivity"
+            android:exported="true" />
     </application>
 </manifest>

@@ -1,5 +1,31 @@
 # Changelog
 
+## 1.6.0 — 2026-11-03
+
+Architecture and test infrastructure; no intended behaviour change.
+
+- `HerdrClient` decomposed: 746 -> 216 lines. Link lifecycle/backoff, link state
+  and generations, snapshot sync, transport and REST commands are separate
+  types with a fake-transport, virtual-clock test suite (backoff sequence,
+  generation bump on target change, `snapshot.required`, seq gaps, stop/scope
+  cancellation).
+- `SettingsScreen` 720 -> 131 lines and `HomeScreen` 701 -> 274: one file per
+  section/list, item keys and order unchanged (settings verified pixel-
+  identical before/after on device).
+- `TerminalViewModel` 892 -> 411 (done in 1.5.2), now `PaneSessionController`.
+- Instrumented Compose UI tests: badge appears only after a second of downtime
+  and is announced (liveRegion), recovering hides it, extra-key taps deliver
+  the key, the rail routes a tap to the right tab, the keyboard button asks for
+  the IME.
+- `UiCopy` seam: screens render status messages through a composition local, so
+  a translation is a new implementation rather than a rewrite (English default
+  unchanged).
+- `tools/ci.sh`: runs the device smoke against a private herdr session + daemon
+  on port 8799, points the debug app at it, restores the saved URL, tears the
+  session down, and fails loudly if the live session's workspaces or focus
+  changed. Verified: CI OK, live session untouched.
+- Kotlin 105 tests + 6 instrumented, Rust 50.
+
 ## 1.5.3 — 2026-11-02
 
 - Midnight (AMOLED) now covers the whole app, not just the background: every

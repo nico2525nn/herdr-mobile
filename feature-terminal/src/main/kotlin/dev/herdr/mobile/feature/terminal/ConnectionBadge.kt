@@ -20,6 +20,9 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.semantics.LiveRegionMode
+import androidx.compose.ui.semantics.liveRegion
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import dev.herdr.mobile.core.model.ConnectionState
@@ -55,7 +58,9 @@ fun ConnectionBadge(
         visible = visible && label != null,
         enter = fadeIn(),
         exit = fadeOut(),
-        modifier = modifier,
+        // Announced by TalkBack when it appears: a sighted user sees a pill,
+        // a screen-reader user must hear the link state without hunting.
+        modifier = modifier.semantics(mergeDescendants = true) { liveRegion = LiveRegionMode.Polite },
     ) {
         Surface(
             shape = CircleShape,
