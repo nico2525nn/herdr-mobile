@@ -418,6 +418,7 @@ private fun TerminalSurface(
         hostRef?.diagnosticsAgent = appIdentity
         hostRef?.hostScrollable = state.pane?.hostScrollable == true
         hostRef?.hostScrollKnown = scrollInfo != null
+        hostRef?.scrollMode = state.settings.scrollMode
         hostRef?.hostViewportRows = scrollInfo?.viewportRows?.toInt() ?: 0
         if (hostRef?.remoteEffective == true) hostRef?.resetLocalViewport()
     }

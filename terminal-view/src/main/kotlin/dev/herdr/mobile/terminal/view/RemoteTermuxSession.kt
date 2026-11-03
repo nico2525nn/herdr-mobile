@@ -168,7 +168,13 @@ class RemoteTermuxSession(
             runCatching {
                 val button = if (notches > 0) 65 else 64
                 val one = "\u001b[<$button;45;15M".toByteArray(Charsets.UTF_8)
-                repeat(kotlin.math.abs(notches)) { backend.send(one) }
+                // One frame for the whole burst: a fast drag used to emit a
+                // websocket frame per notch and made apps like opencode redraw
+                // themselves to a standstill.
+                val count = kotlin.math.abs(notches)
+                val payload = ByteArray(one.size * count)
+                for (i in 0 until count) one.copyInto(payload, i * one.size)
+                backend.send(payload)
             }
         }
     }

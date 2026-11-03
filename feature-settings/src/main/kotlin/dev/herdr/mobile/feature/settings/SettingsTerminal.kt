@@ -36,6 +36,14 @@ internal fun LazyListScope.settingsTerminalSection(
                 },
             )
             EnumRow(
+                headline = "Scroll mode",
+                supporting = "How a swipe scrolls full-screen apps",
+                value = settings.scrollMode.displayName,
+                options = dev.herdr.mobile.core.model.ScrollMode.entries.map { it to it.displayName },
+                onSelect = { viewModel.setScrollMode(it) },
+                showDivider = true,
+            )
+            EnumRow(
                 headline = "Panel swipe",
                 supporting = "Horizontal swipe inside the panel",
                 value = settings.swipeBehavior.displayName,

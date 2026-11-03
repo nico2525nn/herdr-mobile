@@ -73,6 +73,27 @@ fun scrollMechanisms(
     }
 }
 
+/**
+ * The lever list for the user's chosen mode.
+ *
+ * AUTO follows the audited table; the explicit modes exist because the same
+ * app can behave differently per setup (a TUI that enables mouse reporting in
+ * one config and not another). LOCAL means "let the mirror's own transcript
+ * scroll", which is what plain shells use.
+ */
+fun scrollMechanismsForMode(
+    mode: dev.herdr.mobile.core.model.ScrollMode,
+    hostScrollable: Boolean,
+    agentPane: Boolean,
+    wheelAgent: Boolean,
+): List<ScrollMechanism> = when (mode) {
+    dev.herdr.mobile.core.model.ScrollMode.AUTO ->
+        scrollMechanisms(hostScrollable, agentPane, wheelAgent)
+    dev.herdr.mobile.core.model.ScrollMode.WHEEL -> listOf(ScrollMechanism.WHEEL)
+    dev.herdr.mobile.core.model.ScrollMode.PAGE -> listOf(ScrollMechanism.PAGE_KEY)
+    dev.herdr.mobile.core.model.ScrollMode.LOCAL -> emptyList()
+}
+
 /** The next mechanism to try after [failed] proved inert, or null. */
 fun nextMechanism(
     candidates: List<ScrollMechanism>,
@@ -103,7 +124,8 @@ object ScrollLearning {
         winners.remove(key(agent))
     }
 
-    fun rowsPerNotch(agent: String?): Double = rowsPerNotch[key(agent)] ?: DEFAULT_ROWS_PER_NOTCH
+    fun rowsPerNotch(agent: String?): Double =
+        rowsPerNotch[key(agent)] ?: AgentMatrix.wheelRowsPerEvent(agent).toDouble()
 
     /**
      * Fold one observation into the per-agent stride. Wheel gestures are
@@ -124,7 +146,6 @@ object ScrollLearning {
         rowsPerNotch.clear()
     }
 
-    private const val DEFAULT_ROWS_PER_NOTCH = 3.0
     private const val MIN_ROWS_PER_NOTCH = 0.25
     private const val MAX_ROWS_PER_NOTCH = 12.0
 }

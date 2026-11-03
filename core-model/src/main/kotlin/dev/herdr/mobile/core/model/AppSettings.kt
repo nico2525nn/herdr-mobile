@@ -13,6 +13,21 @@ enum class ThemeMode(val wire: String) {
     }
 }
 
+/**
+ * How a swipe scrolls a full-screen pane.
+ *
+ * The terminal protocol leaves no universal answer: some TUIs honour SGR wheel
+ * reports, some only page keys, and a few are smoother through the mirror's own
+ * transcript. AUTO follows the audited per-agent table; the other values force
+ * a lever for a setup that behaves differently.
+ */
+enum class ScrollMode(val wire: String, val displayName: String) {
+    AUTO("auto", "Automatic"),
+    WHEEL("wheel", "Mouse wheel"),
+    PAGE("page", "Page keys"),
+    LOCAL("local", "Terminal history"),
+}
+
 /** Built-in terminal colour schemes. Terminal content is the only place these are used. */
 enum class TerminalColorScheme(val wire: String, val displayName: String) {
     DARK("dark", "Dark"),
@@ -126,6 +141,7 @@ data class AppSettings(
     val themeMode: ThemeMode = ThemeMode.SYSTEM,
     val dynamicColor: Boolean = true,
     val terminalColorScheme: TerminalColorScheme = TerminalColorScheme.TOKYO_NIGHT,
+    val scrollMode: ScrollMode = ScrollMode.AUTO,
     val terminalFont: TerminalFont = TerminalFont.MONOSPACE,
     val terminalFontSizeSp: Int = 12,
     val terminalLineHeight: Float = 1.15f,

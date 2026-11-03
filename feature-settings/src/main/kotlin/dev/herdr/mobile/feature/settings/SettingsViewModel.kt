@@ -71,6 +71,7 @@ class SettingsViewModel(
     fun setThemeMode(mode: ThemeMode) = edit { it.copy(themeMode = mode) }
     fun setDynamicColor(enabled: Boolean) = edit { it.copy(dynamicColor = enabled) }
     fun setTerminalScheme(scheme: TerminalColorScheme) = edit { it.copy(terminalColorScheme = scheme) }
+    fun setScrollMode(mode: dev.herdr.mobile.core.model.ScrollMode) = edit { it.copy(scrollMode = mode) }
     fun setTerminalFont(font: TerminalFont) = edit { it.copy(terminalFont = font) }
     fun setFontSize(sp: Int) = edit { it.copy(terminalFontSizeSp = sp.coerceIn(8, 24)) }
     fun setLineHeight(height: Float) = edit { it.copy(terminalLineHeight = height.coerceIn(1.0f, 2.0f)) }

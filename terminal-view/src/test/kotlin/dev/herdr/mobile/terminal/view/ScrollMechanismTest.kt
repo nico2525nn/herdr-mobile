@@ -5,43 +5,55 @@ import org.junit.Assert.assertNull
 import org.junit.Test
 
 /**
- * Wheel stride calibration: how many transcript lines one notch moves.
+ * Wheel stride: how many transcript rows one notch advances.
  *
- * Restores the property that made scrolling smooth before the routing rewrite:
- * the host measures the actual shift and feeds it back, so a wrong default
- * cannot make a drag run at half (or double) speed.
+ * The default comes from the audited agent table (codex/pi/opencode: one row
+ * per notch, qwen: three). A wrong default is what made a drag run at half
+ * speed, so the host also folds in measurements when it can see the shift.
  */
 class ScrollMechanismTest {
 
     @Test
-    fun `stride starts at the xterm default`() {
+    fun `stride starts from the agent table`() {
         ScrollLearning.reset()
-        assertEquals(3.0, rowsPerNotch("codex"), 0.001)
+        assertEquals(1.0, rowsPerNotch("codex"), 0.001)
+        assertEquals(1.0, rowsPerNotch("pi"), 0.001)
+        assertEquals(3.0, rowsPerNotch("qwen"), 0.001)
+        assertEquals(1.0, rowsPerNotch("unknown-agent"), 0.001)
     }
 
     @Test
     fun `a measurement is folded in and converges`() {
         ScrollLearning.reset()
-        ScrollLearning.observeRowsPerNotch("codex", notches = 4, movedRows = 4)
-        assertEquals(2.0, rowsPerNotch("codex"), 0.001)
-        ScrollLearning.observeRowsPerNotch("codex", notches = 4, movedRows = 4)
-        assertEquals(1.5, rowsPerNotch("codex"), 0.001)
+        // qwen starts at 3; observing one row per notch pulls it down smoothly.
+        ScrollLearning.observeRowsPerNotch("qwen", notches = 4, movedRows = 4)
+        assertEquals(2.0, rowsPerNotch("qwen"), 0.001)
+        ScrollLearning.observeRowsPerNotch("qwen", notches = 4, movedRows = 4)
+        assertEquals(1.5, rowsPerNotch("qwen"), 0.001)
+    }
+
+    @Test
+    fun `measurements are per app`() {
+        ScrollLearning.reset()
+        ScrollLearning.observeRowsPerNotch("qwen", notches = 2, movedRows = 6)
+        assertEquals(3.0, rowsPerNotch("qwen"), 0.001)
+        assertEquals(1.0, rowsPerNotch("codex"), 0.001)
     }
 
     @Test
     fun `noise and impossible samples are ignored`() {
         ScrollLearning.reset()
-        ScrollLearning.observeRowsPerNotch("codex", notches = 0, movedRows = 5)
-        ScrollLearning.observeRowsPerNotch("codex", notches = 3, movedRows = 0)
-        ScrollLearning.observeRowsPerNotch("codex", notches = 1, movedRows = 100)
-        assertEquals(3.0, rowsPerNotch("codex"), 0.001)
+        ScrollLearning.observeRowsPerNotch("qwen", notches = 0, movedRows = 5)
+        ScrollLearning.observeRowsPerNotch("qwen", notches = 3, movedRows = 0)
+        ScrollLearning.observeRowsPerNotch("qwen", notches = 1, movedRows = 100)
+        assertEquals(3.0, rowsPerNotch("qwen"), 0.001)
     }
 
     @Test
     fun `learning a mechanism and forgetting it`() {
         ScrollLearning.reset()
-        ScrollLearning.remember("pi", ScrollMechanism.PAGE_KEY)
-        assertEquals(ScrollMechanism.PAGE_KEY, ScrollLearning.winner(" PI "))
+        ScrollLearning.remember("pi", ScrollMechanism.WHEEL)
+        assertEquals(ScrollMechanism.WHEEL, ScrollLearning.winner(" PI "))
         ScrollLearning.forget("pi")
         assertNull(ScrollLearning.winner("pi"))
     }

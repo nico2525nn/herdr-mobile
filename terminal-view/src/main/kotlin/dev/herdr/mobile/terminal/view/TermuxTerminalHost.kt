@@ -33,6 +33,9 @@ class TermuxTerminalHost(
 
         /** Upper bound for the scroll estimate (a page is well below this). */
         private const val MAX_MEASURED_ROWS = 200
+
+        /** Wheel bursts are coalesced: apps redraw once per report. */
+        private const val WHEEL_COALESCE_MS = 80L
     }
 
     /** Alt-screen scroll: lines>0 finger-up (live-ward), lines<0 older. Host forwards. */
@@ -138,6 +141,7 @@ class TermuxTerminalHost(
     val remoteEffective: Boolean
         get() {
             if (inputDead) return false
+            if (scrollMode == dev.herdr.mobile.core.model.ScrollMode.LOCAL) return false
             return when (source()) {
                 ScrollSource.HOST, ScrollSource.APP_INPUT -> true
                 ScrollSource.LOCAL, ScrollSource.NONE -> false
@@ -166,6 +170,10 @@ class TermuxTerminalHost(
 
     /** True when the daemon actually reported scroll state for this pane. */
     var hostScrollKnown: Boolean = false
+
+    /** User's scroll lever choice; AUTO follows the audited agent table. */
+    var scrollMode: dev.herdr.mobile.core.model.ScrollMode =
+        dev.herdr.mobile.core.model.ScrollMode.AUTO
 
     /**
      * The HOST's viewport height (rows), when it reports one. A page-key scroll
@@ -379,7 +387,16 @@ class TermuxTerminalHost(
                 if (notches != 0) {
                     wheelNotchRemainder -= notches
                     probeNotches += notches
-                    onRemoteWheel?.invoke(notches)
+                    // Apps redraw per report: send bursts, not one frame per
+                    // notch (this is what made opencode crawl).
+                    pendingWheelNotches += notches
+                    val now = android.os.SystemClock.uptimeMillis()
+                    if (now - lastWheelFlushMs >= WHEEL_COALESCE_MS) {
+                        flushWheelNotches()
+                    } else if (!wheelFlushQueued) {
+                        wheelFlushQueued = true
+                        view.postDelayed(wheelFlushRunnable, WHEEL_COALESCE_MS - (now - lastWheelFlushMs))
+                    }
                 }
             }
 
@@ -404,7 +421,8 @@ class TermuxTerminalHost(
     private fun activeMechanism(): ScrollMechanism? = candidates().firstOrNull()
 
     /** Candidate list: one entry by design, so nothing can silently downgrade. */
-    private fun candidates(): List<ScrollMechanism> = scrollMechanisms(
+    private fun candidates(): List<ScrollMechanism> = scrollMechanismsForMode(
+        mode = scrollMode,
         hostScrollable = hostScrollable,
         agentPane = diagnosticsAgent != null,
         wheelAgent = dev.herdr.mobile.core.model.AgentMatrix.useWheelScroll(diagnosticsAgent),
@@ -520,6 +538,10 @@ class TermuxTerminalHost(
     /** Fractional-row carry across wheel gestures. */
     private var wheelNotchRemainder = 0.0
 
+    /** Notches waiting for the next coalesced flush. */
+    private var pendingWheelNotches = 0
+    private var lastWheelFlushMs = 0L
+
     /** Notches sent during the current probe (for stride calibration). */
     private var probeNotches = 0
 
@@ -604,11 +626,27 @@ class TermuxTerminalHost(
      */
     private fun flushWheelRemainder() {
         if (hostScrollable || activeMechanism() != ScrollMechanism.WHEEL) return
-        if (wheelNotchRemainder == 0.0) return
-        val notch = if (wheelNotchRemainder > 0) 1 else -1
-        wheelNotchRemainder = 0.0
-        onRemoteWheel?.invoke(notch)
+        if (wheelNotchRemainder != 0.0) {
+            // A sub-notch drag still has to do something.
+            pendingWheelNotches += if (wheelNotchRemainder > 0) 1 else -1
+            wheelNotchRemainder = 0.0
+        }
+        flushWheelNotches()
     }
+
+    /** Send the accumulated notches as one burst. */
+    private fun flushWheelNotches() {
+        view.removeCallbacks(wheelFlushRunnable)
+        wheelFlushQueued = false
+        val notches = pendingWheelNotches
+        pendingWheelNotches = 0
+        if (notches == 0) return
+        lastWheelFlushMs = android.os.SystemClock.uptimeMillis()
+        onRemoteWheel?.invoke(notches)
+    }
+
+    private val wheelFlushRunnable = Runnable { flushWheelNotches() }
+    private var wheelFlushQueued = false
 
     /** Emit a sub-page gesture as one page when the finger lifts. */
     private fun flushPageRemainder() {

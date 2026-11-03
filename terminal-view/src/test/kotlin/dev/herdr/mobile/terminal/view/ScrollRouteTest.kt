@@ -1,5 +1,6 @@
 package dev.herdr.mobile.terminal.view
 
+import dev.herdr.mobile.core.model.ScrollMode
 import org.junit.Assert.assertEquals
 import org.junit.Test
 
@@ -139,6 +140,36 @@ class ScrollRouteTest {
                 altScreen = false,
                 mouseTracking = false,
                 localHistoryRows = 0,
+            ),
+        )
+    }
+
+    @Test
+    fun `the user's explicit mode overrides the table`() {
+        assertEquals(
+            listOf(ScrollMechanism.WHEEL),
+            scrollMechanismsForMode(
+                mode = ScrollMode.WHEEL, hostScrollable = true, agentPane = true, wheelAgent = false,
+            ),
+        )
+        assertEquals(
+            listOf(ScrollMechanism.PAGE_KEY),
+            scrollMechanismsForMode(
+                mode = ScrollMode.PAGE, hostScrollable = false, agentPane = true, wheelAgent = true,
+            ),
+        )
+        // LOCAL means "Termux handles it": no remote lever at all.
+        assertEquals(
+            emptyList<ScrollMechanism>(),
+            scrollMechanismsForMode(
+                mode = ScrollMode.LOCAL, hostScrollable = true, agentPane = true, wheelAgent = true,
+            ),
+        )
+        // AUTO is the table.
+        assertEquals(
+            listOf(ScrollMechanism.HOST),
+            scrollMechanismsForMode(
+                mode = ScrollMode.AUTO, hostScrollable = true, agentPane = true, wheelAgent = true,
             ),
         )
     }

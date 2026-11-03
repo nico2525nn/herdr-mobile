@@ -1,5 +1,21 @@
 # Changelog
 
+## 1.6.4 — 2026-11-03
+
+- Wheel speed: the stride default was wrong. `rowsPerNotch` started at 3 for
+  every app, so a drag sent a third of the notches codex/pi/opencode expect —
+  the "half speed" report. The default now comes from the audited agent table
+  (1 row per notch, 3 for qwen), and measurements refine it.
+- OpenCode responsiveness: wheel notches were sent as one websocket frame each,
+  so a fast drag produced dozens of frames and the app redrew per frame. A
+  burst is now one frame, and bursts are coalesced to at most one per 80 ms.
+- New Settings > Terminal > **Scroll mode**: Automatic (audited table), Mouse
+  wheel, Page keys, or Terminal history. The protocol has no universal answer —
+  a TUI may enable mouse reporting in one setup and not another — so this is
+  the escape hatch instead of another round of guessing.
+- Full-screen panes still never move the local buffer unless that mode is
+  chosen explicitly.
+
 ## 1.6.3 — 2026-11-03
 
 Scrolling is smooth again; the previous two releases regressed it.
