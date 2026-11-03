@@ -48,7 +48,9 @@ object AgentMatrix {
         // Pi, earendil-works/pi@209bc7b9, packages/tui/src/tui-alt-screen.ts
         // (:272, :763) and packages/tui/src/terminal.ts:266; live measured
         // full-page PgUp, 1-row wheel, and accepted bracketed paste.
-        "pi" to Entry(ScrollRoute.WHEEL, PasteRoute.ALWAYS_BRACKET),
+        // Measured on device: one SGR notch moves Pi two rows, so the table
+        // must ask for one notch per two rows or the drag runs at 2x.
+        "pi" to Entry(ScrollRoute.WHEEL, PasteRoute.ALWAYS_BRACKET, wheelRowsPerEvent = 2),
         // OMP, can1357/oh-my-pi@403931b9, docs/tui-runtime-internals.md
         // (terminal lifecycle/stdin normalization); scroll/paste measured.
         "omp" to Entry(ScrollRoute.PAGE_KEY, PasteRoute.EMULATOR_BIT),

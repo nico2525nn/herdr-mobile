@@ -17,7 +17,8 @@ class ScrollMechanismTest {
     fun `stride starts from the agent table`() {
         ScrollLearning.reset()
         assertEquals(1.0, rowsPerNotch("codex"), 0.001)
-        assertEquals(1.0, rowsPerNotch("pi"), 0.001)
+        // Pi moves two rows per notch (measured on device).
+        assertEquals(2.0, rowsPerNotch("pi"), 0.001)
         assertEquals(3.0, rowsPerNotch("qwen"), 0.001)
         assertEquals(1.0, rowsPerNotch("unknown-agent"), 0.001)
     }

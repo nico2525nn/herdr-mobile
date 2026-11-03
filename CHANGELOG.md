@@ -1,5 +1,17 @@
 # Changelog
 
+## 1.6.6 — 2026-11-03
+
+- Pi scroll ran at 2x: one SGR notch moves Pi two rows, so the table must ask
+  for one notch per two rows. `AgentMatrix` now carries that measured stride
+  (codex 1, opencode 1, pi 2, qwen 3).
+- Redraws are coalesced to one per 16 ms frame. Herdr sends a frame per notch;
+  a drag could deliver several inside one display frame, and each one redrew
+  the whole terminal. Bytes are applied immediately, only the draw waits.
+- `docs/terminal-scroll.md`: per-agent stride table and the raw-attach finding
+  (`herdr terminal attach` streams raw ANSI, which removes base64 in both
+  directions and makes DECSET state real).
+
 ## 1.6.5 — 2026-11-03
 
 - Scroll latency: a gesture used to pass two coalescing windows (150 ms drag +

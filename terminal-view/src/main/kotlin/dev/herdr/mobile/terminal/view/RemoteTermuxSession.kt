@@ -95,6 +95,12 @@ class RemoteTermuxSession(
      * Starts byte pumping. Must be called exactly once per session; a second
      * call is ignored instead of duplicating all emulator input.
      */
+    private var redrawScheduled = false
+    private val redrawRunnable = Runnable {
+        redrawScheduled = false
+        view.onScreenUpdated()
+    }
+
     fun start(cols: Int, rows: Int) {
         if (started) return
         started = true
@@ -112,7 +118,14 @@ class RemoteTermuxSession(
                 // Publish live flags for remote-scroll routing + diagnostics.
                 host.altActive = emulator.isAlternateBufferActive
                 host.mouseTracking = emulator.isMouseTrackingActive
-                view.onScreenUpdated()
+                // One redraw per frame, not one per incoming chunk: herdr sends
+                // a frame per wheel notch and a drag can deliver several within
+                // a single 16 ms display frame. The emulator is updated
+                // immediately; only the draw is coalesced.
+                if (!redrawScheduled) {
+                    redrawScheduled = true
+                    view.postDelayed(redrawRunnable, REDRAW_COALESCE_MS)
+                }
                 // Resize watcher: the view recomputes the grid internally on
                 // layout (no callback); forward changes to the backend.
                 val (colsNow, rowsNow) = emulator.grid()
@@ -199,3 +212,6 @@ class RemoteTermuxSession(
     }
 
 }
+
+/** At most one terminal redraw per display frame. */
+private const val REDRAW_COALESCE_MS = 16L

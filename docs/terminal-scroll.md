@@ -25,6 +25,10 @@ produced the "Pi is full-screen but the whole terminal scrolled" report.
 All of these enable the alternate screen and SGR mouse reporting, so app input is
 the correct lever when there is no host scrollback:
 
+Per-agent wheel stride (rows advanced by one notch), measured on device:
+codex 1, opencode 1, pi 2, qwen 3. A wrong stride is exactly "half speed" or
+"double speed"; the table is the default and `ScrollLearning` refines it.
+
 | Agent | Evidence (strings in the installed binary) |
 |---|---|
 | codex | `?1049h`, `?1000h`, `?1002h`, `?1003h`, `?1006h`; config keys `mouse_scroll_speed`, `fullscreen_transcript` |
@@ -110,6 +114,10 @@ Current budget:
 | Host offset (`pane.scroll`) | 40 ms | moves lines; no full-screen repaint |
 | Page keys | 150 ms + flush on lift | one page is a whole-screen repaint |
 
+Redraws are coalesced to one per 16 ms display frame: herdr sends a frame per
+wheel notch, and a drag can deliver several within one frame. The emulator
+applies bytes immediately; only the draw waits.
+
 Also: the probe reads the visible screen **once** per gesture (hash of the same
 lines it compares), scans at most 80 rows of shift, and never on the UI thread
 during motion (it settles 260 ms after the last request).
@@ -131,7 +139,32 @@ text). A freshly started agent may show a welcome that fits one screen, so "no
 movement" there is a warning, not a failure. The `LOCAL-DRIFT` column reads the
 debug overlay's `top=`; it must stay 0 for panes the host reported.
 
-## 8. Related contracts (same hard-won status)
+## 8. Next step: raw terminal attach (not yet implemented)
+
+`herdr terminal attach <terminal_id>` streams **raw ANSI bytes** on stdout and
+accepts raw input on stdin — verified:
+
+```
+$ herdr terminal attach term_... | head -c 0x30 | xxd
+ESC[?1006l ESC[?1016l ESC[?1015l ESC[?1005l ESC[?1003l ESC[?1002l ESC[?1000l ESC[?9l
+```
+
+Why it matters:
+
+- The daemon's current child (`herdr terminal session control`) speaks JSON lines
+  with `terminal.input {"bytes": "<base64>"}` and `terminal.frame {"bytes":
+  "<base64 ANSI>"}`. Raw attach removes the base64 hop in **both** directions.
+- It carries real DECSET state, so `altActive`/`mouseTracking` stop being guesses
+  and the scroll router can use the same rule for every agent.
+- It is the input path for a future emulator with per-row dirty rendering.
+
+Open questions before migrating: `terminal attach` has no `--cols/--rows` (the
+grid has to be set another way, e.g. a resize RPC), the prelude/history fetch
+(`pane.read`) must stay, and `--takeover` semantics vs the current control
+client need to be measured. Do this as its own change with the device matrix
+green, not as a quick swap.
+
+## 9. Related contracts (same hard-won status)
 
 - **Keyboard**: raise the IME only from the keyboard button. Focus, pane switches
   and returning from the background must never show it; switching the floating

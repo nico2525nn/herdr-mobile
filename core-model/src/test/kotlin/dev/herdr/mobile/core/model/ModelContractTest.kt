@@ -315,11 +315,15 @@ class ModelContractTest {
     @Test
     fun `agent matrix preserves documented wheel stride`() {
         listOf(
-            "codex", "pi", "opencode",
+            "codex", "opencode",
         ).forEach { kind ->
             assertEquals(1, AgentMatrix.wheelRowsPerEvent(kind))
             assertEquals(1, AgentMatrix.wheelRowsPerEvent(kind.uppercase()))
         }
+        // Measured on device: Pi advances two rows per notch (one notch per row
+        // ran the drag at 2x).
+        assertEquals(2, AgentMatrix.wheelRowsPerEvent("pi"))
+        assertEquals(2, AgentMatrix.wheelRowsPerEvent("PI"))
         assertEquals(3, AgentMatrix.wheelRowsPerEvent("qwen"))
         assertEquals(3, AgentMatrix.wheelRowsPerEvent("QWEN"))
         assertEquals(1, AgentMatrix.wheelRowsPerEvent("unknown-agent"))
