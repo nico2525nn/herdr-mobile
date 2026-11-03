@@ -1,5 +1,18 @@
 # Changelog
 
+## 1.6.5 — 2026-11-03
+
+- Scroll latency: a gesture used to pass two coalescing windows (150 ms drag +
+  80 ms wheel), so the first byte could leave 230 ms after the finger moved and
+  the view updated on a 150 ms cadence. Wheel now sends on the leading edge with
+  a 16 ms (~60 Hz) throttle, host offsets on 40 ms, and page keys keep the wide
+  window because each one repaints a whole screen.
+- Probe cost: one visible-screen read per gesture instead of two, shift scan
+  capped at 80 rows, and no screen reads while the finger is moving.
+- `docs/terminal-scroll.md` gained a latency-budget section; `AGENTS.md` points
+  future work at it before touching scroll code.
+- Smoke: same drag moves 387k px twice with 0.07% spread, focus untouched.
+
 ## 1.6.4 — 2026-11-03
 
 - Wheel speed: the stride default was wrong. `rowsPerNotch` started at 3 for

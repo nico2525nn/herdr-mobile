@@ -32,10 +32,13 @@ class TermuxTerminalHost(
         private const val PROBE_SETTLE_MS = 260L
 
         /** Upper bound for the scroll estimate (a page is well below this). */
-        private const val MAX_MEASURED_ROWS = 200
+        private const val MAX_MEASURED_ROWS = 80
 
-        /** Wheel bursts are coalesced: apps redraw once per report. */
-        private const val WHEEL_COALESCE_MS = 80L
+        /**
+         * Wheel throttle: one report per frame at 60Hz. Long enough to batch a
+         * burst (apps redraw per report), short enough to track the finger.
+         */
+        private const val WHEEL_THROTTLE_MS = 16L
     }
 
     /** Alt-screen scroll: lines>0 finger-up (live-ward), lines<0 older. Host forwards. */
@@ -97,6 +100,14 @@ class TermuxTerminalHost(
 
     private fun requestScroll(rows: Int, immediate: Boolean) {
         if (rows == 0) return
+        if (!immediate && activeMechanism() == ScrollMechanism.WHEEL) {
+            // Wheel bytes are tiny and the app repaints per report anyway:
+            // routing them through the 150ms drag window added up to 230ms of
+            // lag on top of the 80ms wheel coalescing. Send on the wheel
+            // throttle instead, leading edge, so the view tracks the finger.
+            dispatch(ScrollMechanism.WHEEL, rows)
+            return
+        }
         if (immediate) {
             // A page jump must not merge with a drag tail: flush what's
             // pending first (order!), then the jump itself.
@@ -111,11 +122,14 @@ class TermuxTerminalHost(
         }
         pendingRows += rows
         val now = android.os.SystemClock.uptimeMillis()
-        if (now - lastFlushMs >= 150) {
+        // One screenful of repaint is the unit for page keys, so those still
+        // coalesce wider; a host offset moves lines and can be sent sooner.
+        val window = if (activeMechanism() == ScrollMechanism.PAGE_KEY) 150L else 40L
+        if (now - lastFlushMs >= window) {
             flushPending()
         } else if (!flushQueued) {
             flushQueued = true
-            view.postDelayed(flushRunnable, 150 - (now - lastFlushMs))
+            view.postDelayed(flushRunnable, window - (now - lastFlushMs))
         }
     }
 
@@ -366,7 +380,8 @@ class TermuxTerminalHost(
         // so the settle check can tell "the app honoured this" from "inert".
         if (probe == null) {
             probeNotches = 0
-            probe = ScrollProbe(mechanism, screenSignature(), rows, visibleLines())
+            val lines = visibleLines()
+            probe = ScrollProbe(mechanism, rows, lines, signatureOf(lines))
         }
         dispatch(mechanism, rows)
         scheduleProbeCheck()
@@ -375,8 +390,7 @@ class TermuxTerminalHost(
     /** What to send, and in which unit. */
     private fun dispatch(mechanism: ScrollMechanism, rows: Int) {
         when (mechanism) {
-            ScrollMechanism.HOST ->
-                onRemoteScroll?.invoke(rows, "rows")
+            ScrollMechanism.HOST -> onRemoteScroll?.invoke(rows, "rows")
 
             ScrollMechanism.WHEEL -> {
                 // One notch is a few lines and the app decides how many; the
@@ -391,11 +405,14 @@ class TermuxTerminalHost(
                     // notch (this is what made opencode crawl).
                     pendingWheelNotches += notches
                     val now = android.os.SystemClock.uptimeMillis()
-                    if (now - lastWheelFlushMs >= WHEEL_COALESCE_MS) {
+                    if (now - lastWheelFlushMs >= WHEEL_THROTTLE_MS) {
                         flushWheelNotches()
                     } else if (!wheelFlushQueued) {
                         wheelFlushQueued = true
-                        view.postDelayed(wheelFlushRunnable, WHEEL_COALESCE_MS - (now - lastWheelFlushMs))
+                        view.postDelayed(
+                            wheelFlushRunnable,
+                            WHEEL_THROTTLE_MS - (now - lastWheelFlushMs),
+                        )
                     }
                 }
             }
@@ -439,21 +456,21 @@ class TermuxTerminalHost(
      */
     private data class ScrollProbe(
         val mechanism: ScrollMechanism,
-        val signature: Int,
         val rows: Int,
         /** Visible lines when the probe started (the scroll anchor set). */
         val lines: List<String>,
+        /** Hash of [lines]: one screen read per probe, not two. */
+        val signature: Int,
     )
 
     private var probe: ScrollProbe? = null
 
-    /** Notches sent during the current probe (for stride calibration). */
-    /** Hash of the visible screen: cheap, and stable while the pane is idle. */
-    private fun screenSignature(): Int {
-        val text = screenText() ?: return 0
+    /** FNV-1a over the visible lines: cheap, stable while the pane is idle. */
+    private fun signatureOf(lines: List<String>): Int {
         var hash = 0x811c9dc5.toInt()
-        for (c in text) {
-            hash = (hash xor c.code) * 0x01000193
+        for (line in lines) {
+            for (c in line) hash = (hash xor c.code) * 0x01000193
+            hash = (hash xor '\n'.code) * 0x01000193
         }
         return hash
     }
@@ -477,8 +494,7 @@ class TermuxTerminalHost(
      * explains a meaningful fraction of the screen, so a live repaint is not
      * mistaken for a scroll.
      */
-    private fun movedRows(before: List<String>): Int {
-        val after = visibleLines()
+    private fun movedRows(before: List<String>, after: List<String>): Int {
         if (before.isEmpty() || after.isEmpty()) return 0
         val anchors = before.count { it.isNotBlank() }
         if (anchors == 0) return 0
@@ -508,8 +524,9 @@ class TermuxTerminalHost(
     fun settleProbe() {
         val pending = probe ?: return
         probe = null
-        val moved = movedRows(pending.lines)
-        val changed = screenSignature() != pending.signature
+        val after = visibleLines()
+        val moved = movedRows(pending.lines, after)
+        val changed = signatureOf(after) != pending.signature
         // A live pane repaints constantly (spinners, clocks), so "the screen
         // changed" is not proof that the gesture scrolled. The anchor line
         // moving down the screen is: that is the transcript scrolling.

@@ -96,7 +96,25 @@ lines; require a meaningful fraction). That is what the host's probe does.
 Unreliable: raw pixel deltas (a repaint changes everything), the first line only
 (a diagnostics overlay or a spinner may own it), and the agent's status.
 
-## 6. Verification
+## 6. Latency budget (why two coalescing layers were wrong)
+
+A gesture used to pass two windows: the drag coalescer (150 ms) and the wheel
+coalescer (80 ms). Worst case: **230 ms before the first byte leaves**, and a
+150 ms cadence while the finger moves — that is the "unresponsive" feel.
+
+Current budget:
+
+| Route | Window | Why |
+|---|---|---|
+| Wheel | leading edge + 16 ms throttle (~60 Hz) | bytes are tiny; the app redraws per report, so one per frame |
+| Host offset (`pane.scroll`) | 40 ms | moves lines; no full-screen repaint |
+| Page keys | 150 ms + flush on lift | one page is a whole-screen repaint |
+
+Also: the probe reads the visible screen **once** per gesture (hash of the same
+lines it compares), scans at most 80 rows of shift, and never on the UI thread
+during motion (it settles 260 ms after the last request).
+
+## 7. Verification
 
 ```bash
 tools/ci.sh                    # smoke in a private herdr session; proves the live
@@ -113,7 +131,7 @@ text). A freshly started agent may show a welcome that fits one screen, so "no
 movement" there is a warning, not a failure. The `LOCAL-DRIFT` column reads the
 debug overlay's `top=`; it must stay 0 for panes the host reported.
 
-## 7. Related contracts (same hard-won status)
+## 8. Related contracts (same hard-won status)
 
 - **Keyboard**: raise the IME only from the keyboard button. Focus, pane switches
   and returning from the background must never show it; switching the floating
