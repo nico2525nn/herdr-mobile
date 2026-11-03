@@ -165,7 +165,7 @@ small — either `PaneInfo.modes { alternate_screen, mouse_tracking }`, or have
 `terminal attach` replay the current modes once on start. Until then the agent
 table plus `Settings > Terminal > Scroll mode` is the contract.
 
-## 9. Related contracts## 9. Related contracts (same hard-won status)
+## 9. Related contracts (same hard-won status)
 
 - **Keyboard**: raise the IME only from the keyboard button. Focus, pane switches
   and returning from the background must never show it; switching the floating
@@ -178,3 +178,34 @@ table plus `Settings > Terminal > Scroll mode` is the contract.
   pane. A dropped attach stream re-attaches with a bounded retry.
 - **Status line**: `UiMessage` + one renderer; never build English strings in the
   view-model.
+
+## 10. Re-check against herdr 0.9.5 / herdr-core 0.1.15 (2026-11-04)
+
+Measured again on this machine, because both upstreams move fast:
+
+- The server already tracks every mode internally. `src/pane/terminal.rs`
+  exposes (server-side only) `alternate_screen_active()`,
+  `mouse_reporting_enabled()`, `bracketed_paste_enabled()`,
+  `plain_page_keys_use_host_scrollback()` and `wheel_routing()`
+  (MouseReport / AlternateScroll / HostScroll).
+- The socket API still does not expose any of it: the bundled schema of the
+  installed 0.9.5 (protocol 22) has no modes field on `PaneInfo` and no
+  alternate/mouse_tracking/bracketed strings anywhere.
+- herdr-core (`hc` 0.1.15) `terminal.get` returns `foreground {name, argv,
+  pid}`, `screen: "exact"`, cols/rows — but no modes. The daemon core path
+  therefore still hardcodes `alt_screen: false, mouse_tracking: false`
+  in `daemon/src/herdrcore/terminal.rs`.
+- The official client attach protocol does have server-side scroll routing:
+  `apply_terminal_attach_scroll` (src/server/pane_input.rs) lets the server
+  decide wheel-vs-host from `wheel_routing()`, so an attached client needs
+  neither coordinates nor mode knowledge. Neither daemon transport can use
+  it: the CLI attach is read-only (§8) and the core attach is raw PTY data
+  plus daemon-local control messages.
+- Consequence: the §8 conclusion stands. The smallest upstream ask is now
+  on herdr-core (the daemon main path): add `alternate_screen`,
+  `mouse_tracking`, `bracketed_paste` to `terminal.get` / attach facts.
+  A local fork is technically cheap on the herdr side (the accessors
+  exist) but inherits weekly upstream churn.
+- Available today without upstream: key `AgentMatrix` / scroll-source
+  inference on the core `foreground` process instead of the agent label,
+  which kills the "label says codex, pane is back at a shell" trap (§4).
