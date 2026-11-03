@@ -139,32 +139,33 @@ text). A freshly started agent may show a welcome that fits one screen, so "no
 movement" there is a warning, not a failure. The `LOCAL-DRIFT` column reads the
 debug overlay's `top=`; it must stay 0 for panes the host reported.
 
-## 8. Next step: raw terminal attach (not yet implemented)
+## 8. Raw attach: implemented, then discarded (it cannot report current modes)
 
-`herdr terminal attach <terminal_id>` streams **raw ANSI bytes** on stdout and
-accepts raw input on stdin — verified:
+`herdr terminal attach <terminal_id>` streams raw ANSI, so it looked like the fix
+for mode detection. Measured on this machine:
 
-```
-$ herdr terminal attach term_... | head -c 0x30 | xxd
-ESC[?1006l ESC[?1016l ESC[?1015l ESC[?1005l ESC[?1003l ESC[?1002l ESC[?1000l ESC[?9l
-```
+- It is **read-only**: nothing written to its stdin reaches the pane (raw bytes,
+  JSON control and a pty-fed stdin were all tried). Input stays on the control
+  channel, which is local JSON+base64 and never touches the phone's traffic.
+- It requires a **tty**: without a pty the child dies with `Not a tty`. A pty
+  wrapper works (`openpty` + `setsid`), and it coexists with the control client.
+- **It does not replay current modes.** Attaching mid-session yields only
+  disables — `ESC[?1006l ESC[?1016l ESC[?1015l ESC[?1005l ESC[?1003l
+  ESC[?1002l ESC[?1000l ESC[?9l` — and no enable sequences arrive afterwards,
+  because the app enabled them before we attached and never re-emits them. A
+  DECSET parser fed by that stream therefore reports "nothing is on" for a pane
+  that is in the alternate screen with mouse reporting — worse than the agent
+  table.
 
-Why it matters:
+A pty watcher, a DECSET parser and a `terminal.modes` record were built and
+verified to compile and stream, then reverted for that reason.
 
-- The daemon's current child (`herdr terminal session control`) speaks JSON lines
-  with `terminal.input {"bytes": "<base64>"}` and `terminal.frame {"bytes":
-  "<base64 ANSI>"}`. Raw attach removes the base64 hop in **both** directions.
-- It carries real DECSET state, so `altActive`/`mouseTracking` stop being guesses
-  and the scroll router can use the same rule for every agent.
-- It is the input path for a future emulator with per-row dirty rendering.
+Consequence: mode detection cannot be fixed client-side. The ask upstream is
+small — either `PaneInfo.modes { alternate_screen, mouse_tracking }`, or have
+`terminal attach` replay the current modes once on start. Until then the agent
+table plus `Settings > Terminal > Scroll mode` is the contract.
 
-Open questions before migrating: `terminal attach` has no `--cols/--rows` (the
-grid has to be set another way, e.g. a resize RPC), the prelude/history fetch
-(`pane.read`) must stay, and `--takeover` semantics vs the current control
-client need to be measured. Do this as its own change with the device matrix
-green, not as a quick swap.
-
-## 9. Related contracts (same hard-won status)
+## 9. Related contracts## 9. Related contracts (same hard-won status)
 
 - **Keyboard**: raise the IME only from the keyboard button. Focus, pane switches
   and returning from the background must never show it; switching the floating
