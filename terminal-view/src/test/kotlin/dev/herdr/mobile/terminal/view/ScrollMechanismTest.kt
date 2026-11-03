@@ -5,13 +5,37 @@ import org.junit.Assert.assertNull
 import org.junit.Test
 
 /**
- * Stride calibration: how many transcript lines one wheel notch moves.
+ * Wheel stride calibration: how many transcript lines one notch moves.
  *
- * The agents disagree (a notch can be 1, 3 or more rows), and assuming the
- * wrong number is what made Codex run at half speed. The host measures the
- * actual shift and feeds it back here.
+ * Restores the property that made scrolling smooth before the routing rewrite:
+ * the host measures the actual shift and feeds it back, so a wrong default
+ * cannot make a drag run at half (or double) speed.
  */
 class ScrollMechanismTest {
+
+    @Test
+    fun `stride starts at the xterm default`() {
+        ScrollLearning.reset()
+        assertEquals(3.0, rowsPerNotch("codex"), 0.001)
+    }
+
+    @Test
+    fun `a measurement is folded in and converges`() {
+        ScrollLearning.reset()
+        ScrollLearning.observeRowsPerNotch("codex", notches = 4, movedRows = 4)
+        assertEquals(2.0, rowsPerNotch("codex"), 0.001)
+        ScrollLearning.observeRowsPerNotch("codex", notches = 4, movedRows = 4)
+        assertEquals(1.5, rowsPerNotch("codex"), 0.001)
+    }
+
+    @Test
+    fun `noise and impossible samples are ignored`() {
+        ScrollLearning.reset()
+        ScrollLearning.observeRowsPerNotch("codex", notches = 0, movedRows = 5)
+        ScrollLearning.observeRowsPerNotch("codex", notches = 3, movedRows = 0)
+        ScrollLearning.observeRowsPerNotch("codex", notches = 1, movedRows = 100)
+        assertEquals(3.0, rowsPerNotch("codex"), 0.001)
+    }
 
     @Test
     fun `learning a mechanism and forgetting it`() {

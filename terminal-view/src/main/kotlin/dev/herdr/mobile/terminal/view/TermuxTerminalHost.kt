@@ -46,6 +46,9 @@ class TermuxTerminalHost(
      * as input bytes scrolls it. The app therefore types the key itself.
      */
     var onPageKey: ((up: Boolean, pages: Int) -> Unit)? = null
+
+    /** SGR wheel notches (signed; positive = live-ward), sent as input bytes. */
+    var onRemoteWheel: ((notches: Int) -> Unit)? = null
     /**
      * Reset the local viewport. Called when routing changes so a pane that was
      * being scrolled locally does not open mid-scroll once the app owns it.
@@ -286,10 +289,6 @@ class TermuxTerminalHost(
             // comparison cannot "fail" a mechanism that was still settling.
             view.removeCallbacks(probeCheck)
             probe = null
-            if (lastProbeAgent != diagnosticsAgent) {
-                lastProbeAgent = diagnosticsAgent
-                failures.clear()
-            }
             pageRemainder = 0
             scrollRemainder = 0f
             remoteArmed = false
@@ -313,6 +312,7 @@ class TermuxTerminalHost(
             // needs its own 500ms long-press, past the 350ms retry.
             if (remoteArmed) {
                 flushPageRemainder()
+                flushWheelRemainder()
                 // Flush the coalesced tail NOW: the drag's last rows must not
                 // wait for the 150ms timer (that lag reads as an eaten flick).
                 flushPending()
@@ -356,7 +356,10 @@ class TermuxTerminalHost(
         val mechanism = activeMechanism() ?: return
         // Probe the first request of a pane: capture the screen before it moves
         // so the settle check can tell "the app honoured this" from "inert".
-        if (probe == null) probe = ScrollProbe(mechanism, screenSignature(), rows, visibleLines())
+        if (probe == null) {
+            probeNotches = 0
+            probe = ScrollProbe(mechanism, screenSignature(), rows, visibleLines())
+        }
         dispatch(mechanism, rows)
         scheduleProbeCheck()
     }
@@ -366,6 +369,19 @@ class TermuxTerminalHost(
         when (mechanism) {
             ScrollMechanism.HOST ->
                 onRemoteScroll?.invoke(rows, "rows")
+
+            ScrollMechanism.WHEEL -> {
+                // One notch is a few lines and the app decides how many; the
+                // stride starts from the per-app table and is corrected from
+                // the measured shift once a gesture lands.
+                wheelNotchRemainder += rows / ScrollLearning.rowsPerNotch(diagnosticsAgent)
+                val notches = wheelNotchRemainder.toInt()
+                if (notches != 0) {
+                    wheelNotchRemainder -= notches
+                    probeNotches += notches
+                    onRemoteWheel?.invoke(notches)
+                }
+            }
 
             ScrollMechanism.PAGE_KEY -> {
                 // Whole screens only; accumulate the gesture so a long drag is
@@ -384,14 +400,15 @@ class TermuxTerminalHost(
         }
     }
 
-    /** Learned winner, or the capability-derived first candidate. */
-    private fun activeMechanism(): ScrollMechanism? =
-        ScrollLearning.winner(diagnosticsAgent)
-            ?: candidates().firstOrNull()
+    /** The lever for this pane (host offset, or the agent's wheel/page route). */
+    private fun activeMechanism(): ScrollMechanism? = candidates().firstOrNull()
 
-    /** Candidates still worth trying for this pane. */
-    private fun candidates(): List<ScrollMechanism> =
-        scrollMechanisms(hostScrollable = hostScrollable, agentPane = diagnosticsAgent != null)
+    /** Candidate list: one entry by design, so nothing can silently downgrade. */
+    private fun candidates(): List<ScrollMechanism> = scrollMechanisms(
+        hostScrollable = hostScrollable,
+        agentPane = diagnosticsAgent != null,
+        wheelAgent = dev.herdr.mobile.core.model.AgentMatrix.useWheelScroll(diagnosticsAgent),
+    )
 
     /**
      * A scroll request whose effect is being verified.
@@ -481,40 +498,30 @@ class TermuxTerminalHost(
         val scrolled = if (pending.lines.any { it.isNotBlank() }) moved > 0 else changed
         if (scrolled) {
             ScrollLearning.remember(diagnosticsAgent, pending.mechanism)
-            failures.clear()
-            return
-        }
-        ScrollLearning.forget(diagnosticsAgent)
-        failures += pending.mechanism
-        val next = nextMechanism(candidates(), failures)
-        if (next == null) {
-            // Nothing reached the app. Only fall back to the local transcript
-            // when the host told us nothing about this pane: a pane the host
-            // reported as full-screen must never move the terminal buffer —
-            // that is the "it scrolled the whole terminal" bug.
-            if (!hostScrollKnown) {
-                inputDead = true
-                applyLocalScroll(pending.rows)
+            if (pending.mechanism == ScrollMechanism.WHEEL) {
+                ScrollLearning.observeRowsPerNotch(diagnosticsAgent, probeNotches, moved)
             }
+            probeNotches = 0
             return
         }
-        // Same gesture, different lever: never silent, never double-applied.
-        dispatch(next, pending.rows)
-        // A replay has no finger-lift to flush the page remainder, so send it
-        // now — otherwise the fallback quietly emits nothing.
-        if (next == ScrollMechanism.PAGE_KEY) flushPageRemainder()
-        probe = ScrollProbe(next, screenSignature(), pending.rows, visibleLines())
-        scheduleProbeCheck()
+        // The lever is fixed by the agent table; a live repaint is not proof of
+        // failure, so nothing is downgraded here. Only a pane the host knows
+        // nothing about may fall back to its local transcript.
+        probeNotches = 0
+        if (!hostScrollKnown) {
+            inputDead = true
+            applyLocalScroll(pending.rows)
+        }
     }
-
-    /** Mechanisms that proved inert for this pane in the current session. */
-    private val failures = mutableSetOf<ScrollMechanism>()
-
-    /** Agent whose failures the current [failures] set describes. */
-    private var lastProbeAgent: String? = null
 
     /** True once every input mechanism failed: hand the pane back to Termux. */
     private var inputDead = false
+
+    /** Fractional-row carry across wheel gestures. */
+    private var wheelNotchRemainder = 0.0
+
+    /** Notches sent during the current probe (for stride calibration). */
+    private var probeNotches = 0
 
     /** Re-check the current probe once the repaint had time to land. */
     fun scheduleProbeCheck() {
@@ -588,6 +595,19 @@ class TermuxTerminalHost(
         if (history <= 0 || rows == 0) return
         view.topRow = (view.topRow + rows).coerceIn(-history, 0)
         view.invalidate()
+    }
+
+    /**
+     * A short drag produces less than one notch; without this the gesture
+     * would do nothing at all. One notch in the gesture's direction is the
+     * smallest unit a full-screen app understands.
+     */
+    private fun flushWheelRemainder() {
+        if (hostScrollable || activeMechanism() != ScrollMechanism.WHEEL) return
+        if (wheelNotchRemainder == 0.0) return
+        val notch = if (wheelNotchRemainder > 0) 1 else -1
+        wheelNotchRemainder = 0.0
+        onRemoteWheel?.invoke(notch)
     }
 
     /** Emit a sub-page gesture as one page when the finger lifts. */

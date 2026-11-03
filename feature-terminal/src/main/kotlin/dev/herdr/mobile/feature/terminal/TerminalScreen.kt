@@ -563,6 +563,9 @@ private fun TerminalSurface(
                 unit = unit,
             )
         }
+        host.onRemoteWheel = { notches ->
+            bridgeRef.value?.scrollWheel(notches)
+        }
         // Full-screen panes: type the page key. Sending it through Herdr's
         // scroll control does not reach apps without host scrollback; the same
         // bytes on the input channel do (verified on codex: PgUp scrolls).

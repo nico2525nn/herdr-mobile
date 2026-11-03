@@ -128,11 +128,13 @@ for agent in $AGENTS; do
   total_moved=0
   worst_composer=0
   moved_count=0
+  threshold=20000
+  [[ "$agent" == "less" ]] || threshold=4000
   for i in 1 2; do
     read -r moved composer < <(scroll_probe "$agent-$i")
     total_moved=$((total_moved + moved))
     (( composer > worst_composer )) && worst_composer=$composer
-    (( moved > 20000 )) && moved_count=$((moved_count + 1))
+    (( moved > threshold )) && moved_count=$((moved_count + 1))
   done
   # Local drift: read the debug overlay if it is enabled (top= must stay 0 for
   # app-owned panes). Absent overlay -> unknown, not a failure.
@@ -143,12 +145,16 @@ import re,sys
 m=re.search(r'top=(-?\d+)', sys.stdin.read())
 print(m.group(1) if m else '?')
 ")
-  # A fresh agent's welcome may fit one screen, so "no movement" is only a
-  # failure for the deterministic fixture (less). Routing and the absence of
-  # local drift are checked for every agent.
+  # `less` is the strict fixture (two full pages of deterministic text). A
+  # freshly started agent may show a welcome that fits one screen, so "no
+  # movement" is reported but not failed there; routing and the absence of
+  # local drift are asserted for every agent, and movement is checked against a
+  # live session by hand.
   verdict="PASS"
   if [[ "$agent" == "less" ]] && (( moved_count == 0 )); then
     verdict="FAIL no movement"; FAILED=1
+  elif (( moved_count == 0 )); then
+    verdict="WARN no movement (welcome may fit one screen)"
   fi
   if (( worst_composer > 3000 )); then verdict="FAIL composer changed"; FAILED=1; fi
   if [[ "$top" != "?" && "$top" != "0" ]]; then verdict="FAIL local drift top=$top"; FAILED=1; fi

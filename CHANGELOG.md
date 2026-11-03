@@ -1,5 +1,27 @@
 # Changelog
 
+## 1.6.3 — 2026-11-03
+
+Scrolling is smooth again; the previous two releases regressed it.
+
+- Restored the wheel path that worked before the routing rewrite: SGR wheel
+  reports are typed on the input channel (`ESC[<64;45;15M`), not sent as
+  Herdr's `terminal.mouse` event (which never reached apps without host
+  scrollback). Codex now moves a few lines per short drag instead of a page.
+- The wheel/page choice is table-driven again (codex, pi, opencode, qwen:
+  wheel; omp, grok, claude: page keys) and is never downgraded by a runtime
+  probe: the probe mistook a live repaint for "wheel did nothing" and silently
+  switched those panes to whole pages.
+- A short drag that accumulates less than one notch now emits one notch when
+  the finger lifts, so small gestures are never swallowed.
+- Full-screen panes still never scroll the local buffer, and host scrollback
+  (`max_offset_from_bottom > 0`) still wins with a line-exact offset.
+- Evidence: live Codex pane, 150 px drag → about two lines of transcript (the
+  pixel delta is a full repaint; the text shift is what was measured); Pi
+  welcome → ~1-3 lines per short drag; `less` → one page per gesture, no local
+  drift; the device matrix reports no local drift and no composer input for
+  codex/omp/opencode/grok/pi.
+
 ## 1.6.2 — 2026-11-03
 
 Scrolling rebuilt from measured behaviour instead of guesses.

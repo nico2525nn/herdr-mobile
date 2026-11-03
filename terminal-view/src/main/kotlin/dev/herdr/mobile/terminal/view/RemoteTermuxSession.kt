@@ -153,6 +153,26 @@ class RemoteTermuxSession(
      * scroll local history in-view). Fire-and-forget: repaint frames arrive as
      * normal bytes; the local offset stays pinned at live.
      */
+    /**
+     * SGR wheel notches, sent as INPUT bytes (the form that works).
+     *
+     * Full-screen TUIs (codex/pi/omp/opencode/grok) enable `?1006h`, so a wheel
+     * report is ordinary input to them. Herdr's own `terminal.mouse` event was
+     * the path that did nothing for panes without host scrollback; typing the
+     * report on the input channel scrolls them (and is what this app did before
+     * the routing rewrite).
+     */
+    fun scrollWheel(notches: Int) {
+        if (notches == 0) return
+        scope.launch {
+            runCatching {
+                val button = if (notches > 0) 65 else 64
+                val one = "\u001b[<$button;45;15M".toByteArray(Charsets.UTF_8)
+                repeat(kotlin.math.abs(notches)) { backend.send(one) }
+            }
+        }
+    }
+
     fun scrollRemote(lines: Int, allowPageKey: Boolean, unit: String) {
         if (lines == 0) return
         scope.launch { runCatching { backend.scrollRemote(lines, allowPageKey, unit) } }

@@ -50,15 +50,27 @@ fun scrollSource(
  * The order is measured at runtime: wheel first, page keys when a wheel gesture
  * moves nothing.
  */
-enum class ScrollMechanism { HOST, PAGE_KEY }
+enum class ScrollMechanism { HOST, WHEEL, PAGE_KEY }
 
-fun scrollMechanisms(hostScrollable: Boolean, agentPane: Boolean): List<ScrollMechanism> = buildList {
-    // Two levers only, both measured on the device: the host offset when the
-    // daemon reports scrollback, and page keys for panes that own their
-    // viewport. SGR wheel was tried and does not move codex/omp in this setup,
-    // and mistaking a repaint for a scroll silently disabled the real path.
-    if (hostScrollable) add(ScrollMechanism.HOST)
-    add(ScrollMechanism.PAGE_KEY)
+/**
+ * The one lever for a full-screen pane, from the audited per-agent table.
+ *
+ * This is deliberately not probed at runtime: the earlier probe mistook a live
+ * repaint for "wheel did nothing" and silently downgraded codex/pi to whole
+ * pages. The table is the behaviour these apps actually implement (codex, pi,
+ * opencode and qwen scroll on SGR wheel reports; omp, grok and claude take page
+ * keys), and the app never gets to second-guess it.
+ */
+fun scrollMechanisms(
+    hostScrollable: Boolean,
+    agentPane: Boolean,
+    wheelAgent: Boolean,
+): List<ScrollMechanism> = buildList {
+    if (hostScrollable) {
+        add(ScrollMechanism.HOST)
+    } else {
+        add(if (wheelAgent) ScrollMechanism.WHEEL else ScrollMechanism.PAGE_KEY)
+    }
 }
 
 /** The next mechanism to try after [failed] proved inert, or null. */

@@ -1,7 +1,6 @@
 package dev.herdr.mobile.terminal.view
 
 import org.junit.Assert.assertEquals
-import org.junit.Assert.assertNull
 import org.junit.Test
 
 /**
@@ -145,20 +144,21 @@ class ScrollRouteTest {
     }
 
     @Test
-    fun `mechanisms are host then pages`() {
+    fun `the lever comes from the audited table, not from a probe`() {
+        // Host scrollback -> line-exact offset.
         assertEquals(
-            listOf(ScrollMechanism.HOST, ScrollMechanism.PAGE_KEY),
-            scrollMechanisms(hostScrollable = true, agentPane = true),
+            listOf(ScrollMechanism.HOST),
+            scrollMechanisms(hostScrollable = true, agentPane = true, wheelAgent = true),
         )
+        // Full screen: codex/pi/opencode/qwen scroll on SGR wheel reports...
+        assertEquals(
+            listOf(ScrollMechanism.WHEEL),
+            scrollMechanisms(hostScrollable = false, agentPane = true, wheelAgent = true),
+        )
+        // ...omp/grok/claude take page keys.
         assertEquals(
             listOf(ScrollMechanism.PAGE_KEY),
-            scrollMechanisms(hostScrollable = false, agentPane = true),
-        )
-        assertNull(
-            nextMechanism(
-                scrollMechanisms(hostScrollable = false, agentPane = true),
-                failed = setOf(ScrollMechanism.PAGE_KEY),
-            ),
+            scrollMechanisms(hostScrollable = false, agentPane = true, wheelAgent = false),
         )
     }
 }
