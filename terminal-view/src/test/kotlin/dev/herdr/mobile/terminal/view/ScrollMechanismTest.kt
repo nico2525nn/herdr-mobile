@@ -50,12 +50,5 @@ class ScrollMechanismTest {
         assertEquals(3.0, rowsPerNotch("qwen"), 0.001)
     }
 
-    @Test
-    fun `learning a mechanism and forgetting it`() {
-        ScrollLearning.reset()
-        ScrollLearning.remember("pi", ScrollMechanism.WHEEL)
-        assertEquals(ScrollMechanism.WHEEL, ScrollLearning.winner(" PI "))
-        ScrollLearning.forget("pi")
-        assertNull(ScrollLearning.winner("pi"))
-    }
+
 }

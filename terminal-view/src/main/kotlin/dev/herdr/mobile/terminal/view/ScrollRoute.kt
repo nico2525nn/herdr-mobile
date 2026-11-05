@@ -109,20 +109,8 @@ fun nextMechanism(
 object ScrollLearning {
     private fun key(agent: String?): String = agent?.trim()?.lowercase().orEmpty()
 
-    private val winners = java.util.concurrent.ConcurrentHashMap<String, ScrollMechanism>()
-
-    /** Measured lines moved per wheel notch (defaults to the xterm norm). */
+    /** Measured lines moved per wheel notch (defaults to the agent table). */
     private val rowsPerNotch = java.util.concurrent.ConcurrentHashMap<String, Double>()
-
-    fun winner(agent: String?): ScrollMechanism? = winners[key(agent)]
-
-    fun remember(agent: String?, mechanism: ScrollMechanism) {
-        winners[key(agent)] = mechanism
-    }
-
-    fun forget(agent: String?) {
-        winners.remove(key(agent))
-    }
 
     fun rowsPerNotch(agent: String?): Double =
         rowsPerNotch[key(agent)] ?: AgentMatrix.wheelRowsPerEvent(agent).toDouble()
@@ -142,7 +130,6 @@ object ScrollLearning {
     }
 
     fun reset() {
-        winners.clear()
         rowsPerNotch.clear()
     }
 

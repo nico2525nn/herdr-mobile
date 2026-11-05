@@ -40,5 +40,7 @@ remote host). Kotlin/Compose app + Rust daemon in `daemon/`.
 adb -s emulator-5554 install -r app/build/outputs/apk/debug/app-debug.apk
 ./gradlew test --offline
 cd daemon && cargo test --offline
-tools/ci.sh
+tools/ci.sh                 # boots AVD from scratch if no device, provisions
+                            # the IME, runs the smoke, tears everything down
+tools/deploy-daemon.sh      # the step that actually updates the service clone
 ```

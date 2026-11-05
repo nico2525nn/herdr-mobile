@@ -532,7 +532,6 @@ class TermuxTerminalHost(
         // moving down the screen is: that is the transcript scrolling.
         val scrolled = if (pending.lines.any { it.isNotBlank() }) moved > 0 else changed
         if (scrolled) {
-            ScrollLearning.remember(diagnosticsAgent, pending.mechanism)
             if (pending.mechanism == ScrollMechanism.WHEEL) {
                 ScrollLearning.observeRowsPerNotch(diagnosticsAgent, probeNotches, moved)
             }

@@ -20,8 +20,11 @@
 #   SKIP_BUILD=1 tools/ci.sh          # reuse daemon/target/debug + app APK
 #   PRIVATE_PORT=8800 tools/ci.sh     # another private daemon port
 #
-# Requires: one attached device/emulator, adb, curl, python3, herdr >= 0.9.5,
-# and (unless SKIP_BUILD=1) cargo + the Gradle wrapper. The daemon host needs
+# Requires: adb, curl, python3, herdr >= 0.9.5, and (unless SKIP_BUILD=1) cargo
+# + the Gradle wrapper. With no device attached it starts AVD $AVD (default
+# Medium_Phone_API_37.0) itself and stops it again on exit (KEEP_EMULATOR=1 to
+# keep it). The IME is provisioned so the keyboard checks work on a fresh boot.
+# The daemon host needs
 # `herdr` on PATH and a POSIX shell environment for the fixture pane.
 #
 # Never runs `herdr server stop`/`session delete` without --session <private>.
@@ -30,6 +33,7 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
 SERIAL="${SERIAL:-}"
+AVD="${AVD:-Medium_Phone_API_37.0}"
 ADB="${ADB:-adb}"
 HERDR="${HERDR:-herdr}"
 PRIVATE_SESSION="${PRIVATE_SESSION:-herdr-ci}"
@@ -330,6 +334,9 @@ cleanup() {
 
   ( stop_private_daemon ) >/dev/null 2>&1 || true
   ( stop_private_session ) >/dev/null 2>&1 || true
+  if [[ -n "${STARTED_EMULATOR:-}" && -n "${SERIAL:-}" && "${KEEP_EMULATOR:-0}" != "1" ]]; then
+    ( adb_ emu kill >/dev/null 2>&1 || kill "$STARTED_EMULATOR" 2>/dev/null ) || true
+  fi
   rm -f /tmp/herdr-smoke-lines.txt
   rm -f "$PIDFILE"
 
@@ -349,17 +356,29 @@ if [[ -z "$SERIAL" ]]; then
   mapfile -t DEVICES < <("$ADB" devices 2>/dev/null | awk 'NR > 1 && $2 == "device" { print $1 }')
   case "${#DEVICES[@]}" in
     0)
-      die "no Android device/emulator attached (adb devices lists none).
-ci: start one first, e.g.:
-ci:   emulator -avd <avd-name> -no-window -no-audio -no-boot-anim &
-ci:   adb wait-for-device
-ci: or point SERIAL= at an already-running device"
+      EMULATOR_BIN="${EMULATOR_BIN:-$(command -v emulator || true)}"
+      [ -n "$EMULATOR_BIN" ] || die "no device attached and no 'emulator' on PATH"
+      info "no device attached; starting AVD $AVD"
+      "$EMULATOR_BIN" -avd "$AVD" -no-window -no-audio -no-boot-anim \
+        -no-snapshot-save >/tmp/herdr-ci-emulator.log 2>&1 &
+      STARTED_EMULATOR=$!
       ;;
+
     1) SERIAL="${DEVICES[0]}" ;;
     *)
       die "${#DEVICES[@]} devices attached (${DEVICES[*]}); set SERIAL=<serial> to choose one"
       ;;
   esac
+fi
+
+if [[ -n "${STARTED_EMULATOR:-}" ]]; then
+  for _ in $(seq 1 240); do
+    SERIAL="$("$ADB" devices 2>/dev/null | awk 'NR > 1 && $2 == "device" { print $1; exit }')"
+    [[ -n "$SERIAL" ]] && break
+    sleep 1
+  done
+  [[ -n "$SERIAL" ]] || die "emulator did not appear in adb devices (see /tmp/herdr-ci-emulator.log)"
+  info "emulator up as $SERIAL"
 fi
 
 if ! adb_ get-state >/dev/null 2>&1; then
@@ -373,6 +392,9 @@ for _ in $(seq 1 600); do
 done
 [[ "$(adb_ shell getprop sys.boot_completed 2>/dev/null | tr -d '\r')" == "1" ]] ||
   die "device '$SERIAL' did not finish booting (sys.boot_completed != 1)"
+
+# The keyboard checks need the IME to show while a hardware keyboard is present.
+adb_ shell settings put secure show_ime_with_hard_keyboard 1 >/dev/null 2>&1 || true
 
 if [[ "${SKIP_BUILD:-0}" != "1" ]]; then
   say "building daemon"

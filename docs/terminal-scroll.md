@@ -126,7 +126,10 @@ during motion (it settles 260 ms after the last request).
 
 ```bash
 tools/ci.sh                    # smoke in a private herdr session; proves the live
-                               # session's workspaces and focus are untouched
+                               # session's workspaces and focus are untouched.
+                               # With no device it starts AVD $AVD itself, sets
+                               # show_ime_with_hard_keyboard, and stops it on exit
+                               # (KEEP_EMULATOR=1 keeps it).
 tools/agent-scroll-matrix.sh   # per agent: movement, composer unchanged (no typed
                                # escape bytes), no local drift (top=0)
 ./gradlew test                 # 105 unit tests, including the scroll policy
