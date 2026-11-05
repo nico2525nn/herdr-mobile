@@ -144,6 +144,41 @@ class TerminalUiBehaviourTest {
         compose.onNodeWithText("CTRL").assertIsDisplayed()
     }
 
+    // ---- pane rail -----------------------------------------------------
+
+    @Test
+    fun paneRailOffersEveryPaneOfTheTab() {
+        val panes = listOf(
+            Pane(id = "w1:p1", tabId = "t1", workspaceId = "w1", agent = "codex"),
+            Pane(id = "w1:p2", tabId = "t1", workspaceId = "w1", agent = "pi"),
+        )
+        val chosen = mutableListOf<String>()
+        compose.setContent {
+            HerdrMobileTheme(themeMode = ThemeMode.DARK) {
+                PaneRail(
+                    panes = panes,
+                    activePaneId = "w1:p1",
+                    onSelectPane = { chosen += it },
+                )
+            }
+        }
+        compose.onNodeWithText("2 · pi").performClick()
+        assertEquals(listOf("w1:p2"), chosen)
+    }
+
+    @Test
+    fun paneRailIsAbsentForASinglePaneTab() {
+        val panes = listOf(
+            Pane(id = "w1:p1", tabId = "t1", workspaceId = "w1", agent = "codex"),
+        )
+        compose.setContent {
+            HerdrMobileTheme(themeMode = ThemeMode.DARK) {
+                PaneRail(panes = panes, activePaneId = "w1:p1", onSelectPane = {})
+            }
+        }
+        compose.onNodeWithText("1 · codex").assertDoesNotExist()
+    }
+
     // ---- tab rail ------------------------------------------------------
 
     @Test

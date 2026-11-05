@@ -167,6 +167,28 @@ class TerminalViewModelBehaviourTest {
     }
 
     @Test
+    fun `switching to another pane of the same tab attaches that pane`() = runTest(dispatcher) {
+        // A tab can hold several panes (Herdr splits); the pane rail offers
+        // them, and choosing one must re-attach the stream, not just repaint.
+        val p1 = pane("w1", "w1:t1", id = "w1:p1")
+        val p2 = pane("w1", "w1:t1", id = "w1:p2")
+        val snapshot = snapshot(
+            workspace("w1", listOf(tab("w1:t1", "w1", listOf(p1, p2)))),
+        )
+        val session = FakeHerdrSession(snapshot)
+        val vm = TerminalViewModel(session, null, null, null, settings())
+        observe(vm)
+        advanceUntilIdle()
+        assertEquals(listOf("w1:p1"), session.openedPanes)
+
+        vm.openTarget(TerminalTarget("w1", "w1:t1", "w1:p2"))
+        advanceUntilIdle()
+
+        assertEquals("w1:p2", vm.uiState.value.target?.paneId)
+        assertEquals(listOf("w1:p1", "w1:p2"), session.openedPanes)
+    }
+
+    @Test
     fun `typing while the stream is being re-attached is delivered`() = runTest(dispatcher) {
         val session = FakeHerdrSession(snapshot(oneWorkspace()))
         val vm = TerminalViewModel(session, null, null, null, settings())

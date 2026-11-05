@@ -1,5 +1,19 @@
 # Changelog
 
+## 1.7.0 — 2026-11-04
+
+- Pane switcher: a tab can hold several Herdr panes (splits), but the tab rail
+  only ever opened the tab's active pane — splits were reachable from Home and
+  nowhere else. The terminal now shows a compact pane row when the tab has more
+  than one pane; tapping one re-attaches that pane. Chips are numbered ("1",
+  "2 · codex") because split panes often share a title.
+- Selected chips (tabs and panes) get a hairline accent ring: on the AMOLED
+  theme every container is black, so selection was previously only a slight
+  text-brightness difference.
+- Verified on device with an isolated split workspace: tapping pane 2 attached
+  it (its output appeared), pane 1 kept its own content. Instrumented tests
+  cover the rail and its absence for single-pane tabs.
+
 ## 1.6.6 — 2026-11-03
 
 - Pi scroll ran at 2x: one SGR notch moves Pi two rows, so the table must ask

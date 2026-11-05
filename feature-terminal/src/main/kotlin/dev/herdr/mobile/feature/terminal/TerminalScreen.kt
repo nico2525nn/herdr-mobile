@@ -225,6 +225,22 @@ fun TerminalScreen(
                 viewModel.moveTab(workspaceId, tabId, to)
             },
         )
+        // A tab can hold several Herdr panes; the tab rail always opens the
+        // active one, so this is the only way to reach the others.
+        state.tab?.takeIf { it.panes.size > 1 }?.let { tab ->
+            val workspaceId = state.target?.workspaceId
+            if (workspaceId != null) {
+                PaneRail(
+                    panes = tab.panes,
+                    activePaneId = state.target?.paneId,
+                    onSelectPane = { paneId ->
+                        viewModel.openTarget(
+                            TerminalTarget(workspaceId, tab.id, paneId),
+                        )
+                    },
+                )
+            }
+        }
         state.statusMessage?.let { message ->
             Text(
                 text = message.let { LocalUiCopy.current.render(it) },

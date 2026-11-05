@@ -1,5 +1,6 @@
 package dev.herdr.mobile.core.designsystem
 
+import androidx.compose.foundation.border
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.Arrangement
@@ -73,6 +74,15 @@ fun StatusChip(
     }
     Surface(
         modifier = modifier
+            // Selected chips share the same black container on the AMOLED
+            // theme, so selection is shown with a hairline accent ring.
+            .then(
+                if (selected) {
+                    Modifier.border(1.dp, MaterialTheme.colorScheme.primary, CircleShape)
+                } else {
+                    Modifier
+                },
+            )
             .heightIn(min = 32.dp)
             .clip(CircleShape)
             .then(
