@@ -23,6 +23,8 @@ import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertTrue
 import org.junit.Before
 import org.junit.Test
+import dev.herdr.mobile.core.network.testing.FakeHerdrSession
+import dev.herdr.mobile.core.network.testing.FakeTerminalConnection
 
 /**
  * Behaviour of the terminal screen's state machine, described from the user's

@@ -8,6 +8,7 @@ import dev.herdr.mobile.core.model.ConnectionState
 import dev.herdr.mobile.core.model.SessionSnapshot
 import dev.herdr.mobile.core.model.Versions
 import dev.herdr.mobile.core.network.HerdrClient
+import dev.herdr.mobile.core.network.HerdrSession
 import dev.herdr.mobile.core.network.HerdrClientState
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
@@ -40,7 +41,7 @@ data class HomeUiState(
 }
 
 class HomeViewModel(
-    private val client: HerdrClient,
+    private val client: HerdrSession,
 ) : ViewModel() {
     private val _message = kotlinx.coroutines.flow.MutableStateFlow<UiMessage?>(null)
     val message: StateFlow<UiMessage?> = _message

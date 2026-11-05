@@ -4,7 +4,6 @@ import dev.herdr.mobile.core.designsystem.UiMessage
 import dev.herdr.mobile.core.model.ConnectionState
 import dev.herdr.mobile.core.model.SessionSnapshot
 import dev.herdr.mobile.core.network.HerdrSession
-import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.NonCancellable
@@ -16,7 +15,6 @@ import kotlinx.coroutines.isActive
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
-import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.ExperimentalCoroutinesApi
@@ -68,7 +66,7 @@ class PaneSessionController(
      * queued and flushed on the next backend instead of silently dropped.
      * Bounded at 64 entries.
      */
-    private val pendingInput = ArrayDeque<suspend (ConnectionTerminalBackend) -> Unit>(64)
+    private val pendingInput = PendingInput()
     private var pendingFlushJob: Job? = null
 
     private var attachJob: Job? = null
@@ -112,7 +110,13 @@ class PaneSessionController(
             val resolved = resolveTarget(snapshot, initialWorkspaceId, initialTabId, initialPaneId)
             if (resolved != null) {
                 onMessage(null)
-                warnOnFallback(snapshot, resolved)
+                fallbackNotice(
+                    initialWorkspaceId,
+                    initialTabId,
+                    initialPaneId,
+                    snapshot,
+                    resolved,
+                )?.let(onMessage)
                 openTarget(resolved, preserveMessage = true)
             }
         } else {
@@ -133,7 +137,7 @@ class PaneSessionController(
         val keep = targetFlow.value
         val old = backendFlow.value
         backendFlow.value = null
-        synchronized(pendingInput) { pendingInput.clear() }
+        pendingInput.clear()
         if (old != null) releaseInBackground(old)
 
         val reopen = keep?.takeIf { snapshot?.pane(it.paneId) != null }
@@ -204,43 +208,6 @@ class PaneSessionController(
             }
     }
 
-    private fun warnOnFallback(snapshot: SessionSnapshot, target: TerminalTarget) {
-        if (initialPaneId == null) return // in-app navigation: no expectation to violate
-        when {
-            target.paneId != initialPaneId -> {
-                val pane = snapshot.pane(target.paneId)
-                onMessage(
-                    UiMessage.OpenedInstead(
-                        UiMessage.OpenedInstead.TargetKind.PANE,
-                        pane?.displayLabel ?: target.paneId,
-                    ),
-                )
-            }
-            initialTabId != null && target.tabId != initialTabId ->
-                onMessage(UiMessage.OpenedInstead(UiMessage.OpenedInstead.TargetKind.TAB, null))
-            initialWorkspaceId != null && target.workspaceId != initialWorkspaceId ->
-                onMessage(UiMessage.OpenedInstead(UiMessage.OpenedInstead.TargetKind.WORKSPACE, null))
-        }
-    }
-
-    private fun resolveTarget(
-        snapshot: SessionSnapshot,
-        workspaceId: String?,
-        tabId: String?,
-        paneId: String?,
-    ): TerminalTarget? {
-        val workspace = snapshot.workspace(workspaceId)
-            ?: snapshot.workspaces.firstOrNull()
-            ?: return null
-        val tab = snapshot.tab(tabId?.takeIf { snapshot.tab(it)?.workspaceId == workspace.id })
-            ?: workspace.tabs.firstOrNull { it.id == workspace.activeTabId }
-            ?: workspace.tabs.firstOrNull()
-            ?: return null
-        val pane = paneId?.let { id -> tab.panes.firstOrNull { it.id == id } }
-            ?: tab.activePane ?: return null
-        return TerminalTarget(workspace.id, tab.id, pane.id)
-    }
-
     // ---- attach lifecycle ---------------------------------------------
 
     fun setAttachGrid(cols: Int, rows: Int) {
@@ -292,7 +259,7 @@ class PaneSessionController(
             }
         }
 
-        if (targetFlow.value != target) synchronized(pendingInput) { pendingInput.clear() }
+        if (targetFlow.value != target) pendingInput.clear()
         attachJob?.cancel()
         pendingFlushJob?.cancel()
         pendingFlushJob = null
@@ -315,61 +282,13 @@ class PaneSessionController(
         currentCoroutineContext().ensureActive()
         if (session.targetGeneration != generation) return
 
-        val (cols, rows) = gridFlow.value
-        var linkGeneration = session.linkGeneration
-        var retryUsed = false
-        var opened: dev.herdr.mobile.core.network.TerminalConnection? = null
-
-        while (opened == null) {
-            val connection = try {
-                session.openTerminal(target.paneId, cols = cols, rows = rows)
-            } catch (e: Exception) {
-                if (e is CancellationException) throw e
-                if (session.targetGeneration != generation) return
-                val canRetry = !retryUsed &&
-                    e is dev.herdr.mobile.core.network.DaemonException && e.code == "not_connected"
-                if (!canRetry) {
-                    onMessage(UiMessage.AttachFailed(e.message))
-                    return
-                }
-                retryUsed = true
-                session.kick()
-                if (!awaitConnected()) {
-                    onMessage(UiMessage.ReconnectTimedOut)
-                    return
-                }
-                currentCoroutineContext().ensureActive()
-                if (session.targetGeneration != generation) return
-                linkGeneration = session.linkGeneration
-                continue
-            }
-            if (session.targetGeneration != generation) {
-                releaseQuietly(connection)
-                return
-            }
-            if (session.linkGeneration == linkGeneration) {
-                opened = connection
-                continue
-            }
-            // The daemon redialled while the socket was opening: release the
-            // orphan before waiting for the new endpoint.
-            releaseQuietly(connection)
-            currentCoroutineContext().ensureActive()
-            if (retryUsed) {
-                onMessage(UiMessage.StreamChanged)
-                return
-            }
-            retryUsed = true
-            if (!awaitConnected()) {
-                onMessage(UiMessage.ReconnectTimedOut)
-                return
-            }
-            currentCoroutineContext().ensureActive()
-            if (session.targetGeneration != generation) return
-            linkGeneration = session.linkGeneration
-        }
-
-        val connection = opened ?: return
+        val connection = openTerminalConnection(
+            session = session,
+            target = target,
+            generation = generation,
+            grid = gridFlow.value,
+            onMessage = onMessage,
+        ) ?: return
         if (!currentCoroutineContext().isActive || targetFlow.value != target ||
             session.targetGeneration != generation
         ) {
@@ -386,22 +305,6 @@ class PaneSessionController(
             return
         }
         flushPending(backend)
-    }
-
-    private suspend fun awaitConnected(): Boolean = try {
-        withTimeout(30_000) {
-            session.state.first { it.connection == ConnectionState.CONNECTED }
-        }
-        true
-    } catch (_: Exception) {
-        false
-    }
-
-    private suspend fun releaseQuietly(connection: dev.herdr.mobile.core.network.TerminalConnection) {
-        try {
-            withContext(NonCancellable) { connection.release() }
-        } catch (_: Exception) {
-        }
     }
 
     /** Release a detached socket without depending on the caller's lifetime. */
@@ -428,45 +331,44 @@ class PaneSessionController(
             val generation = targetOwnerGeneration ?: return
             if (generation != session.targetGeneration) return
             scope.launch {
-                if (backendFlow.value !== backend || targetOwnerGeneration != generation ||
-                    session.targetGeneration != generation
-                ) return@launch
+                if (!isCurrent(backend, generation)) return@launch
                 runCatching { op(backend) }.onFailure {
-                    if (session.targetGeneration == generation && backendFlow.value === backend) {
+                    if (isCurrent(backend, generation)) {
                         onMessage(UiMessage.SendFailed(it.message))
                     }
                 }
             }
             return
         }
-        synchronized(pendingInput) {
-            if (pendingInput.size >= MAX_PENDING_INPUT) pendingInput.removeFirst()
-            pendingInput.addLast(op)
-        }
+        pendingInput.enqueue(op)
     }
 
     private fun flushPending(backend: ConnectionTerminalBackend) {
         val generation = targetOwnerGeneration ?: return
-        if (backendFlow.value !== backend || generation != session.targetGeneration) return
-        val ops = synchronized(pendingInput) {
-            val list = pendingInput.toList()
-            pendingInput.clear()
-            list
-        }
+        if (!isCurrent(backend, generation)) return
+        val ops = pendingInput.drain()
         if (ops.isEmpty()) return
         pendingFlushJob = scope.launch {
             for (op in ops) {
-                if (backendFlow.value !== backend || targetOwnerGeneration != generation ||
-                    session.targetGeneration != generation
-                ) return@launch
+                if (!isCurrent(backend, generation)) return@launch
                 runCatching { op(backend) }.onFailure {
-                    if (session.targetGeneration == generation && backendFlow.value === backend) {
+                    if (isCurrent(backend, generation)) {
                         onMessage(UiMessage.SendFailed(it.message))
                     }
                 }
             }
         }
     }
+
+    /**
+     * A backend may only be used while it still owns the screen: it is the
+     * current flow value, the target was opened for this owner generation, and
+     * the daemon has not restarted since.
+     */
+    private fun isCurrent(backend: ConnectionTerminalBackend, generation: Long): Boolean =
+        backendFlow.value === backend &&
+            targetOwnerGeneration == generation &&
+            session.targetGeneration == generation
 
     // ---- lifecycle -----------------------------------------------------
 
@@ -490,7 +392,7 @@ class PaneSessionController(
         onMessage(null)
         attachJob = scope.launch {
             session.kick()
-            if (!awaitConnected()) {
+            if (!awaitConnected(session)) {
                 onMessage(UiMessage.ReconnectTimedOut)
                 return@launch
             }
@@ -512,6 +414,3 @@ private const val AUTO_REATTACH_DELAY_MS = 600L
 
 /** 0.6s, 1.2s, 2.4s, then the Retry button takes over. */
 private const val AUTO_REATTACH_ATTEMPTS = 4
-
-/** Bounded so a dead stream cannot grow the queue without limit. */
-private const val MAX_PENDING_INPUT = 64

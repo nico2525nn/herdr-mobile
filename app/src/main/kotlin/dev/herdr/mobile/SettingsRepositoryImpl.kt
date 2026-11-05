@@ -1,25 +1,15 @@
 package dev.herdr.mobile
 
 import android.content.Context
-import androidx.datastore.preferences.core.booleanPreferencesKey
 import androidx.datastore.preferences.core.edit
-import androidx.datastore.preferences.core.floatPreferencesKey
-import androidx.datastore.preferences.core.intPreferencesKey
-import androidx.datastore.preferences.core.stringPreferencesKey
 import androidx.datastore.preferences.preferencesDataStore
 import dev.herdr.mobile.connection.direct.DirectProvider
 import dev.herdr.mobile.connection.ssh.SshTunnelProvider
 import dev.herdr.mobile.core.model.UnknownHostKeyException
 import dev.herdr.mobile.core.model.AppSettings
-import dev.herdr.mobile.core.model.BackendMode
 import dev.herdr.mobile.core.model.ConnectionTestResult
-import dev.herdr.mobile.core.model.CursorStyle
 import dev.herdr.mobile.core.model.FailureKind
 import dev.herdr.mobile.core.model.HostProfile
-import dev.herdr.mobile.core.model.SwipeBehavior
-import dev.herdr.mobile.core.model.TerminalColorScheme
-import dev.herdr.mobile.core.model.TerminalFont
-import dev.herdr.mobile.core.model.ThemeMode
 import dev.herdr.mobile.core.model.TransportMode
 import dev.herdr.mobile.core.network.DaemonEndpointProvider
 import dev.herdr.mobile.core.network.HerdrClient
@@ -37,40 +27,9 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeout
-import kotlinx.serialization.builtins.ListSerializer
-import kotlinx.serialization.json.Json
 import java.util.UUID
 
 private val Context.dataStore by preferencesDataStore(name = "herdr_settings")
-
-private object Keys {
-    val THEME_MODE = stringPreferencesKey("theme_mode")
-    val DYNAMIC_COLOR = booleanPreferencesKey("dynamic_color")
-    val TERMINAL_SCHEME = stringPreferencesKey("terminal_scheme")
-    val TERMINAL_FONT = stringPreferencesKey("terminal_font")
-    val FONT_SIZE = intPreferencesKey("font_size")
-    val LINE_HEIGHT = floatPreferencesKey("line_height")
-    val CURSOR_STYLE = stringPreferencesKey("cursor_style")
-    val BOLD_BRIGHT = booleanPreferencesKey("bold_bright")
-    val TRANSPORT_MODE = stringPreferencesKey("transport_mode")
-    val DIRECT_URL = stringPreferencesKey("direct_url")
-    val DIRECT_BACKEND = stringPreferencesKey("direct_backend")
-    val ACTIVE_PROFILE = stringPreferencesKey("active_profile")
-    val PROFILES = stringPreferencesKey("profiles")
-    val EXTRA_KEYS = booleanPreferencesKey("extra_keys")
-    val CJK_INPUT = booleanPreferencesKey("cjk_input")
-    val SWIPE = stringPreferencesKey("swipe")
-    val HAPTIC = booleanPreferencesKey("haptic")
-    val BELL = booleanPreferencesKey("bell")
-    val SCROLLBACK = intPreferencesKey("scrollback")
-    val NOTIFY_DONE = booleanPreferencesKey("notify_done")
-    val NOTIFY_BLOCKED = booleanPreferencesKey("notify_blocked")
-    val NOTIFIED_MAP = stringPreferencesKey("notified_map")
-    val SHOW_SCROLL_DIAG = booleanPreferencesKey("show_scroll_diagnostics")
-    val BG_MONITOR = booleanPreferencesKey("bg_monitor")
-}
-
-private val storeJson = Json { ignoreUnknownKeys = true }
 
 /**
  * DataStore for values, [KeystoreSecrets] for secrets. Profiles hold aliases, never material.
@@ -126,55 +85,21 @@ class SettingsRepositoryImpl(
             loaded.complete(Unit)
             return
         }
-        _settings.value = AppSettings(
-            themeMode = ThemeMode.fromWire(prefs[Keys.THEME_MODE]),
-            dynamicColor = prefs[Keys.DYNAMIC_COLOR] ?: true,
-            terminalColorScheme = TerminalColorScheme.fromWire(prefs[Keys.TERMINAL_SCHEME]),
-            terminalFont = TerminalFont.fromWire(prefs[Keys.TERMINAL_FONT]),
-            terminalFontSizeSp = prefs[Keys.FONT_SIZE] ?: 12,
-            terminalLineHeight = prefs[Keys.LINE_HEIGHT] ?: 1.15f,
-            cursorStyle = CursorStyle.fromWire(prefs[Keys.CURSOR_STYLE]),
-            boldIsBright = prefs[Keys.BOLD_BRIGHT] ?: true,
-            transportMode = TransportMode.fromWire(prefs[Keys.TRANSPORT_MODE]),
-            directUrl = prefs[Keys.DIRECT_URL] ?: BuildConfig.DEFAULT_DIRECT_URL,
-            directBackendMode = BackendMode.fromWire(prefs[Keys.DIRECT_BACKEND]),
-            activeProfileId = prefs[Keys.ACTIVE_PROFILE],
-            hostProfiles = decodeProfiles(prefs[Keys.PROFILES]),
-            extraKeysEnabled = prefs[Keys.EXTRA_KEYS] ?: true,
-            cjkInputEnabled = prefs[Keys.CJK_INPUT] ?: true,
-            swipeBehavior = SwipeBehavior.fromWire(prefs[Keys.SWIPE]),
-            hapticFeedback = prefs[Keys.HAPTIC] ?: true,
-            bellVibration = prefs[Keys.BELL] ?: true,
-            scrollbackLimit = prefs[Keys.SCROLLBACK] ?: 2000,
-            notifyDone = prefs[Keys.NOTIFY_DONE] ?: true,
-            notifyBlocked = prefs[Keys.NOTIFY_BLOCKED] ?: true,
-            showScrollDiagnostics = prefs[Keys.SHOW_SCROLL_DIAG] ?: false,
-            backgroundMonitoring = prefs[Keys.BG_MONITOR] ?: true,
-        )
+        val storedProfiles = decodeStoredProfiles(prefs[SettingsKeys.PROFILES])
+        preservedProfilesRaw = storedProfiles.corruptRaw
+        _settings.value = decodeSettings(prefs, storedProfiles)
         loaded.complete(Unit)
     }
 
-    /**
-     * Last notified status per pane (M9): persisted so a process restart can
-     * tell "already alerted" from "finished while dead". Trivial `id=wire;…`
-     * encoding (pane ids and wire names never contain `;`/`=`); corrupt data
-     * reads as empty (worst case: re-alert once).
-     */
     suspend fun loadNotified(): Map<String, String> {
         loaded.await()
-        val raw = context.dataStore.data.first()[Keys.NOTIFIED_MAP] ?: return emptyMap()
-        return raw.split(';')
-            .mapNotNull { part ->
-                val eq = part.indexOf('=')
-                if (eq <= 0) null else part.take(eq) to part.substring(eq + 1)
-            }
-            .toMap()
+        return decodeNotifiedMap(context.dataStore.data.first()[SettingsKeys.NOTIFIED_MAP])
     }
 
     suspend fun saveNotified(map: Map<String, String>) {
         loaded.await()
-        val raw = map.entries.joinToString(";") { "${it.key}=${it.value}" }
-        context.dataStore.edit { prefs -> prefs[Keys.NOTIFIED_MAP] = raw }
+        val raw = encodeNotifiedMap(map)
+        context.dataStore.edit { prefs -> prefs[SettingsKeys.NOTIFIED_MAP] = raw }
     }
 
     override suspend fun update(transform: (AppSettings) -> AppSettings) {
@@ -187,58 +112,8 @@ class SettingsRepositoryImpl(
     }
 
     private suspend fun persist(next: AppSettings) {
-        context.dataStore.edit { prefs -> writePrefs(prefs, next) }
+        context.dataStore.edit { prefs -> prefs.writeSettings(next, preservedProfilesRaw) }
     }
-
-    private fun writePrefs(prefs: androidx.datastore.preferences.core.MutablePreferences, next: AppSettings) {
-        prefs[Keys.THEME_MODE] = next.themeMode.wire
-        prefs[Keys.DYNAMIC_COLOR] = next.dynamicColor
-        prefs[Keys.TERMINAL_SCHEME] = next.terminalColorScheme.wire
-        prefs[Keys.TERMINAL_FONT] = next.terminalFont.wire
-        prefs[Keys.FONT_SIZE] = next.terminalFontSizeSp
-        prefs[Keys.LINE_HEIGHT] = next.terminalLineHeight
-        prefs[Keys.CURSOR_STYLE] = next.cursorStyle.wire
-        prefs[Keys.BOLD_BRIGHT] = next.boldIsBright
-        prefs[Keys.TRANSPORT_MODE] = next.transportMode.wire
-        prefs[Keys.DIRECT_URL] = next.directUrl
-        prefs[Keys.DIRECT_BACKEND] = next.directBackendMode.wire
-        val activeProfileId = next.activeProfileId
-        if (activeProfileId != null) {
-            prefs[Keys.ACTIVE_PROFILE] = activeProfileId
-        } else {
-            prefs.remove(Keys.ACTIVE_PROFILE)
-        }
-        prefs[Keys.PROFILES] = preservedProfilesRaw ?: encodeProfiles(next.hostProfiles)
-        prefs[Keys.EXTRA_KEYS] = next.extraKeysEnabled
-        prefs[Keys.CJK_INPUT] = next.cjkInputEnabled
-        prefs[Keys.SWIPE] = next.swipeBehavior.wire
-        prefs[Keys.HAPTIC] = next.hapticFeedback
-        prefs[Keys.BELL] = next.bellVibration
-        prefs[Keys.SCROLLBACK] = next.scrollbackLimit
-        prefs[Keys.NOTIFY_DONE] = next.notifyDone
-        prefs[Keys.NOTIFY_BLOCKED] = next.notifyBlocked
-        prefs[Keys.SHOW_SCROLL_DIAG] = next.showScrollDiagnostics
-        prefs[Keys.BG_MONITOR] = next.backgroundMonitoring
-    }
-
-    private fun decodeProfiles(raw: String?): List<HostProfile> {
-        if (raw.isNullOrBlank()) return emptyList()
-        return runCatching {
-            storeJson.decodeFromString(ListSerializer(StoredProfile.serializer()), raw)
-                .map { it.toModel() }
-        }.getOrElse {
-            // Corrupt JSON: show zero hosts but keep the raw bytes so the next
-            // update() rewrites them verbatim instead of wiping every host.
-            preservedProfilesRaw = raw
-            emptyList()
-        }
-    }
-
-    private fun encodeProfiles(profiles: List<HostProfile>): String =
-        storeJson.encodeToString(
-            ListSerializer(StoredProfile.serializer()),
-            profiles.map { StoredProfile.from(it) },
-        )
 
     override suspend fun storePrivateKey(alias: String?, pem: String, label: String): String =
         withContext(Dispatchers.IO) {

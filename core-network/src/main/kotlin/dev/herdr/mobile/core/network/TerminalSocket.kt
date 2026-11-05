@@ -1,7 +1,6 @@
 package dev.herdr.mobile.core.network
 
 import dev.herdr.mobile.core.model.BackendMode
-import dev.herdr.mobile.core.model.RawTerminalRecord
 import dev.herdr.mobile.core.model.TerminalAttachmentState
 import dev.herdr.mobile.core.model.TerminalProtocol
 import kotlinx.coroutines.CoroutineScope
@@ -15,9 +14,6 @@ import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
-import kotlinx.serialization.json.jsonObject
-import kotlinx.serialization.json.jsonPrimitive
-import kotlinx.serialization.json.contentOrNull
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import okhttp3.Response
@@ -165,50 +161,26 @@ class TerminalSocket(
         scope.launch {
             // Burst-merge: live output + scroll repaints arrive as many small
             // socket messages; forwarding each separately redraws the view N
-            // times per frame (the judder under OMP output). Consecutive Bytes
-            // within one lane turn merge into a single emit — lossless
-            // (concatenation preserves PTY order) and control records (Ready/
-            // Closed/Failed) always flush first so attach/teardown never lag.
-            val merge = ArrayDeque<ByteArray>()
-            var mergedSize = 0
-            suspend fun flush() {
-                if (merge.isEmpty()) return
-                val out = ByteArray(mergedSize)
-                var pos = 0
-                for (chunk in merge) {
-                    chunk.copyInto(out, pos)
-                    pos += chunk.size
-                }
-                merge.clear()
-                mergedSize = 0
-                _inbound.emit(TerminalInbound.Bytes(out))
-            }
+            // times per frame (the judder under OMP output). One turn is the
+            // received value plus everything already queued behind it, up to
+            // and including the first control record; mergeBurst concatenates
+            // consecutive Bytes (lossless, PTY order preserves) and lets a
+            // control record flush pending bytes first. One emit per record
+            // produced by the turn, not per socket message.
             for (value in inboundLane) {
+                val turn = ArrayList<TerminalInbound>(4)
+                turn += value
                 if (value is TerminalInbound.Bytes) {
-                    merge.addLast(value.data)
-                    mergedSize += value.data.size
-                    // Drain what's already queued this turn, then flush once:
-                    // one emit per lane turn, not per socket message.
                     while (true) {
                         val next = inboundLane.tryReceive().getOrNull() ?: break
-                        if (next is TerminalInbound.Bytes) {
-                            merge.addLast(next.data)
-                            mergedSize += next.data.size
-                        } else {
-                            // Control record cuts the burst: flush bytes first
-                            // (order!), then the control itself.
-                            flush()
-                            _inbound.emit(next)
-                            break
-                        }
+                        turn += next
+                        // A control record ends the burst: bytes flush ahead
+                        // of it inside mergeBurst, order intact.
+                        if (next !is TerminalInbound.Bytes) break
                     }
-                    flush()
-                } else {
-                    flush()
-                    _inbound.emit(value)
                 }
+                for (merged in mergeBurst(turn)) _inbound.emit(merged)
             }
-            flush()
         }
     }
 
@@ -325,81 +297,14 @@ class TerminalSocket(
         }
 
         override fun onMessage(webSocket: WebSocket, text: String) {
-            val record = try {
-                HerdrJson.decodeFromString(RawTerminalRecord.serializer(), text)
-            } catch (_: Exception) {
-                return
-            }
-            when (record.type) {
-                TerminalProtocol.Ready.TYPE -> {
-                    val obj = try {
-                        HerdrJson.parseToJsonElement(text).jsonObject
-                    } catch (_: Exception) {
-                        return
-                    }
-                    fun int(key: String): Int =
-                        obj[key]?.jsonPrimitive?.content?.toIntOrNull() ?: 0
-                    fun bool(key: String): Boolean =
-                        obj[key]?.jsonPrimitive?.content == "true"
-                    fun optStr(key: String): String? =
-                        obj[key]?.jsonPrimitive?.contentOrNull
-                    // The daemon sends Ready twice: prelude Ready (history
-                    // info, cols=0) then geometry Ready (cols/rows, no history
-                    // keys). Absent keys must NOT clobber: carry previous.
-                    val prev = _state.value as? TerminalAttachmentState.Attached
-                    val hasHistory = obj.containsKey("historyRows")
-                    val ready = TerminalInbound.Ready(
-                        paneId = obj["paneId"]?.jsonPrimitive?.content ?: paneId,
-                        cols = int("cols"),
-                        rows = int("rows"),
-                        resumed = bool("resumed"),
-                        historyRows = if (hasHistory) int("historyRows") else prev?.historyRows ?: 0,
-                        historyTruncated = if (hasHistory) {
-                            bool("historyTruncated")
-                        } else {
-                            prev?.historyTruncated ?: false
-                        },
-                        historyError = if (obj.containsKey("historyError")) {
-                            optStr("historyError")
-                        } else {
-                            prev?.historyError
-                        },
-                        visibleOk = if (obj.containsKey("visibleOk")) {
-                            obj["visibleOk"]?.jsonPrimitive?.content != "false"
-                        } else {
-                            prev?.visibleOk ?: true
-                        },
-                    )
-                    _state.value = TerminalAttachmentState.Attached(
-                        paneId = ready.paneId,
-                        cols = ready.cols,
-                        rows = ready.rows,
-                        resumed = ready.resumed,
-                        historyRows = ready.historyRows,
-                        historyTruncated = ready.historyTruncated,
-                        historyError = ready.historyError,
-                        visibleOk = ready.visibleOk,
-                    )
-                    emit(ready)
-                }
-
-                TerminalProtocol.Closed.TYPE -> {
-                    val reason = record.message ?: "closed"
-                    _state.value = TerminalAttachmentState.Detached(reason)
-                    emit(TerminalInbound.Closed(reason))
-                }
-
-                TerminalProtocol.Failure.TYPE -> {
-                    val code = record.code ?: "unknown"
-                    val message = record.message ?: "attach failed"
-                    _state.value = TerminalAttachmentState.Failed(code, message)
-                    emit(TerminalInbound.Failed(code, message))
-                }
-
-                else -> {
-                    // Unknown control record from a newer daemon: ignore, stay attached.
-                }
-            }
+            // Pure parse: malformed / unknown records are ignored (stay attached).
+            val transition = parseTerminalControl(
+                text = text,
+                previous = _state.value as? TerminalAttachmentState.Attached,
+                fallbackPaneId = paneId,
+            ) ?: return
+            _state.value = transition.state
+            emit(transition.inbound)
         }
 
         override fun onClosing(webSocket: WebSocket, code: Int, reason: String) {

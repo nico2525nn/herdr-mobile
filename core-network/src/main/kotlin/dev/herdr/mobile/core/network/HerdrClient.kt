@@ -128,7 +128,7 @@ class HerdrClient(
     override suspend fun renameTab(tabId: String, label: String) = commands.renameTab(tabId, label)
 
     /** [focus] = false creates a workspace without moving the desktop's focus. */
-    suspend fun createWorkspace(label: String?, cwd: String?, focus: Boolean = true): String =
+    override suspend fun createWorkspace(label: String?, cwd: String?, focus: Boolean): String =
         commands.createWorkspace(label, cwd, focus)
 
     override suspend fun renameWorkspace(workspaceId: String, label: String) =
@@ -147,10 +147,10 @@ class HerdrClient(
         commands.resizePane(paneId, cols, rows)
 
     /** Fresh update check (network hit). Snapshot block stays the source of truth. */
-    suspend fun herdrUpdateStatus() = commands.herdrUpdateStatus()
+    override suspend fun herdrUpdateStatus() = commands.herdrUpdateStatus()
 
     /** Run the install; returns the updater's own log on success. */
-    suspend fun runHerdrUpdate(): String = commands.runHerdrUpdate()
+    override suspend fun runHerdrUpdate(): String = commands.runHerdrUpdate()
 
     // -- One-shot connection test for Settings ---------------------------------------------
 

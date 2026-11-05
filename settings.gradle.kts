@@ -30,6 +30,7 @@ dependencyResolutionManagement {
 rootProject.name = "herdr-mobile"
 
 include(":app")
+include(":testing")
 include(":core-model")
 include(":core-network")
 include(":core-designsystem")

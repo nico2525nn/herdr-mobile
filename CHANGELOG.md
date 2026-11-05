@@ -1,5 +1,29 @@
 # Changelog
 
+## 1.8.0 — 2026-11-05
+
+No user-facing feature: this release is the quality pass requested after 1.7.0.
+
+- Structure: `TerminalScreen` (763 lines) split into screen/chrome, surface,
+  IME-effects and diagnostics; `TermuxTerminalHost` (681) split out `ScrollProbe`
+  math, `WheelBurst` coalescing and `TermuxViewport` geometry;
+  `PaneSessionController` (517) split out `TerminalAttach`, `TargetResolution`
+  and `PendingInput`; `TerminalSocket` control-record parsing extracted into
+  testable `TerminalControl`; `SettingsRepositoryImpl` (409) reduced to
+  DataStore access on top of a pure `SettingsCodec`.
+- Dead code removed: `ScrollMechanism.kt` stub, `nextMechanism`,
+  `wheelScrollable`, duplicate `rowsPerNotch` wrapper.
+- Test suite: 108 → 180 JVM tests. New coverage for the ready-record
+  carry-over, burst merging, daemon error mapping, HTTP request shape, wheel
+  coalescing, probe shift estimation, target resolution and fallback notices,
+  pending-input bounds, diagnostics rendering, settings codec round-trip,
+  Home and Settings view-model behaviour. Shared fakes moved to the `:testing`
+  module so Home/Terminal tests use one `FakeHerdrSession`.
+- Automation: `tools/check.sh` local gate (JVM + daemon) and
+  `.github/workflows/ci.yml` (Kotlin unit, Rust, isolated emulator smoke).
+- `HomeViewModel` now depends on the `HerdrSession` contract instead of the
+  concrete client, so its failure paths are testable.
+
 ## 1.7.0 — 2026-11-04
 
 - Pane switcher: a tab can hold several Herdr panes (splits), but the tab rail

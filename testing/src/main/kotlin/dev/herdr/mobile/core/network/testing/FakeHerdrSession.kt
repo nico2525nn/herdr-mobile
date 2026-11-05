@@ -1,4 +1,4 @@
-package dev.herdr.mobile.feature.terminal
+package dev.herdr.mobile.core.network.testing
 
 import dev.herdr.mobile.core.model.ConnectionState
 import dev.herdr.mobile.core.model.TerminalAttachmentState
@@ -38,9 +38,21 @@ class FakeHerdrSession(
     val interruptCalls = mutableListOf<String>()
     val closeTabCalls = mutableListOf<String>()
     val closeWorkspaceCalls = mutableListOf<String>()
+    val createWorkspaceCalls = mutableListOf<String?>()
+    val moveWorkspaceCalls = mutableListOf<Pair<String, Long>>()
+
+    /** Version reported by [herdrUpdateStatus]. */
+    var updateVersion: String? = null
 
     /** When set, [openTerminal] throws this instead of returning a connection. */
     var openFailure: Exception? = null
+
+    /** When set, every command throws it (a failing daemon). */
+    var commandFailure: Exception? = null
+
+    private fun failIfScripted() {
+        commandFailure?.let { throw it }
+    }
 
     /** Connections handed to the view-model, newest last. */
     val connections = mutableListOf<FakeTerminalConnection>()
@@ -75,28 +87,58 @@ class FakeHerdrSession(
     }
 
     override suspend fun focusTab(tabId: String) {
+        failIfScripted()
         focusCalls += tabId
     }
 
-    override suspend fun createTab(workspaceId: String, label: String?): String = "new-tab"
+    override suspend fun createTab(workspaceId: String, label: String?): String {
+        failIfScripted()
+        return "new-tab"
+    }
 
     override suspend fun closeTab(tabId: String) {
+        failIfScripted()
         closeTabCalls += tabId
     }
 
-    override suspend fun renameTab(tabId: String, label: String) = Unit
+    override suspend fun renameTab(tabId: String, label: String) {
+        failIfScripted()
+    }
+
+    override suspend fun createWorkspace(label: String?, cwd: String?, focus: Boolean): String {
+        failIfScripted()
+        createWorkspaceCalls += label
+        return "w-new"
+    }
+
+    override suspend fun herdrUpdateStatus(): dev.herdr.mobile.core.model.HerdrUpdate =
+        dev.herdr.mobile.core.model.HerdrUpdate(latestVersion = updateVersion)
+
+    override suspend fun runHerdrUpdate(): String {
+        failIfScripted()
+        return "updated"
+    }
 
     override suspend fun closeWorkspace(workspaceId: String) {
+        failIfScripted()
         closeWorkspaceCalls += workspaceId
     }
 
-    override suspend fun renameWorkspace(workspaceId: String, label: String) = Unit
+    override suspend fun renameWorkspace(workspaceId: String, label: String) {
+        failIfScripted()
+    }
 
-    override suspend fun moveTab(tabId: String, insertIndex: Long) = Unit
+    override suspend fun moveTab(tabId: String, insertIndex: Long) {
+        failIfScripted()
+    }
 
-    override suspend fun moveWorkspace(workspaceId: String, insertIndex: Long) = Unit
+    override suspend fun moveWorkspace(workspaceId: String, insertIndex: Long) {
+        failIfScripted()
+        moveWorkspaceCalls += workspaceId to insertIndex
+    }
 
     override suspend fun interrupt(paneId: String) {
+        failIfScripted()
         interruptCalls += paneId
     }
 }

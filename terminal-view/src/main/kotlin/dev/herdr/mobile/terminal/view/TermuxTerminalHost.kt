@@ -1,6 +1,5 @@
 package dev.herdr.mobile.terminal.view
 
-import android.content.Context
 import android.view.GestureDetector
 import android.view.MotionEvent
 import android.view.View
@@ -30,9 +29,6 @@ class TermuxTerminalHost(
     companion object {
         /** Repaint + network round trip for a remote scroll. */
         private const val PROBE_SETTLE_MS = 260L
-
-        /** Upper bound for the scroll estimate (a page is well below this). */
-        private const val MAX_MEASURED_ROWS = 80
 
         /**
          * Wheel throttle: one report per frame at 60Hz. Long enough to batch a
@@ -381,7 +377,7 @@ class TermuxTerminalHost(
         if (probe == null) {
             probeNotches = 0
             val lines = visibleLines()
-            probe = ScrollProbe(mechanism, rows, lines, signatureOf(lines))
+            probe = ScrollProbe(mechanism, rows, lines, screenSignature(lines))
         }
         dispatch(mechanism, rows)
         scheduleProbeCheck()
@@ -393,28 +389,12 @@ class TermuxTerminalHost(
             ScrollMechanism.HOST -> onRemoteScroll?.invoke(rows, "rows")
 
             ScrollMechanism.WHEEL -> {
-                // One notch is a few lines and the app decides how many; the
-                // stride starts from the per-app table and is corrected from
-                // the measured shift once a gesture lands.
-                wheelNotchRemainder += rows / ScrollLearning.rowsPerNotch(diagnosticsAgent)
-                val notches = wheelNotchRemainder.toInt()
-                if (notches != 0) {
-                    wheelNotchRemainder -= notches
-                    probeNotches += notches
-                    // Apps redraw per report: send bursts, not one frame per
-                    // notch (this is what made opencode crawl).
-                    pendingWheelNotches += notches
-                    val now = android.os.SystemClock.uptimeMillis()
-                    if (now - lastWheelFlushMs >= WHEEL_THROTTLE_MS) {
-                        flushWheelNotches()
-                    } else if (!wheelFlushQueued) {
-                        wheelFlushQueued = true
-                        view.postDelayed(
-                            wheelFlushRunnable,
-                            WHEEL_THROTTLE_MS - (now - lastWheelFlushMs),
-                        )
-                    }
-                }
+                // Notches are batched per frame; the stride comes from the
+                // audited table and is corrected once a gesture is measured.
+                probeNotches += wheelBurst.addRows(
+                    rows,
+                    ScrollLearning.rowsPerNotch(diagnosticsAgent),
+                )
             }
 
             ScrollMechanism.PAGE_KEY -> {
@@ -445,35 +425,7 @@ class TermuxTerminalHost(
         wheelAgent = dev.herdr.mobile.core.model.AgentMatrix.useWheelScroll(diagnosticsAgent),
     )
 
-    /**
-     * A scroll request whose effect is being verified.
-     *
-     * The app cannot know statically whether a TUI honours PgUp, wheel bytes or
-     * a host offset, and the mirror carries no DECSET state to ask. So the
-     * first request per pane is a probe: hash the visible screen, send, then
-     * check whether anything moved. Inert mechanisms are swapped out and the
-     * same rows are re-sent, so the user's gesture is never lost.
-     */
-    private data class ScrollProbe(
-        val mechanism: ScrollMechanism,
-        val rows: Int,
-        /** Visible lines when the probe started (the scroll anchor set). */
-        val lines: List<String>,
-        /** Hash of [lines]: one screen read per probe, not two. */
-        val signature: Int,
-    )
-
     private var probe: ScrollProbe? = null
-
-    /** FNV-1a over the visible lines: cheap, stable while the pane is idle. */
-    private fun signatureOf(lines: List<String>): Int {
-        var hash = 0x811c9dc5.toInt()
-        for (line in lines) {
-            for (c in line) hash = (hash xor c.code) * 0x01000193
-            hash = (hash xor '\n'.code) * 0x01000193
-        }
-        return hash
-    }
 
     private fun screenText(): String? = try {
         view.currentSession?.emulator?.screen?.transcriptText
@@ -485,48 +437,18 @@ class TermuxTerminalHost(
         screenText()?.split('\n')?.map { it.trimEnd() }.orEmpty()
 
     /**
-     * Rows the transcript moved, estimated by finding the vertical shift that
-     * best matches the old screen against the new one.
-     *
-     * A single anchor line is fragile: live panes repaint rows (spinners,
-     * counters) and a diagnostics overlay may own the first line. Voting over
-     * every non-blank line rejects those outliers. Returns 0 unless a shift
-     * explains a meaningful fraction of the screen, so a live repaint is not
-     * mistaken for a scroll.
-     */
-    private fun movedRows(before: List<String>, after: List<String>): Int {
-        if (before.isEmpty() || after.isEmpty()) return 0
-        val anchors = before.count { it.isNotBlank() }
-        if (anchors == 0) return 0
-        var bestShift = 0
-        var bestScore = 0
-        val maxShift = minOf(after.size - 1, MAX_MEASURED_ROWS)
-        for (shift in 1..maxShift) {
-            var score = 0
-            for (i in 0 until minOf(before.size, after.size - shift)) {
-                if (before[i].isNotBlank() && before[i] == after[i + shift]) score++
-            }
-            if (score > bestScore) {
-                bestScore = score
-                bestShift = shift
-            }
-        }
-        return if (bestScore >= maxOf(3, anchors / 3)) bestShift else 0
-    }
-
-    /**
      * Called on a timer after a probed request: did the pane actually move?
      *
      * Success records the mechanism and, for wheel, the measured stride. Failure
-     * advances to the next mechanism and replays the same rows; when nothing is
-     * left the pane is handed back to Termux for good (a stale agent label).
+     * on a pane whose host scroll state is unknown hands it back to Termux for
+     * good (a stale agent label); the lever itself is never downgraded.
      */
     fun settleProbe() {
         val pending = probe ?: return
         probe = null
         val after = visibleLines()
         val moved = movedRows(pending.lines, after)
-        val changed = signatureOf(after) != pending.signature
+        val changed = screenSignature(after) != pending.signature
         // A live pane repaints constantly (spinners, clocks), so "the screen
         // changed" is not proof that the gesture scrolled. The anchor line
         // moving down the screen is: that is the transcript scrolling.
@@ -544,19 +466,21 @@ class TermuxTerminalHost(
         probeNotches = 0
         if (!hostScrollKnown) {
             inputDead = true
-            applyLocalScroll(pending.rows)
+            TermuxViewport.applyLocalScroll(view, snapshotHistorySize, pending.rows)
         }
     }
 
     /** True once every input mechanism failed: hand the pane back to Termux. */
     private var inputDead = false
 
-    /** Fractional-row carry across wheel gestures. */
-    private var wheelNotchRemainder = 0.0
-
-    /** Notches waiting for the next coalesced flush. */
-    private var pendingWheelNotches = 0
-    private var lastWheelFlushMs = 0L
+    private val wheelBurst: WheelBurst = WheelBurst(
+        throttleMs = WHEEL_THROTTLE_MS,
+        emit = { notches -> onRemoteWheel?.invoke(notches) },
+        postDelayed = { delayMs, action -> view.postDelayed(action, delayMs) },
+        cancelPending = { view.removeCallbacks(wheelFlushAction) },
+        clock = { android.os.SystemClock.uptimeMillis() },
+    )
+    private val wheelFlushAction: Runnable = Runnable { wheelBurst.flush() }
 
     /** Notches sent during the current probe (for stride calibration). */
     private var probeNotches = 0
@@ -568,21 +492,6 @@ class TermuxTerminalHost(
     }
 
     private val probeCheck = Runnable { settleProbe() }
-
-    /**
-     * Rows the view actually shows. Measured from the view and its row pitch,
-     * not the mirror's grid: the two disagree while a resize round-trip is in
-     * flight (the mirror reported 22 rows for a 44-row view).
-     */
-    private fun visibleRows(): Int {
-        val pitch = rowHeightPx()
-        if (pitch > 0f && view.height > 0) return (view.height / pitch).toInt()
-        return try {
-            view.currentSession?.emulator?.mRows ?: 0
-        } catch (_: Exception) {
-            0
-        }
-    }
 
     /** Snap a scrolled viewport home (user input = back at the prompt). */
     fun snapToBottom() {
@@ -604,36 +513,11 @@ class TermuxTerminalHost(
 
     /** The IME went away on its own: re-arm the next summon. */
     fun onKeyboardHidden() = keyboard.onImeHidden()
-    private fun rowHeightPx(): Float {
-        // Live-exact: the renderer's row pitch is view height over rows (it lays
-        // out exactly mRows rows). The old fontSpacing guess ran ~14% small
-        // (typeface metrics), overscrolling every remote drag. Falls back to
-        // the guess only before attach (rows unknown — never scrolled then).
-        // The renderer's own pitch is the unit Termux uses for local scrolling,
-        // so remote pans move by the same amount as a local drag. Deriving it
-        // from view.height/rows instead made the same swipe travel a different
-        // distance depending on the pane (and on whether the keyboard was up).
-        TermuxInternals.rowPitchPx(view)?.let { return it }
-        val em = try {
-            view.currentSession?.emulator
-        } catch (_: Exception) {
-            null
-        }
-        val rows = em?.mRows ?: 0
-        if (rows > 0 && view.height > 0) return view.height.toFloat() / rows
-        val px = textSizePx
-        if (px <= 0) return 0f
-        measurePaint.textSize = px.toFloat()
-        return measurePaint.fontSpacing
-    }
+    private fun rowHeightPx(): Float =
+        TermuxViewport.rowHeightPx(view, textSizePx, measurePaint)
 
-    /** Shift the local transcript by [rows], clamped to the banked history. */
-    private fun applyLocalScroll(rows: Int) {
-        val history = snapshotHistorySize
-        if (history <= 0 || rows == 0) return
-        view.topRow = (view.topRow + rows).coerceIn(-history, 0)
-        view.invalidate()
-    }
+    /** Rows the view actually shows (view geometry first, mirror fallback). */
+    private fun visibleRows(): Int = TermuxViewport.visibleRows(view, rowHeightPx())
 
     /**
      * A short drag produces less than one notch; without this the gesture
@@ -642,27 +526,8 @@ class TermuxTerminalHost(
      */
     private fun flushWheelRemainder() {
         if (hostScrollable || activeMechanism() != ScrollMechanism.WHEEL) return
-        if (wheelNotchRemainder != 0.0) {
-            // A sub-notch drag still has to do something.
-            pendingWheelNotches += if (wheelNotchRemainder > 0) 1 else -1
-            wheelNotchRemainder = 0.0
-        }
-        flushWheelNotches()
+        wheelBurst.flushTail()
     }
-
-    /** Send the accumulated notches as one burst. */
-    private fun flushWheelNotches() {
-        view.removeCallbacks(wheelFlushRunnable)
-        wheelFlushQueued = false
-        val notches = pendingWheelNotches
-        pendingWheelNotches = 0
-        if (notches == 0) return
-        lastWheelFlushMs = android.os.SystemClock.uptimeMillis()
-        onRemoteWheel?.invoke(notches)
-    }
-
-    private val wheelFlushRunnable = Runnable { flushWheelNotches() }
-    private var wheelFlushQueued = false
 
     /** Emit a sub-page gesture as one page when the finger lifts. */
     private fun flushPageRemainder() {

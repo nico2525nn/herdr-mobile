@@ -1,0 +1,59 @@
+#!/usr/bin/env bash
+# Fast local gate: JVM unit tests plus the Rust daemon tests.
+#
+#   tools/check.sh
+#
+# No emulator, no daemon, no device: this is the loop to run while coding and
+# before pushing. The on-device smoke is tools/ci.sh's job. Both suites run even
+# when the first one fails so a single run reports every broken side.
+set -euo pipefail
+
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+cd "$ROOT"
+
+# A fresh checkout does not always carry the executable bit on the wrapper.
+[[ -x ./gradlew ]] || chmod +x ./gradlew
+
+PASSED=0
+FAILED=0
+SKIPPED=0
+declare -a RESULTS=()
+
+record() {
+  local status="$1" name="$2"
+  RESULTS+=("$(printf '%-4s  %s' "$status" "$name")")
+}
+
+run() {
+  local name="$1"
+  shift
+  printf '\n== %s\n' "$name"
+  if "$@"; then
+    record PASS "$name"
+    PASSED=$((PASSED + 1))
+  else
+    record FAIL "$name"
+    FAILED=$((FAILED + 1))
+  fi
+}
+
+gradle_tests() { ./gradlew test --offline --console=plain; }
+cargo_tests()  { ( cd daemon && cargo test --release --offline ); }
+
+run "JVM unit tests (./gradlew test --offline)" gradle_tests
+
+if command -v cargo >/dev/null 2>&1; then
+  run "daemon tests (cargo test --release --offline)" cargo_tests
+else
+  record SKIP "daemon tests: cargo is not on PATH"
+  SKIPPED=$((SKIPPED + 1))
+fi
+
+printf '\n===== check summary =====\n'
+printf '%s\n' "${RESULTS[@]}"
+if (( FAILED > 0 )); then
+  printf '\nCHECK FAILED: %d failed, %d passed, %d skipped\n' \
+    "$FAILED" "$PASSED" "$SKIPPED" >&2
+  exit 1
+fi
+printf '\nCHECK OK: %d passed, %d skipped\n' "$PASSED" "$SKIPPED"

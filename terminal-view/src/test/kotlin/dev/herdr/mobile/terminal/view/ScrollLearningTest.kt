@@ -11,16 +11,16 @@ import org.junit.Test
  * per notch, qwen: three). A wrong default is what made a drag run at half
  * speed, so the host also folds in measurements when it can see the shift.
  */
-class ScrollMechanismTest {
+class ScrollLearningTest {
 
     @Test
     fun `stride starts from the agent table`() {
         ScrollLearning.reset()
-        assertEquals(1.0, rowsPerNotch("codex"), 0.001)
+        assertEquals(1.0, ScrollLearning.rowsPerNotch("codex"), 0.001)
         // Pi moves two rows per notch (measured on device).
-        assertEquals(2.0, rowsPerNotch("pi"), 0.001)
-        assertEquals(3.0, rowsPerNotch("qwen"), 0.001)
-        assertEquals(1.0, rowsPerNotch("unknown-agent"), 0.001)
+        assertEquals(2.0, ScrollLearning.rowsPerNotch("pi"), 0.001)
+        assertEquals(3.0, ScrollLearning.rowsPerNotch("qwen"), 0.001)
+        assertEquals(1.0, ScrollLearning.rowsPerNotch("unknown-agent"), 0.001)
     }
 
     @Test
@@ -28,17 +28,17 @@ class ScrollMechanismTest {
         ScrollLearning.reset()
         // qwen starts at 3; observing one row per notch pulls it down smoothly.
         ScrollLearning.observeRowsPerNotch("qwen", notches = 4, movedRows = 4)
-        assertEquals(2.0, rowsPerNotch("qwen"), 0.001)
+        assertEquals(2.0, ScrollLearning.rowsPerNotch("qwen"), 0.001)
         ScrollLearning.observeRowsPerNotch("qwen", notches = 4, movedRows = 4)
-        assertEquals(1.5, rowsPerNotch("qwen"), 0.001)
+        assertEquals(1.5, ScrollLearning.rowsPerNotch("qwen"), 0.001)
     }
 
     @Test
     fun `measurements are per app`() {
         ScrollLearning.reset()
         ScrollLearning.observeRowsPerNotch("qwen", notches = 2, movedRows = 6)
-        assertEquals(3.0, rowsPerNotch("qwen"), 0.001)
-        assertEquals(1.0, rowsPerNotch("codex"), 0.001)
+        assertEquals(3.0, ScrollLearning.rowsPerNotch("qwen"), 0.001)
+        assertEquals(1.0, ScrollLearning.rowsPerNotch("codex"), 0.001)
     }
 
     @Test
@@ -47,7 +47,7 @@ class ScrollMechanismTest {
         ScrollLearning.observeRowsPerNotch("qwen", notches = 0, movedRows = 5)
         ScrollLearning.observeRowsPerNotch("qwen", notches = 3, movedRows = 0)
         ScrollLearning.observeRowsPerNotch("qwen", notches = 1, movedRows = 100)
-        assertEquals(3.0, rowsPerNotch("qwen"), 0.001)
+        assertEquals(3.0, ScrollLearning.rowsPerNotch("qwen"), 0.001)
     }
 
 

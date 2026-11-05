@@ -44,6 +44,8 @@ interface HerdrSession {
 
     suspend fun renameTab(tabId: String, label: String)
 
+    suspend fun createWorkspace(label: String?, cwd: String?, focus: Boolean = true): String
+
     suspend fun closeWorkspace(workspaceId: String)
 
     suspend fun renameWorkspace(workspaceId: String, label: String)
@@ -53,6 +55,10 @@ interface HerdrSession {
     suspend fun moveWorkspace(workspaceId: String, insertIndex: Long)
 
     suspend fun interrupt(paneId: String)
+
+    suspend fun herdrUpdateStatus(): dev.herdr.mobile.core.model.HerdrUpdate
+
+    suspend fun runHerdrUpdate(): String
 
     /** Latest cached snapshot, or null before the first sync. */
     val snapshot: SessionSnapshot? get() = state.value.snapshot

@@ -34,7 +34,23 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
 SERIAL="${SERIAL:-}"
 AVD="${AVD:-Medium_Phone_API_37.0}"
-ADB="${ADB:-adb}"
+
+# Resolve the SDK the way Android tooling does: an explicit ANDROID_HOME wins,
+# then ANDROID_SDK_ROOT, then the per-user install. CI images export the env
+# vars; many developer machines have neither. ADB=<path> still overrides.
+ANDROID_SDK="${ANDROID_HOME:-${ANDROID_SDK_ROOT:-$HOME/Android/Sdk}}"
+if [[ -z "${ADB:-}" ]]; then
+  if [[ -x "$ANDROID_SDK/platform-tools/adb" ]]; then
+    ADB="$ANDROID_SDK/platform-tools/adb"
+  else
+    ADB="adb"
+  fi
+fi
+# tools/smoke.sh calls bare `adb`; make sure it finds the same binary.
+if [[ "$ADB" == */* ]]; then
+  PATH="$(cd "$(dirname "$ADB")" && pwd):$PATH"
+  export PATH
+fi
 HERDR="${HERDR:-herdr}"
 PRIVATE_SESSION="${PRIVATE_SESSION:-herdr-ci}"
 PRIVATE_PORT="${PRIVATE_PORT:-8799}"
@@ -356,8 +372,15 @@ if [[ -z "$SERIAL" ]]; then
   mapfile -t DEVICES < <("$ADB" devices 2>/dev/null | awk 'NR > 1 && $2 == "device" { print $1 }')
   case "${#DEVICES[@]}" in
     0)
-      EMULATOR_BIN="${EMULATOR_BIN:-$(command -v emulator || true)}"
-      [ -n "$EMULATOR_BIN" ] || die "no device attached and no 'emulator' on PATH"
+      EMULATOR_BIN="${EMULATOR_BIN:-}"
+      if [[ -z "$EMULATOR_BIN" && -x "$ANDROID_SDK/emulator/emulator" ]]; then
+        EMULATOR_BIN="$ANDROID_SDK/emulator/emulator"
+      fi
+      if [[ -z "$EMULATOR_BIN" ]]; then
+        EMULATOR_BIN="$(command -v emulator || true)"
+      fi
+      [[ -n "$EMULATOR_BIN" ]] ||
+        die "no device attached and no 'emulator' on PATH or in \$ANDROID_HOME"
       info "no device attached; starting AVD $AVD"
       "$EMULATOR_BIN" -avd "$AVD" -no-window -no-audio -no-boot-anim \
         -no-snapshot-save >/tmp/herdr-ci-emulator.log 2>&1 &
