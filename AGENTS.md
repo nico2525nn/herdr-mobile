@@ -32,6 +32,7 @@ remote host). Kotlin/Compose app + Rust daemon in `daemon/`.
 | `feature-terminal` | `TerminalScreen` (chrome) + `TerminalSurface` (view hosting) + `TerminalIme`, `PaneSessionController` → `TerminalAttach`/`TargetResolution`/`PendingInput`, `UiMessage` |
 | `core-network` | `HerdrSession` contract, `TerminalControl` (record parsing), link lifecycle, snapshot sync, transport |
 | `testing` | Shared fakes for tests (`FakeHerdrSession`, `FakeTerminalConnection`); test-only, never imported by app code |
+| `baselineprofile` | Macrobenchmark module that generates `app/src/release/generated/baselineProfiles/baseline-prof.txt` |
 | `daemon/` | HTTP + websocket bridge, herdr TUI and herdr-core backends |
 
 ## Tests
@@ -42,6 +43,23 @@ remote host). Kotlin/Compose app + Rust daemon in `daemon/`.
   `SettingsCodec`.
 - Compose/Android wiring lives in `src/androidTest` and needs a device.
 - Fakes shared by more than one module belong in `:testing`, not copied.
+- Coverage is opt-in (`-Pcoverage`), so `./gradlew test --offline` never needs
+  the JaCoCo agent; reports land in `<module>/build/reports/jacoco/`.
+
+## Performance rules
+
+Measured before/after, do not regress casually:
+
+- **Never read a per-keystroke counter in composition.** `inputTick` is a Flow
+  consumed inside the terminal surface; as a parameter it recomposed the whole
+  screen and ran the `AndroidView` update (typeface, palette reset, lambdas) per key.
+- The `AndroidView.update` block must only apply work whose input changed
+  (`ViewStyle` ledger): `TermuxSchemes.apply` also resets the session palette,
+  which wipes OSC-colour changes.
+- View callbacks bind once; captured state goes through `rememberUpdatedState`.
+- The scroll probe reads the **visible window**, never the whole transcript.
+- Releasing another pane's socket is background work; only a same-pane reattach
+  waits for the release (grid restore ordering).
 
 ## Commands
 
@@ -50,8 +68,16 @@ remote host). Kotlin/Compose app + Rust daemon in `daemon/`.
 adb -s emulator-5554 install -r app/build/outputs/apk/debug/app-debug.apk
 tools/check.sh              # JVM unit tests + daemon tests (the local gate)
 ./gradlew test --offline
+./gradlew test -Pcoverage --offline        # + JaCoCo per module
 ./gradlew :feature-terminal:connectedDebugAndroidTest   # instrumented UI
+./gradlew :feature-home:connectedDebugAndroidTest :feature-settings:connectedDebugAndroidTest
 cd daemon && cargo test --offline
+
+# Regenerate the startup profile after changing startup/Home composition
+# (needs a booted device and HERDR_RELEASE_KEYSTORE_PASSWORD):
+./gradlew :app:generateBaselineProfile
+# The generated app/src/release/generated/baselineProfiles/baseline-prof.txt
+# is committed and consumed by the release build.
 tools/ci.sh                 # boots AVD from scratch if no device, provisions
                             # the IME, runs the smoke, tears everything down
 # CI (.github/workflows/ci.yml): kotlin unit, rust, and the isolated emulator

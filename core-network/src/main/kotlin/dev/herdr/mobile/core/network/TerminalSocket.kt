@@ -22,6 +22,49 @@ import okhttp3.WebSocketListener
 import okio.ByteString
 import java.util.concurrent.atomic.AtomicBoolean
 
+internal sealed interface OutboundFrame {
+    data class Binary(val data: ByteArray) : OutboundFrame
+
+    /** Typed text: encoded once per burst, not once per character. */
+    data class TextInput(val text: String) : OutboundFrame
+    data class Text(val text: String) : OutboundFrame
+}
+
+/**
+ * Collapse a turn of queued outbound frames. Bytes concatenate (PTY order),
+ * typed text accumulates into one `input.text`, and any control record flushes
+ * both first so resize/scroll never jump ahead of input.
+ */
+internal fun mergeOutbound(values: List<OutboundFrame>): List<OutboundFrame> {
+    val out = ArrayList<OutboundFrame>(values.size)
+    var bytes: ByteArray? = null
+    var text: StringBuilder? = null
+    fun flush() {
+        bytes?.let { out += OutboundFrame.Binary(it) }
+        bytes = null
+        text?.let { out += OutboundFrame.TextInput(it.toString()) }
+        text = null
+    }
+    for (value in values) {
+        when (value) {
+            is OutboundFrame.Binary -> {
+                if (text != null) flush()
+                bytes = bytes?.plus(value.data) ?: value.data
+            }
+            is OutboundFrame.TextInput -> {
+                if (bytes != null) flush()
+                text = text?.append(value.text) ?: StringBuilder(value.text)
+            }
+            is OutboundFrame.Text -> {
+                flush()
+                out += value
+            }
+        }
+    }
+    flush()
+    return out
+}
+
 /**
  * Everything the terminal screen observes or drives for one attached pane.
  *
@@ -40,6 +83,13 @@ interface TerminalConnection {
     suspend fun scrollRemote(lines: Int, allowPageKey: Boolean, unit: String)
     suspend fun mouse(action: String, button: String, column: Int, row: Int)
     suspend fun release()
+
+    /**
+     * Drop the replay cache once the live consumer has drained it. The cache
+     * exists only for the attach race (prelude before the pump subscribes);
+     * afterwards it would pin history frames for the session's lifetime.
+     */
+    fun clearReplayCache() {}
 
     val isOpen: Boolean
 }
@@ -134,20 +184,32 @@ class TerminalSocket(
         scope.launch { pump() }
     }
 
-    private sealed interface OutboundFrame {
-        data class Binary(val data: ByteArray) : OutboundFrame
-        data class Text(val text: String) : OutboundFrame
-    }
-
     private suspend fun pump() {
-        for (frame in outbound) {
+        while (true) {
+            val first = outbound.receiveCatching().getOrNull() ?: break
+            // Drain what is already queued, then send one frame per kind: key
+            // rolls and IME bursts become a single socket frame. No timer, so
+            // latency is unchanged; control records still flush and keep order.
+            val turn = ArrayList<OutboundFrame>(8)
+            turn += first
+            while (true) {
+                turn += outbound.tryReceive().getOrNull() ?: break
+            }
             val ws = socket ?: break
-            when (frame) {
-                is OutboundFrame.Binary -> ws.send(ByteString.of(*frame.data))
-                is OutboundFrame.Text -> ws.send(frame.text)
+            for (frame in mergeOutbound(turn)) {
+                when (frame) {
+                    is OutboundFrame.Binary -> ws.send(ByteString.of(*frame.data))
+                    is OutboundFrame.TextInput -> ws.send(encodeInputText(frame.text))
+                    is OutboundFrame.Text -> ws.send(frame.text)
+                }
             }
         }
     }
+
+    private fun encodeInputText(text: String): String = HerdrJson.encodeToString(
+        TerminalProtocol.InputText.serializer(),
+        TerminalProtocol.InputText(text),
+    )
 
     /**
      * Single ordered inbound lane: every frame (fast or slow path) goes through
@@ -203,11 +265,7 @@ class TerminalSocket(
     }
 
     override suspend fun sendText(text: String) {
-        val record = HerdrJson.encodeToString(
-            TerminalProtocol.InputText.serializer(),
-            TerminalProtocol.InputText(text),
-        )
-        outbound.send(OutboundFrame.Text(record))
+        outbound.send(OutboundFrame.TextInput(text))
     }
 
     override suspend fun resize(cols: Int, rows: Int) {
@@ -246,6 +304,10 @@ class TerminalSocket(
     }
 
     private val released = AtomicBoolean(false)
+
+    override fun clearReplayCache() {
+        _inbound.resetReplayCache()
+    }
 
     override suspend fun release() {
         // Idempotent: DisposableEffect and onCleared race on the same socket when
@@ -334,4 +396,5 @@ class TerminalSocket(
             }
         }
     }
+
 }

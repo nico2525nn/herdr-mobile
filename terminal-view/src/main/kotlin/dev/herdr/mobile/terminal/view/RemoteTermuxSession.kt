@@ -108,7 +108,12 @@ class RemoteTermuxSession(
         lastRows = rows
         session.updateSize(cols, rows, 0, 0)
         pump = scope.launch {
+            var firstFrame = true
             backend.bytes.collect { data ->
+                if (firstFrame) {
+                    firstFrame = false
+                    runCatching { backend.clearReplayCache() }
+                }
                 // Main thread only (scope is Main.immediate): Termux has no
                 // locking and the view reads the emulator on draw.
                 check(Looper.myLooper() == Looper.getMainLooper()) {
@@ -127,8 +132,10 @@ class RemoteTermuxSession(
                     view.postDelayed(redrawRunnable, REDRAW_COALESCE_MS)
                 }
                 // Resize watcher: the view recomputes the grid internally on
-                // layout (no callback); forward changes to the backend.
-                val (colsNow, rowsNow) = emulator.grid()
+                // layout (no callback); forward changes to the backend. Two
+                // field reads, no allocation: this runs per incoming chunk.
+                val colsNow = emulator.mColumns
+                val rowsNow = emulator.mRows
                 if (colsNow != lastCols || rowsNow != lastRows) {
                     lastCols = colsNow
                     lastRows = rowsNow
@@ -147,7 +154,8 @@ class RemoteTermuxSession(
      * transcript rows). Call after layout (view.post) so updateSize ran first.
      */
     fun syncBackendSize() {
-        val (colsNow, rowsNow) = emulator.grid()
+        val colsNow = emulator.mColumns
+        val rowsNow = emulator.mRows
         if (colsNow == lastCols && rowsNow == lastRows) return
         lastCols = colsNow
         lastRows = rowsNow

@@ -196,7 +196,11 @@ class FakeTerminalConnection(
 
     override suspend fun mouse(action: String, button: String, column: Int, row: Int) = Unit
 
+    /** How long [release] blocks (a real socket waits ~150ms). */
+    var releaseDelayMs: Long = 0
+
     override suspend fun release() {
+        if (releaseDelayMs > 0) kotlinx.coroutines.delay(releaseDelayMs)
         released++
         isOpen = false
     }

@@ -41,6 +41,13 @@ interface TerminalBackend {
     suspend fun mouse(action: String, button: String, column: Int, row: Int)
 
     suspend fun release()
+
+    /**
+     * Drop any buffered frames the live consumer has already drained. The
+     * transport keeps a small replay buffer for the attach race; releasing it
+     * after the pump subscribes stops it pinning history for the session.
+     */
+    fun clearReplayCache() {}
 }
 
 sealed interface BackendState {

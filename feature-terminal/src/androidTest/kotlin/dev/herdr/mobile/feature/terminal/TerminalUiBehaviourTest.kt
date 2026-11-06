@@ -6,7 +6,9 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.SemanticsProperties
+import androidx.compose.ui.state.ToggleableState
 import androidx.compose.ui.test.SemanticsMatcher
 import androidx.compose.ui.test.assert
 import androidx.compose.ui.test.assertIsDisplayed
@@ -17,6 +19,7 @@ import androidx.compose.ui.test.performClick
 import androidx.compose.ui.test.hasText
 import dev.herdr.mobile.core.designsystem.HerdrMobileTheme
 import dev.herdr.mobile.core.model.ThemeMode
+import dev.herdr.mobile.core.model.AgentStatus
 import dev.herdr.mobile.core.model.AppSettings
 import dev.herdr.mobile.core.model.ConnectionState
 import dev.herdr.mobile.core.model.Pane
@@ -227,5 +230,167 @@ class TerminalUiBehaviourTest {
         }
         compose.onNodeWithContentDescription("Terminal keyboard").performClick()
         assertEquals(1, summoned)
+    }
+
+    // ---- announced state -----------------------------------------------
+
+    @Test
+    fun paneRailAnnouncesPositionThenNameThenStatus() {
+        // Split panes routinely share one title ("user@host:/tmp"), so the
+        // leading position is the only thing that keeps them apart when
+        // spoken. The status rides on stateDescription, which TalkBack reads
+        // after the text: "1 · user@host:/tmp, Working, selected".
+        val panes = listOf(
+            Pane(
+                id = "w1:p1",
+                tabId = "t1",
+                workspaceId = "w1",
+                label = "user@host:/tmp",
+                status = AgentStatus.WORKING,
+            ),
+            Pane(
+                id = "w1:p2",
+                tabId = "t1",
+                workspaceId = "w1",
+                label = "user@host:/tmp",
+                status = AgentStatus.IDLE,
+            ),
+            Pane(
+                id = "w1:p3",
+                tabId = "t1",
+                workspaceId = "w1",
+                agent = "codex",
+                status = AgentStatus.IDLE,
+            ),
+        )
+        compose.setContent {
+            HerdrMobileTheme(themeMode = ThemeMode.DARK) {
+                PaneRail(
+                    panes = panes,
+                    activePaneId = "w1:p1",
+                    onSelectPane = {},
+                )
+            }
+        }
+
+        compose.onNodeWithText("1 · user@host:/tmp")
+            .assert(
+                SemanticsMatcher.expectValue(
+                    SemanticsProperties.StateDescription,
+                    "Working, selected",
+                ),
+            )
+        compose.onNodeWithText("2 · user@host:/tmp")
+            .assert(
+                SemanticsMatcher.expectValue(
+                    SemanticsProperties.StateDescription,
+                    "Idle",
+                ),
+            )
+        // No explicit label for p3: the agent name stands in for it, still
+        // behind the position.
+        compose.onNodeWithText("3 · codex")
+            .assert(
+                SemanticsMatcher.expectValue(
+                    SemanticsProperties.StateDescription,
+                    "Idle",
+                ),
+            )
+    }
+
+    @Test
+    fun chipTextIsAnnouncedOnceAndStatusFillsTheState() {
+        // The label is the visible text; repeating it as a contentDescription
+        // made TalkBack say every chip name twice.
+        val state = state()
+        compose.setContent {
+            HerdrMobileTheme(themeMode = ThemeMode.DARK) {
+                TabRail(
+                    state = state,
+                    onSelectTab = { _, _ -> },
+                    onSummonKeyboard = {},
+                    onAddTab = {},
+                    onTabLongPress = { _, _, _ -> },
+                    onMoveTab = { _, _ -> },
+                    menuTarget = null,
+                    onDismissMenu = {},
+                    onRenameMenu = {},
+                    onCloseMenu = {},
+                )
+            }
+        }
+
+        compose.onNodeWithText("one")
+            .assert(
+                SemanticsMatcher.keyNotDefined(
+                    SemanticsProperties.ContentDescription,
+                ),
+            )
+            .assert(
+                SemanticsMatcher.expectValue(
+                    SemanticsProperties.StateDescription,
+                    "Status unknown, selected",
+                ),
+            )
+        compose.onNodeWithText("two")
+            .assert(
+                SemanticsMatcher.expectValue(
+                    SemanticsProperties.StateDescription,
+                    "Status unknown",
+                ),
+            )
+    }
+
+    @Test
+    fun stickyModifierAnnouncesItsToggleState() {
+        // SHIFT/CTRL/ALT latch until the next key, so their armed state is
+        // real state — colour alone is not an announcement.
+        var armed by mutableStateOf(setOf(TerminalKeyEncoder.Modifier.SHIFT))
+        compose.setContent {
+            HerdrMobileTheme(themeMode = ThemeMode.DARK) {
+                ExtraKeysPanel(
+                    onKey = {},
+                    armed = armed,
+                    haptic = false,
+                )
+            }
+        }
+
+        compose.onNodeWithText("SHIFT")
+            .assert(
+                SemanticsMatcher.expectValue(
+                    SemanticsProperties.Role,
+                    Role.Button,
+                ),
+            )
+            .assert(
+                SemanticsMatcher.expectValue(
+                    SemanticsProperties.ToggleableState,
+                    ToggleableState.On,
+                ),
+            )
+        compose.onNodeWithText("CTRL")
+            .assert(
+                SemanticsMatcher.expectValue(
+                    SemanticsProperties.ToggleableState,
+                    ToggleableState.Off,
+                ),
+            )
+        // Plain keys are press-only: no latch, no toggle state.
+        compose.onNodeWithText("ESC")
+            .assert(
+                SemanticsMatcher.keyNotDefined(
+                    SemanticsProperties.ToggleableState,
+                ),
+            )
+
+        compose.runOnIdle { armed = emptySet() }
+        compose.onNodeWithText("SHIFT")
+            .assert(
+                SemanticsMatcher.expectValue(
+                    SemanticsProperties.ToggleableState,
+                    ToggleableState.Off,
+                ),
+            )
     }
 }

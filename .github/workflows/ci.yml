@@ -43,8 +43,19 @@ jobs:
         uses: gradle/actions/setup-gradle@v4
 
       # Online resolution: a cold runner has no Gradle dependency cache.
-      - name: Run unit tests
-        run: ./gradlew test --console=plain
+      - name: Run unit tests with coverage
+        run: ./gradlew test -Pcoverage --console=plain
+
+      # Coverage is opt-in (-Pcoverage), so only this job resolves JaCoCo.
+      # Upload on every run, not just failures: the XML feeds coverage diffing.
+      - name: Upload coverage
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage
+          path: "*/build/reports/jacoco/**/*.xml"
+          if-no-files-found: ignore
+          retention-days: 7
 
   rust:
     name: Rust daemon tests
@@ -162,6 +173,17 @@ jobs:
           echo "AVD=Medium_Phone_API_$API_LEVEL" >> "$GITHUB_ENV"
           echo "resolved API $API_LEVEL ($IMAGE_TARGET); AVD Medium_Phone_API_$API_LEVEL"
 
+      # Warm AVD + adb keys for repeat runs. Keyed by the resolved API level and
+      # target, so a cache miss (first run, or a new image) still creates and
+      # boots the AVD normally; a hit restores the snapshot and skips cold boot.
+      - name: Cache AVD
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.android/avd
+            ~/.android/adb*
+          key: avd-${{ runner.os }}-api-${{ env.API_LEVEL }}-${{ env.SYSTEM_IMAGE_TARGET }}
+
       - name: Install herdr and smoke dependencies
         run: |
           set -euo pipefail
@@ -181,6 +203,13 @@ jobs:
           arch: x86_64
           profile: medium_phone
           avd-name: ${{ env.AVD }}
+          # Reuse the AVD restored from cache instead of deleting and
+          # recreating it every run; on a cache miss the action creates it.
+          force-avd-creation: false
+          # The action's default options minus -no-snapshot: the AVD cache only
+          # saves boot time if the quick-boot snapshot is loaded (and saved
+          # again by `adb emu kill` at the end of the run).
+          emulator-options: -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim
           emulator-boot-timeout: 900
           script: tools/ci.sh
 

@@ -195,39 +195,42 @@ impl TerminalChild {
 
 /// Parse one stdout line. Returns `Ok(None)` for lines that carry no payload.
 pub fn parse_record(line: &str) -> Result<Option<ChildRecord>> {
-    let value: Value = serde_json::from_str(line)?;
-    if value.get("error").is_some() {
-        let code = value
-            .pointer("/error/code")
-            .and_then(|c| c.as_str())
-            .unwrap_or("terminal_error");
-        let message = value
-            .pointer("/error/message")
-            .and_then(|m| m.as_str())
-            .unwrap_or("terminal child error");
+    // Typed decode, not a JSON DOM: this runs for every child frame (one per
+    // terminal chunk), and Value built a temporary tree per call.
+    let record: ChildRecordJson = serde_json::from_str(line)?;
+    if let Some(error) = record.error {
+        let code = error.code.as_deref().unwrap_or("terminal_error");
+        let message = error.message.as_deref().unwrap_or("terminal child error");
         anyhow::bail!("terminal child error {code}: {message}");
     }
-    match value.get("type").and_then(|t| t.as_str()) {
+    match record.kind.as_deref() {
         Some("terminal.frame") => {
-            let encoded = value
-                .get("bytes")
-                .and_then(|b| b.as_str())
-                .context("terminal.frame has no bytes")?;
+            let encoded = record.bytes.context("terminal.frame has no bytes")?;
             let bytes = base64::engine::general_purpose::STANDARD
                 .decode(encoded)
                 .context("terminal.frame bytes are not base64")?;
             Ok(Some(ChildRecord::Frame(bytes)))
         }
-        Some("terminal.closed") => {
-            let reason = value
-                .get("reason")
-                .and_then(|r| r.as_str())
-                .unwrap_or("closed")
-                .to_string();
-            Ok(Some(ChildRecord::Closed(reason)))
-        }
+        Some("terminal.closed") => Ok(Some(ChildRecord::Closed(
+            record.reason.unwrap_or_else(|| "closed".to_string()),
+        ))),
         _ => Ok(None),
     }
+}
+
+#[derive(serde::Deserialize)]
+struct ChildRecordJson {
+    #[serde(rename = "type")]
+    kind: Option<String>,
+    bytes: Option<String>,
+    reason: Option<String>,
+    error: Option<ChildErrorJson>,
+}
+
+#[derive(serde::Deserialize)]
+struct ChildErrorJson {
+    code: Option<String>,
+    message: Option<String>,
 }
 
 #[cfg(test)]

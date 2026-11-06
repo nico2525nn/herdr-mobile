@@ -221,143 +221,30 @@ class TermuxTerminalHost(
     var textSizePx: Int = 0
 
     private val measurePaint = android.graphics.Paint()
-    private var scrollRemainder = 0f
-    private var remoteArmed = false
 
-    private val remoteGestures = GestureDetector(
-        view.context,
-        object : GestureDetector.SimpleOnGestureListener() {
-            override fun onDown(e: MotionEvent): Boolean = true
-
-            override fun onScroll(
-                e1: MotionEvent?,
-                e2: MotionEvent,
-                distanceX: Float,
-                distanceY: Float,
-            ): Boolean {
-                // Termux mScrollRemainder model: carry fractional pixels so
-                // slow drags still move. Sign matches the old view exactly:
-                // finger-down (distanceY<0) = older-ward = negative lines =
-                // direction UP; finger-up = live-ward = positive = DOWN.
-                val next = rowsForDrag(distanceY, scrollRemainder, rowHeightPx())
-                scrollRemainder = next.remainderPx
-                if (next.rows != 0) {
-                    remoteArmed = true
-                    requestScroll(next.rows, immediate = false)
-                }
-                return true
-            }
-
-            override fun onFling(
-                e1: MotionEvent?,
-                e2: MotionEvent,
-                velocityX: Float,
-                velocityY: Float,
-            ): Boolean {
-                // Fling continues the drag direction: finger-up fling
-                // (velocityY < 0) heads live-ward = positive lines.
-                // Bounded and measured in the same row unit as the drag: a
-                // fixed ±12-row jump on top of the drag's own rows is what
-                // made fast swipes overshoot unpredictably. ~0.1s of travel,
-                // capped at 6 rows, keeps the flick responsive but repeatable.
-                val rowPx = rowHeightPx()
-                if (rowPx <= 0f) return true
-                val rows = (-velocityY * 0.10f / rowPx).toInt().coerceIn(-6, 6)
-                if (rows != 0) {
-                    remoteArmed = true
-                    requestScroll(rows, immediate = true)
-                }
-                return true
-            }
-        },
-    )
-
-    init {
-        // Long-press DISABLED on our detector: stock GestureDetector swallows
-        // every MOVE after its own 500ms long-press fires (mInLongPress gate),
-        // which would deaden onScroll for dwell-then-drag — the reported
-        // frozen-selection + zero-scroll. Termux's own detector (separate
-        // instance) still selects on a still finger; once the finger moves
-        // big, our onScroll fires and the scroll clears the selection.
-        remoteGestures.setIsLongpressEnabled(false)
-        view.setOnTouchListener { _, event ->
-            onTouch(event)
-        }
-    }
-
-    /**
-     * True once the finger moved in the current stream (remote mode). The host
-     * consumes pre-arm MOVEs so Termux never sees them — without this its
-     * long-press timer (which MOVE cancels) would fire mid-scroll and start a
-     * selection on every slow scroll. The view client consumes long-press
-     * when this is set: stillness = select, motion = scroll.
-     */
-    @Volatile
-    var touchMoved = false
-        private set
-
-    private fun onTouch(event: MotionEvent): Boolean {
-        if (!remoteEffective) {
-            remoteArmed = false
-            touchMoved = false
-            return false // Termux handles everything (local history scroll).
-        }
-        if (event.action == MotionEvent.ACTION_DOWN) {
+    private val gestures = TermuxScrollGestures(
+        view = view,
+        remote = { remoteEffective },
+        rowHeightPx = { rowHeightPx() },
+        requestScroll = { rows, immediate -> requestScroll(rows, immediate) },
+        onGestureStart = {
             // A new gesture owns the probe: drop the pending check so a stale
             // comparison cannot "fail" a mechanism that was still settling.
             view.removeCallbacks(probeCheck)
             probe = null
             pageRemainder = 0
-            scrollRemainder = 0f
-            remoteArmed = false
-            touchMoved = false
-        }
-        if (event.action == MotionEvent.ACTION_MOVE) {
-            touchMoved = true
-        }
-        remoteGestures.onTouchEvent(event)
-        if (event.action == MotionEvent.ACTION_UP ||
-            event.action == MotionEvent.ACTION_CANCEL
-        ) {
-            // Dwell-then-drag: the scroll already tried to clear the
-            // just-started selection, but Termux's hide() refuses within
-            // 300ms of show (anti-flicker guard) — a short fast drag ends
-            // inside the guard and the selection sticks. Retry at stream
-            // end (show is old by now), plus one delayed retry for the
-            // pathological micro-drag. Gated on remoteArmed: a still
-            // long-press (no scroll) must keep its selection on UP.
-            // The delayed retry cannot nuke a NEW selection: starting one
-            // needs its own 500ms long-press, past the 350ms retry.
-            if (remoteArmed) {
-                flushPageRemainder()
-                flushWheelRemainder()
-                // Flush the coalesced tail NOW: the drag's last rows must not
-                // wait for the 150ms timer (that lag reads as an eaten flick).
-                flushPending()
-                try {
-                    view.stopTextSelectionMode()
-                } catch (_: Exception) {
-                }
-                if (view.isSelectingText) {
-                    view.postDelayed({
-                        try {
-                            view.stopTextSelectionMode()
-                        } catch (_: Exception) {
-                        }
-                    }, 350)
-                }
-            }
-            remoteArmed = false
-            return false // tap / long-press completes inside Termux.
-        }
-        if (remoteArmed) return true
-        // Pre-arm movement: consume (a remote scroll must never reach
-        // Termux's doScroll — it would emit arrow bytes / mouse reports into
-        // the dead session AND shift mTopRow locally, double-scrolling
-        // against the server repaint). onScroll arms within touch slop.
-        if (event.action == MotionEvent.ACTION_MOVE) return true
-        return false
-    }
+        },
+        onGestureEnd = {
+            flushPageRemainder()
+            flushWheelRemainder()
+            // Flush the coalesced tail NOW: the drag's last rows must not
+            // wait for the 150ms timer (that lag reads as an eaten flick).
+            flushPending()
+        },
+    )
+
+    /** See [TermuxScrollGestures.touchMoved]; read by the view client. */
+    val touchMoved: Boolean get() = gestures.touchMoved
 
     private fun fireRemote(rows: Int) {
         // A remote scroll replaces the content (server repaint): any local
@@ -427,8 +314,23 @@ class TermuxTerminalHost(
 
     private var probe: ScrollProbe? = null
 
+    /**
+     * Text of the VISIBLE rows only.
+     *
+     * The probe compares what the user sees before and after a request. Reading
+     * the whole transcript (up to 2000 scrollback rows) allocated a large string
+     * plus thousands of line strings on the main thread at every gesture start;
+     * the viewport window is all the comparison needs.
+     */
     private fun screenText(): String? = try {
-        view.currentSession?.emulator?.screen?.transcriptText
+        val emulator = view.currentSession?.emulator ?: return null
+        val rows = visibleRows()
+        if (rows <= 0 || emulator.mColumns <= 0) {
+            null
+        } else {
+            val top = view.topRow
+            emulator.screen.getSelectedText(0, top, emulator.mColumns - 1, top + rows - 1)
+        }
     } catch (_: Exception) {
         null
     }

@@ -22,6 +22,9 @@ import androidx.compose.ui.input.pointer.PointerInputChange
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.platform.LocalHapticFeedback
+import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.semantics.toggleableState
+import androidx.compose.ui.state.ToggleableState
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import dev.herdr.mobile.terminal.view.TerminalKeyEncoder
@@ -192,7 +195,17 @@ private fun RepeatableKeyButton(
                 } else {
                     Modifier
                 },
-            ),
+            )
+            // Sticky modifiers (SHIFT/CTRL/ALT) are latches, not one-shot
+            // keys: expose the armed state as checkable so TalkBack hears
+            // "checked"/"not checked" instead of only seeing a colour change.
+            // Button already supplies Role.Button; adding it again here would
+            // collide with that semantics node.
+            .semantics {
+                if (key.modifier != null) {
+                    toggleableState = if (isArmed) ToggleableState.On else ToggleableState.Off
+                }
+            },
         shape = ButtonDefaults.filledTonalShape,
         contentPadding = PaddingValues(horizontal = 2.dp, vertical = 8.dp),
         // On the AMOLED theme every container role is black, so a tonal fill

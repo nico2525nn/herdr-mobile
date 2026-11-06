@@ -89,4 +89,23 @@ class UiMessageTest {
             rendered.toSet().size,
         )
     }
+
+    @Test
+    fun `a multi-line transport detail stays on one line`() {
+        val text = UiMessage.SendFailed("socket\nclosed\tat 12:00\u0007").text()
+        assertEquals("Send failed: socket closed at 12:00", text)
+        assertFalse(text.contains('\n'))
+    }
+
+    @Test
+    fun `a huge detail is capped with an ellipsis`() {
+        val text = UiMessage.AttachFailed("x".repeat(500)).text()
+        assertTrue(text.length <= "Cannot attach: ".length + 160)
+        assertTrue(text.endsWith("…"))
+    }
+
+    @Test
+    fun `a detail that sanitizes to nothing is unknown`() {
+        assertEquals("Cannot attach: unknown error", UiMessage.AttachFailed("\u0000\u0001").text())
+    }
 }

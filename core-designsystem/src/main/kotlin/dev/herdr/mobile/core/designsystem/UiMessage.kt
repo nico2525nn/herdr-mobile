@@ -77,7 +77,30 @@ fun UiMessage.text(): String = when (this) {
     is UiMessage.CommandFailed -> "${command.label()}: ${detail.orUnknown()}"
 }
 
-private fun String?.orUnknown(): String = this?.takeIf { it.isNotBlank() } ?: "unknown error"
+/**
+ * A daemon/transport detail, made safe for a one-line status strip.
+ *
+ * Raw exception messages arrive with newlines, control bytes, stack-ish
+ * repetition or kilobytes of upstream payload; the strip is one line and must
+ * never render escapes or push the layout. Unknown/blank stays "unknown error"
+ * so failures always name a reason.
+ */
+internal fun String?.orUnknown(): String {
+    val cleaned = this
+        ?.map { if (it.isISOControl()) ' ' else it }
+        ?.joinToString("")
+        ?.replace(Regex("\\s+"), " ")
+        ?.trim()
+        ?.takeIf { it.isNotEmpty() }
+        ?: return "unknown error"
+    return if (cleaned.length <= MAX_DETAIL_CHARS) {
+        cleaned
+    } else {
+        cleaned.take(MAX_DETAIL_CHARS - 1).trimEnd() + "…"
+    }
+}
+
+private const val MAX_DETAIL_CHARS = 160
 
 private fun UiMessage.CommandFailed.Command.label(): String = when (this) {
     UiMessage.CommandFailed.Command.CREATE_TAB -> "Cannot create tab"

@@ -117,11 +117,38 @@ internal fun ReorderableWorkspaceList(
     onWsMenu: (HomeWsMenuTarget) -> Unit,
     modifier: Modifier = Modifier,
 ) {
+    WorkspaceList(
+        state = state,
+        onMoveWorkspace = viewModel::moveWorkspace,
+        onOpenWorkspace = onOpenWorkspace,
+        onOpenTab = onOpenTab,
+        screenOrigin = screenOrigin,
+        onTabMenu = onTabMenu,
+        onWsMenu = onWsMenu,
+        modifier = modifier,
+    )
+}
+
+/**
+ * The list without a view model: everything it needs arrives as state plus
+ * callbacks, so instrumented tests can render a fixed snapshot.
+ */
+@Composable
+internal fun WorkspaceList(
+    state: HomeUiState,
+    onMoveWorkspace: (workspaceId: String, toIndex: Int) -> Unit,
+    onOpenWorkspace: (workspaceId: String, tabId: String?) -> Unit,
+    onOpenTab: (workspaceId: String, tabId: String) -> Unit,
+    screenOrigin: androidx.compose.ui.geometry.Offset,
+    onTabMenu: (HomeTabMenuTarget) -> Unit,
+    onWsMenu: (HomeWsMenuTarget) -> Unit,
+    modifier: Modifier = Modifier,
+) {
     val snapshot = state.snapshot ?: return
     val reorder = dev.herdr.mobile.core.designsystem.rememberReorderState(
         items = snapshot.workspaces,
         key = { it.id },
-        onDrop = { ws, to -> viewModel.moveWorkspace(ws.id, to) },
+        onDrop = { ws, to -> onMoveWorkspace(ws.id, to) },
     )
     LazyColumn(
         state = reorder.listState,

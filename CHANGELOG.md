@@ -1,5 +1,41 @@
 # Changelog
 
+## 1.9.0 — 2026-11-06
+
+Performance + platform-quality pass on top of the 1.8.0 refactor.
+
+- Typing: `inputTick` is collected as a flow inside the terminal surface, so a
+  keystroke no longer recomposes the screen. The `AndroidView` update pass now
+  applies scheme/font/cursor only when they changed, caches the typeface, and
+  binds the view's callbacks once (`rememberUpdatedState`). Side effect fixed:
+  `mColors.reset()` ran on every recomposition, wiping OSC 4/10/11 palette
+  changes from apps while typing.
+- Transport: queued outbound frames are coalesced per turn (keystroke bytes
+  concatenate, typed text becomes one `input.text`, control records flush
+  first), so key rolls and IME bursts send one socket frame instead of one per
+  character. The inbound replay buffer is dropped once the pump has consumed it.
+- Pane switching: switching to a different pane releases the old socket in the
+  background instead of waiting for its ~150ms close; same-pane reattach stays
+  serial because the release restores the pane grid.
+- Receive path: no per-chunk `Pair` allocation (direct `mColumns`/`mRows`), and
+  the scroll probe hashes only the visible rows instead of the full transcript.
+- The touch/gesture state machine moved to `TermuxScrollGestures`; the host is
+  now routing and state (681 → 448 lines), with the `bridgeRef` state replaced
+  by a typed holder.
+- Accessibility: chips announce their label once plus the status as a state
+  description (selection included), sticky SHIFT/CTRL/ALT announce their toggle
+  state. Icon buttons were already described.
+- Tests: 180 → 189 JVM (frame coalescing, parallel release, detail
+  sanitisation, outbound merge), plus 18 instrumented (terminal 11, Home 4,
+  Settings 3) and opt-in JaCoCo coverage (`-Pcoverage`).
+- Baseline profile: a `:baselineprofile` macrobenchmark module generates the
+  startup profile consumed by the release build.
+- Dependency: Material3 moved from `1.5.0-alpha17` to stable `1.4.0`; the Rust
+  daemon parses child records into typed structs instead of a JSON DOM; daemon
+  status details are sanitised to one line (control bytes stripped, 160-char
+  cap) instead of rendering raw multi-line errors.
+- CI: coverage artifact upload, cached AVD boot for the smoke job.
+
 ## 1.8.0 — 2026-11-05
 
 No user-facing feature: this release is the quality pass requested after 1.7.0.

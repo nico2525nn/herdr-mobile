@@ -219,7 +219,7 @@ fun TerminalScreen(
                     keyboardShowRequest = keyboardShowRequest,
                     keyboardShowHandled = keyboardShowHandled,
                     onKeyboardShowHandled = { keyboardShowHandled = it },
-                    inputTick = viewModel.inputTick.collectAsStateWithLifecycle().value,
+                    inputTick = viewModel.inputTick,
                     onGridChanged = { cols, rows -> viewModel.setAttachGrid(cols, rows) },
                     cjkFocus = cjkFocus,
                 )

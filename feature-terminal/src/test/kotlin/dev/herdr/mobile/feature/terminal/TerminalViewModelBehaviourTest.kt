@@ -25,6 +25,8 @@ import org.junit.Before
 import org.junit.Test
 import dev.herdr.mobile.core.network.testing.FakeHerdrSession
 import dev.herdr.mobile.core.network.testing.FakeTerminalConnection
+import kotlinx.coroutines.cancel
+import kotlinx.coroutines.test.runCurrent
 
 /**
  * Behaviour of the terminal screen's state machine, described from the user's
@@ -225,5 +227,40 @@ class TerminalViewModelBehaviourTest {
         advanceUntilIdle()
 
         assertEquals(listOf("a"), session.connections.single().sentText)
+    }
+
+    @Test
+    fun `switching panes does not wait for the previous release`() = runTest {
+        val p1 = pane("w1", "t1", "w1:p1")
+        val p2 = pane("w1", "t1", "w1:p2")
+        val session = FakeHerdrSession(snapshot(workspace("w1", listOf(tab("t1", "w1", listOf(p1, p2))))))
+        // Independent scope: the controller's collectors run until cancelled.
+        val controllerScope = kotlinx.coroutines.CoroutineScope(dispatcher)
+        val controller = PaneSessionController(
+            session = session,
+            scope = controllerScope,
+            onMessage = {},
+            initialWorkspaceId = null,
+            initialTabId = null,
+            initialPaneId = null,
+        )
+        controller.start()
+        advanceUntilIdle()
+        assertEquals(listOf("w1:p1"), session.openedPanes)
+
+        // A real release blocks ~150ms; serialising it would delay the switch.
+        val first = session.connections.single()
+        first.releaseDelayMs = 100
+        controller.openTarget(TerminalTarget("w1", "t1", "w1:p2"))
+        runCurrent()
+
+        // The new pane is attached while the old socket has not finished closing.
+        assertEquals(listOf("w1:p1", "w1:p2"), session.openedPanes)
+        assertEquals(0, first.released)
+
+        advanceUntilIdle()
+        assertEquals(1, first.released)
+        controller.shutdown()
+        controllerScope.cancel()
     }
 }

@@ -70,6 +70,9 @@ class PaneSessionController(
     private var pendingFlushJob: Job? = null
 
     private var attachJob: Job? = null
+
+    /** Pane the live backend belongs to (release ordering needs it). */
+    private var backendPaneId: String? = null
     private var observedTargetGeneration = session.targetGeneration
     private var targetOwnerGeneration: Long? = null
 
@@ -273,10 +276,19 @@ class PaneSessionController(
         // tab switch would otherwise leave released=true with the socket open.
         val old = backendFlow.value
         backendFlow.value = null
+        val oldPaneId = backendPaneId
+        backendPaneId = null
         if (old != null) {
-            try {
-                withContext(NonCancellable) { old.release() }
-            } catch (_: Exception) {
+            if (oldPaneId == target.paneId) {
+                // Same pane: the release restores its grid, so the new attach
+                // must not race it. Everything else releases in the background
+                // — waiting cost a fixed 150ms on every tab/pane switch.
+                try {
+                    withContext(NonCancellable) { old.release() }
+                } catch (_: Exception) {
+                }
+            } else {
+                releaseInBackground(old)
             }
         }
         currentCoroutineContext().ensureActive()
@@ -296,6 +308,7 @@ class PaneSessionController(
             return
         }
         val backend = ConnectionTerminalBackend(connection, scope)
+        backendPaneId = target.paneId
         backendFlow.value = backend
         if (!currentCoroutineContext().isActive || targetFlow.value != target ||
             session.targetGeneration != generation
@@ -377,6 +390,7 @@ class PaneSessionController(
         attachJob?.cancel()
         val backend = backendFlow.value ?: return
         backendFlow.value = null
+        backendPaneId = null
         releaseInBackground(backend)
     }
 
@@ -405,6 +419,7 @@ class PaneSessionController(
         pendingFlushJob?.cancel()
         val backend = backendFlow.value
         backendFlow.value = null
+        backendPaneId = null
         backend?.let { releaseInBackground(it) }
     }
 }

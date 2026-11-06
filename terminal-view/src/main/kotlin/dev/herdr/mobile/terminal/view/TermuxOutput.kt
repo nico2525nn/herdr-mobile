@@ -58,4 +58,3 @@ class TermuxOutput(
 }
 
 /** Current emulator grid size, for the resize watcher. */
-internal fun TerminalEmulator.grid(): Pair<Int, Int> = mColumns to mRows

@@ -6,6 +6,10 @@
 # No emulator, no daemon, no device: this is the loop to run while coding and
 # before pushing. The on-device smoke is tools/ci.sh's job. Both suites run even
 # when the first one fails so a single run reports every broken side.
+#
+# Coverage is deliberately absent: it is opt-in (`-Pcoverage`), so keeping it
+# out of this gate keeps the JaCoCo agent out of the offline dependency graph.
+# CI's kotlin job runs `./gradlew test -Pcoverage` and uploads the XML.
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"

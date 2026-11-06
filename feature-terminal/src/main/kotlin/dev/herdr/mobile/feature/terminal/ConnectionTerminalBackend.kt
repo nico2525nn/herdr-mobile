@@ -50,6 +50,8 @@ class ConnectionTerminalBackend(
     override val bytes: Flow<ByteArray> =
         inner.inbound.filterIsInstance<TerminalInbound.Bytes>().map { it.data }
 
+    override fun clearReplayCache() = inner.clearReplayCache()
+
     override suspend fun send(data: ByteArray) = inner.send(data)
 
     override suspend fun sendText(text: String) = inner.sendText(text)

@@ -19,8 +19,8 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.semantics.Role
-import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.semantics.stateDescription
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -106,7 +106,24 @@ fun StatusChip(
                     )
                 },
             )
-            .semantics { contentDescription = "$label, ${status.contentDescription()}" },
+            .semantics {
+                // The visible label is the node's text (merged from the Row
+                // below), so it must NOT be repeated as a contentDescription —
+                // TalkBack would read it twice. The state goes in
+                // stateDescription, which TalkBack speaks right after the
+                // text: "1 · codex, Working".
+                //
+                // stateDescription also replaces the default selected/not
+                // selected announcement, so selection is spelled out here.
+                // Both click paths need it: `selectable` does not run when a
+                // long-press menu owns the gesture (combinedClickable), and
+                // those chips still show the selection ring.
+                stateDescription = if (selected) {
+                    "${status.contentDescription()}, selected"
+                } else {
+                    status.contentDescription()
+                }
+            },
         shape = CircleShape,
         color = container,
         contentColor = content,

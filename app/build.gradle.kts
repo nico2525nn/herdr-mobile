@@ -1,4 +1,5 @@
 plugins {
+    alias(libs.plugins.androidx.baselineprofile)
     alias(libs.plugins.android.application)
     alias(libs.plugins.kotlin.android)
     alias(libs.plugins.kotlin.compose)
@@ -13,8 +14,8 @@ android {
         applicationId = "dev.herdr.mobile"
         minSdk = 26
         targetSdk = 37
-        versionCode = 62
-        versionName = "1.8.0"
+        versionCode = 63
+        versionName = "1.9.0"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
@@ -51,6 +52,13 @@ android {
                     keyPassword = keystorePassword
                 }
             }
+        }
+        // Baseline-profile generation runs this non-debuggable, minified build.
+        create("benchmark") {
+            initWith(getByName("release"))
+            matchingFallbacks += listOf("release")
+            signingConfig = signingConfigs.findByName("herdrRelease")
+                ?: signingConfigs.getByName("debug")
         }
     }
 
@@ -89,6 +97,10 @@ kotlin {
 }
 
 dependencies {
+    // Generated startup profile (see :baselineprofile). Consumed by the
+    // baselineprofile plugin; it does not ship as a runtime dependency.
+    baselineProfile(project(":baselineprofile"))
+    implementation(libs.androidx.profileinstaller)
     implementation(project(":core-model"))
     implementation(project(":core-network"))
     implementation(project(":core-designsystem"))

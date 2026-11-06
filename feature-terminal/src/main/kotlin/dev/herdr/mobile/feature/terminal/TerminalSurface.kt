@@ -34,6 +34,7 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withTimeout
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.rememberUpdatedState
 
 @Composable
 internal fun TerminalSurface(
@@ -45,7 +46,9 @@ internal fun TerminalSurface(
     keyboardShowRequest: Int,
     keyboardShowHandled: Int,
     onKeyboardShowHandled: (Int) -> Unit,
-    inputTick: Int,
+    /** Keystroke counter as a flow: reading it as state would recompose the
+     *  whole surface on every key press. */
+    inputTick: kotlinx.coroutines.flow.Flow<Int>,
     onGridChanged: (cols: Int, rows: Int) -> Unit,
     /** Shared with the bottom panel so page switches can retarget the IME. */
     cjkFocus: androidx.compose.ui.focus.FocusRequester?,
@@ -93,16 +96,19 @@ internal fun TerminalSurface(
         }
     }
     var bridge by remember(backend) { mutableStateOf<RemoteTermuxSession?>(null) }
-    // DisposableEffect(backend) re-runs on backend change — but by onDispose
-    // time, remember(backend) has ALREADY reset `bridge` to null, so reading
-    // it there releases nothing (leak) or the wrong bridge. Capture the live
-    // bridge in a ref that survives the reset.
-    val bridgeRef = remember { mutableStateOf<RemoteTermuxSession?>(null) }
+    // DisposableEffect(backend) re-runs on backend change, and by onDispose
+    // time composition has already created the NEXT bridge: keep the live one
+    // outside the remember(backend) reset or the release targets null/next.
+    val live = remember { LiveSession() }
     var viewRef by remember { mutableStateOf<TerminalView?>(null) }
     var hostRef by remember { mutableStateOf<TermuxTerminalHost?>(null) }
     var viewClientRef by remember { mutableStateOf<TermuxViewClient?>(null) }
     val density = LocalDensity.current
     val scope = rememberCoroutineScope()
+    val liveAgent = rememberUpdatedState(appIdentity)
+    val liveSendBytes = rememberUpdatedState(onSendBytes)
+    val liveSendText = rememberUpdatedState(onSendText)
+    val liveSendPaste = rememberUpdatedState(onSendPaste)
 
     TerminalImeEffects(
         host = { hostRef },
@@ -128,15 +134,21 @@ internal fun TerminalSurface(
         hostRef?.hostViewportRows = scrollInfo?.viewportRows?.toInt() ?: 0
         if (hostRef?.remoteEffective == true) hostRef?.resetLocalViewport()
     }
-    // User input snaps a scrolled viewport home (back at the prompt). Guard 0:
-    // the initial value must not yank on mount.
+    // User input snaps a scrolled viewport home (back at the prompt). Collected
+    // as a flow, not state: a keystroke must not recompose the terminal.
     LaunchedEffect(inputTick) {
-        if (inputTick > 0) {
-            hostRef?.snapToBottom()
-        }
+        inputTick.collect { tick -> if (tick > 0) hostRef?.snapToBottom() }
     }
 
     val scheme = remember(state.settings.terminalColorScheme) { state.terminalScheme() }
+    val typeface = remember(settings.terminalFont) {
+        android.graphics.Typeface.create(settings.terminalFont.familyName, android.graphics.Typeface.NORMAL)
+    }
+    val textPx = (settings.terminalFontSizeSp * density.density).toInt()
+    // What the live view already has. Plain fields, not snapshot state: this is
+    // read/written from the AndroidView update pass, which runs on every
+    // recomposition (a keystroke used to land here and reset the palette).
+    val applied = remember { ViewStyle() }
 
     // View size → grid size → backend resize, debounced by the bridge/daemon coalescing.
     var viewSizePx by remember { mutableStateOf(0 to 0) }
@@ -182,7 +194,7 @@ internal fun TerminalSurface(
                 onPasteRequest = {
                     val clip = clipboard.getText()?.text.orEmpty()
                     if (clip.isNotEmpty()) {
-                        val emu = bridgeRef.value?.emulator
+                        val emu = live.session?.emulator
                         val bracket = dev.herdr.mobile.terminal.view.TerminalKeyEncoder
                             .isBracketedPasteMode(emu) ||
                             dev.herdr.mobile.core.model.AgentMatrix.alwaysBracket(state.pane?.agent)
@@ -212,7 +224,7 @@ internal fun TerminalSurface(
             val cols = created.emulator.mColumns
             val rows = created.emulator.mRows
             bridge = created
-            bridgeRef.value = created
+            live.session = created
             created.start(cols, rows)
         }
     }
@@ -221,14 +233,20 @@ internal fun TerminalSurface(
     // captured `bridge` State goes stale after a tab switch (remember yields a
     // NEW State object). Stale callbacks tap/scroll the released backend,
     // silently dropped by runCatching.
+    /**
+     * Binds the view's callbacks ONCE per view. Captured callbacks go through
+     * `rememberUpdatedState` holders, so a recomposition never has to rebind
+     * (the old code did, allocating eight lambdas per frame and still needing
+     * the rebind to avoid stale closures).
+     */
     fun bindTermuxCallbacks(viewClient: TermuxViewClient, host: TermuxTerminalHost) {
-        viewClient.onDirectInput = { text -> onSendText(text) }
-        viewClient.onDirectBytes = { bytes -> onSendBytes(bytes) }
-        viewClient.onDirectDelete = { onSendBytes(byteArrayOf(0x7F)) }
+        viewClient.onDirectInput = { text -> liveSendText.value(text) }
+        viewClient.onDirectBytes = { bytes -> liveSendBytes.value(bytes) }
+        viewClient.onDirectDelete = { liveSendBytes.value(byteArrayOf(0x7F)) }
         viewClient.onTapCell = { col, row ->
             // Mouse-mode apps (vim, less, tmux): forward the tap as a
             // left-button press. Non-mouse apps ignore it server-side.
-            val b = bridgeRef.value
+            val b = live.session
             if (b != null) {
                 scope.launch { runCatching { b.mouse("down", "left", col, row) } }
             }
@@ -238,17 +256,17 @@ internal fun TerminalSurface(
         }
         viewClient.onPageScroll = { up -> host.pageRemote(up) }
         host.onRemoteScroll = { lines, unit ->
-            bridgeRef.value?.scrollRemote(
+            live.session?.scrollRemote(
                 lines,
                 allowPageKey = dev.herdr.mobile.core.model.AgentMatrix.allowPageKey(
-                    appIdentity = appIdentity,
+                    appIdentity = liveAgent.value,
                     altActive = host.altActive,
                 ),
                 unit = unit,
             )
         }
         host.onRemoteWheel = { notches ->
-            bridgeRef.value?.scrollWheel(notches)
+            live.session?.scrollWheel(notches)
         }
         // Full-screen panes: type the page key. Sending it through Herdr's
         // scroll control does not reach apps without host scrollback; the same
@@ -257,7 +275,7 @@ internal fun TerminalSurface(
             val key = if (up) PAGE_UP_BYTES else PAGE_DOWN_BYTES
             val payload = ByteArray(key.size * pages)
             for (i in 0 until pages) key.copyInto(payload, i * key.size)
-            onSendBytes(payload)
+            liveSendBytes.value(payload)
         }
     }
 
@@ -297,26 +315,41 @@ internal fun TerminalSurface(
             view
         },
         update = { view ->
-            // Scheme/font/cursor follow settings live (Termux has no line-height
-            // multiplier: terminalLineHeight is accepted as unsupported).
-            TermuxSchemes.apply(scheme)
-            bridge?.emulator?.mColors?.reset()
-            view.setBackgroundColor(TermuxSchemes.backgroundAndroid(scheme))
-            view.invalidate()
-            val px = (settings.terminalFontSizeSp * density.density).toInt()
-            view.setTextSize(px)
-            view.setTypeface(android.graphics.Typeface.create(settings.terminalFont.familyName, android.graphics.Typeface.NORMAL))
-            hostRef?.textSizePx = px
-            bridge?.sessionClient?.cursorStyle = settings.cursorStyle
+            // Settings follow live, but the expensive parts run only when they
+            // actually changed: this pass executes on every recomposition.
+            // Termux has no line-height multiplier (terminalLineHeight is
+            // accepted as unsupported).
+            val session = bridge
+            if (applied.bridge !== session) {
+                applied.bridge = session
+                // A new session copies the palette; clear any per-session OSC
+                // recolors from the previous one.
+                session?.emulator?.mColors?.reset()
+            }
+            if (applied.scheme !== scheme) {
+                applied.scheme = scheme
+                TermuxSchemes.apply(scheme)
+                view.setBackgroundColor(TermuxSchemes.backgroundAndroid(scheme))
+                // TerminalColors is process-wide: the session must re-copy it.
+                session?.emulator?.mColors?.reset()
+                view.invalidate()
+            }
+            if (applied.font !== typeface || applied.textPx != textPx) {
+                applied.font = typeface
+                applied.textPx = textPx
+                view.setTextSize(textPx)
+                view.setTypeface(typeface)
+                view.invalidate()
+                hostRef?.textSizePx = textPx
+            }
+            if (applied.cursorStyle != settings.cursorStyle) {
+                applied.cursorStyle = settings.cursorStyle
+                session?.sessionClient?.cursorStyle = settings.cursorStyle
+            }
             // Sticky CTRL/ALT feed the view client (Termux applies them to the
             // next hardware key when set).
             viewClientRef?.ctrlDown = dev.herdr.mobile.terminal.view.TerminalKeyEncoder.Modifier.CTRL in state.stickyModifiers
             viewClientRef?.altDown = dev.herdr.mobile.terminal.view.TerminalKeyEncoder.Modifier.ALT in state.stickyModifiers
-            // The host decides scroll ownership itself (ScrollRoute.scrollOwner):
-            // it only needs the pane identity and the app's wheel stride.
-            val vc = viewClientRef
-            val h = hostRef
-            if (vc != null && h != null) bindTermuxCallbacks(vc, h)
         },
         modifier = Modifier
             .fillMaxSize()
@@ -331,7 +364,7 @@ internal fun TerminalSurface(
                 }
                 // After layout (view.updateSize ran first): forward the
                 // view-computed grid. Never resize the emulator from here.
-                viewRef?.post { bridgeRef.value?.syncBackendSize() }
+                viewRef?.post { live.session?.syncBackendSize() }
             },
     )
 
@@ -345,10 +378,10 @@ internal fun TerminalSurface(
         onDispose {
             // The bridge release suspends until the release frame reaches the
             // backend; run it on a fresh scope with a timeout, never on a scope
-            // that is being torn down with us. Read from bridgeRef, NOT bridge:
+            // that is being torn down with us. Read from the holder, NOT bridge:
             // remember(backend) has already reset by onDispose time.
-            val toRelease = bridgeRef.value
-            bridgeRef.value = null
+            val toRelease = live.session
+            live.session = null
             if (toRelease != null) {
                 val releaser = CoroutineScope(SupervisorJob() + Dispatchers.Default)
                 releaser.launch {
@@ -386,3 +419,23 @@ internal fun TerminalSurface(
 /** xterm page keys, the sequence every audited TUI (and less/vim) understands. */
 private val PAGE_UP_BYTES = byteArrayOf(0x1B, '['.code.toByte(), '5'.code.toByte(), '~'.code.toByte())
 private val PAGE_DOWN_BYTES = byteArrayOf(0x1B, '['.code.toByte(), '6'.code.toByte(), '~'.code.toByte())
+
+/**
+ * Holds the one live session across the `remember(backend)` reset. Not
+ * snapshot state: nothing in composition depends on it.
+ */
+private class LiveSession {
+    var session: RemoteTermuxSession? = null
+}
+
+/**
+ * What the live [TerminalView] already reflects. Reset with the composition;
+ * read/written from the AndroidView update pass, never from composition.
+ */
+private class ViewStyle {
+    var bridge: RemoteTermuxSession? = null
+    var scheme: dev.herdr.mobile.terminal.emulator.TerminalColorScheme? = null
+    var font: android.graphics.Typeface? = null
+    var textPx: Int = -1
+    var cursorStyle: dev.herdr.mobile.core.model.CursorStyle? = null
+}
