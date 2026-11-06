@@ -1,5 +1,13 @@
 # Changelog
 
+## 1.9.1 — 2026-11-06
+
+- JVM tests for the hardware-key path (`TermuxViewClient`): arrows, DEL, CTRL
+  chords, ALT prefixes, printable bytes, and shift+PgUp routing. Robolectric
+  runs the real Android `KeyEvent`/`TerminalView` without a device, closing the
+  last gap where a key could silently fall through to Termux's dead local PTY.
+  196 JVM tests now.
+
 ## 1.9.0 — 2026-11-06
 
 Performance + platform-quality pass on top of the 1.8.0 refactor.

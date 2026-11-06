@@ -42,6 +42,8 @@ remote host). Kotlin/Compose app + Rust daemon in `daemon/`.
   `DaemonApi`), view-model behaviour with `FakeHerdrSession`, and settings via
   `SettingsCodec`.
 - Compose/Android wiring lives in `src/androidTest` and needs a device.
+- Android framework seams that are not Compose (hardware keys, views) use
+  Robolectric on the JVM (`terminal-view` `TermuxViewClientKeyTest`).
 - Fakes shared by more than one module belong in `:testing`, not copied.
 - Coverage is opt-in (`-Pcoverage`), so `./gradlew test --offline` never needs
   the JaCoCo agent; reports land in `<module>/build/reports/jacoco/`.
