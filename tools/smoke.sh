@@ -118,6 +118,25 @@ print(sum(c for v, c in enumerate(hist) if v > 30))
 PY
 }
 
+# Compose rails must be visible above the terminal. The AndroidView interop
+# handler does not clip child views; an unclipped terminal background painted
+# them black while the semantics tree still listed them.
+shot "$WORKDIR/rails.png"
+if python3 - "$WORKDIR/rails.png" <<'PY'
+import sys
+from PIL import Image
+im = Image.open(sys.argv[1]).convert("RGB")
+band = [im.getpixel((x, y)) for y in range(70, 260, 6) for x in range(0, im.width, 6)]
+common = max(set(band), key=band.count)
+ink = sum(1 for p in band if sum(abs(a - b) for a, b in zip(p, common)) > 30)
+raise SystemExit(0 if ink > 200 else 1)
+PY
+then
+  pass "tab/workspace rails are visible"
+else
+  fail "rails are not painted (terminal view clipped?)"
+fi
+
 shot "$WORKDIR/scroll-before.png"
 adb_ shell input touchscreen swipe 540 1400 540 1000 700
 sleep 3

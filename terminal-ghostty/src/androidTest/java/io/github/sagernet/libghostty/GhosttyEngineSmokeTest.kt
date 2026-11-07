@@ -16,6 +16,37 @@ import org.junit.runner.RunWith
 class GhosttyEngineSmokeTest {
 
     @Test
+    fun viewNeverPaintsOutsideItsBounds() {
+        val instrumentation = InstrumentationRegistry.getInstrumentation()
+        val context = instrumentation.targetContext
+        lateinit var view: GhosttyTerminalView
+        instrumentation.runOnMainSync {
+            val session = GhosttyTerminalSession(
+                context,
+                GhosttyTerminalSession.Options(columns = 20, rows = 4),
+            )
+            view = GhosttyTerminalView(context)
+            view.session = session
+            view.measure(
+                View.MeasureSpec.makeMeasureSpec(400, View.MeasureSpec.EXACTLY),
+                View.MeasureSpec.makeMeasureSpec(200, View.MeasureSpec.EXACTLY),
+            )
+            view.layout(0, 0, 400, 200)
+            session.feedOutput("hello".toByteArray())
+        }
+        instrumentation.waitForIdleSync()
+
+        val bitmap = Bitmap.createBitmap(400, 400, Bitmap.Config.ARGB_8888)
+        val canvas = Canvas(bitmap)
+        canvas.translate(0f, 100f)
+        instrumentation.runOnMainSync { view.draw(canvas) }
+        // Compose's interop handler does not clip children; the view must clip
+        // itself or its background paints over the toolbar above (regression).
+        assertEquals(0, bitmap.getPixel(10, 20))
+        assertEquals(0, bitmap.getPixel(200, 50))
+    }
+
+    @Test
     fun cannedOutputRendersAndKeysReachTheTransport() {
         val instrumentation = InstrumentationRegistry.getInstrumentation()
         val context = instrumentation.targetContext

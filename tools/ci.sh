@@ -277,7 +277,10 @@ read_override_state() {
 # Runs DebugDaemonUrlActivity and returns its JSON result on stdout.
 override_settings() {
   local action="$1" url="${2:-}" state=""
+  # Clear BOTH copies: read_override_state falls back to the app-private file,
+  # so a stale result from a previous run would be mistaken for this one.
   adb_ shell rm -f "$EXTERNAL_STATE" >/dev/null 2>&1 || true
+  adb_ shell run-as "$PKG" rm -f files/herdr-ci-state.json >/dev/null 2>&1 || true
 
   if [[ -n "$url" ]]; then
     adb_ shell am start -W -n "$OVERRIDE_ACTIVITY" --es action "$action" --es url "$url" >/dev/null

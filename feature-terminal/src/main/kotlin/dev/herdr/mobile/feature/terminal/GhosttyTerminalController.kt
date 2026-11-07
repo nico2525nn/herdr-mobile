@@ -18,6 +18,9 @@ internal class GhosttyTerminalController(
     context: Context,
     scrollbackLimit: Int,
     cursorStyle: GhosttyCursorStyle,
+    typeface: Typeface,
+    fontSizeSp: Int,
+    scheme: TerminalColorScheme,
     onInput: (ByteArray) -> Unit,
     onResize: (cols: Int, rows: Int) -> Unit,
     onBell: () -> Unit,
@@ -51,6 +54,17 @@ internal class GhosttyTerminalController(
         session.eventListener = object : GhosttyTerminalSession.EventListener {
             override fun onBell(session: GhosttyTerminalSession) = onBell()
         }
+        // First frame already carries the user's font/theme: attaching the
+        // session first rendered the library default (14sp, default palette)
+        // and then resized, which read as a font-size change.
+        view.typeface = typeface
+        view.fontSizeSp = fontSizeSp.toFloat()
+        // Bell feedback is the app's policy (settings-aware); the library's own
+        // haptic would double-buzz.
+        view.bellHapticEnabled = false
+        session.setTheme(scheme.toGhosttyTheme())
+        session.setColorScheme(scheme.isDark())
+        view.setBackgroundColor(scheme.background.toArgb())
         view.session = session
     }
 
@@ -61,6 +75,7 @@ internal class GhosttyTerminalController(
 
     fun applyTheme(scheme: TerminalColorScheme) {
         session.setTheme(scheme.toGhosttyTheme())
+        session.setColorScheme(scheme.isDark())
         view.setBackgroundColor(scheme.background.toArgb())
     }
 
@@ -97,4 +112,12 @@ internal class GhosttyTerminalController(
         const val VIEWPORT_ALTERNATE_SCREEN = 1
         const val VIEWPORT_MOUSE_TRACKING = 2
     }
+}
+
+/** Relative luminance below 0.5 counts as a dark theme (DEC 2031 report). */
+internal fun TerminalColorScheme.isDark(): Boolean {
+    val r = background.red / 255f
+    val g = background.green / 255f
+    val b = background.blue / 255f
+    return 0.2126f * r + 0.7152f * g + 0.0722f * b < 0.5f
 }

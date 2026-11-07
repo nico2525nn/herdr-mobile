@@ -14,8 +14,8 @@ android {
         applicationId = "dev.herdr.mobile"
         minSdk = 26
         targetSdk = 37
-        versionCode = 65
-        versionName = "2.0.0"
+        versionCode = 66
+        versionName = "2.0.1"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
@@ -30,6 +30,8 @@ android {
             buildConfigField("String", "DEFAULT_DIRECT_URL", "\"http://127.0.0.1:8766\"")
         }
         release {
+            // Phones are arm64; x86_64 is emulator-only (debug keeps both).
+            ndk { abiFilters += "arm64-v8a" }
             buildConfigField("String", "DEFAULT_DIRECT_URL", "\"http://10.0.2.2:8765\"")
             isMinifyEnabled = true
             isShrinkResources = true
@@ -73,6 +75,9 @@ android {
     }
 
     packaging {
+        // Compressed native libs: the APK is a sideloaded artifact, and 5 MB
+        // of uncompressed .so dominated the download size.
+        jniLibs.useLegacyPackaging = true
         resources.excludes += setOf(
             "/META-INF/{AL2.0,LGPL2.1}",
             "META-INF/DEPENDENCIES",

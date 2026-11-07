@@ -425,6 +425,8 @@ class PaneSessionController(
     /** Activity ON_STOP keeps the Compose tree alive: release the stream. */
     fun releaseForBackground() {
         attachJob?.cancel()
+        scrollFlushJob?.cancel()
+        pendingScrollRows = 0
         val backend = backendFlow.value ?: return
         backendFlow.value = null
         backendPaneId = null
@@ -454,6 +456,8 @@ class PaneSessionController(
     fun shutdown() {
         attachJob?.cancel()
         pendingFlushJob?.cancel()
+        scrollFlushJob?.cancel()
+        pendingScrollRows = 0
         val backend = backendFlow.value
         backendFlow.value = null
         backendPaneId = null

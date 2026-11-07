@@ -72,7 +72,7 @@ public class GhosttyTerminalView @JvmOverloads constructor(
 
     public var bellHapticEnabled: Boolean = true
 
-    public var showImeOnTap: Boolean = true
+    public var showImeOnTap: Boolean = false
 
     // Samsung keyboards keep their composing state across a TYPE_NULL field
     // (termux/termux-app#686); a char-based text class makes them reset it.
@@ -283,6 +283,8 @@ public class GhosttyTerminalView @JvmOverloads constructor(
     private val jumpChipPaint = Paint(Paint.ANTI_ALIAS_FLAG)
     private val jumpChipArrow = Path()
     private val underlinePath = Path()
+    private val boxStroke = Paint(Paint.ANTI_ALIAS_FLAG)
+    private val boxArc = RectF()
     private var jumpChipCenterX = 0f
     private var jumpChipCenterY = 0f
     private val flingRunnable = object : Runnable {
@@ -950,8 +952,27 @@ public class GhosttyTerminalView @JvmOverloads constructor(
             paint.color = gridForeground[gridBase + col]
             if (flags and FLAG_FAINT != 0) paint.alpha = FAINT_ALPHA
             val x = col * cellWidth
-            canvas.drawText(rowChars, gridTextOffset[gridBase + col], textLength, x, top + baseline, paint)
             val runWidth = if (flags and FLAG_WIDE != 0) cellWidth * 2 else cellWidth
+            val textOffset = gridTextOffset[gridBase + col]
+            val segments = BoxDrawingPainter.segmentsFor(rowChars[textOffset].code)
+            if (segments != 0) {
+                // Cell-exact strokes: the system font leaves gaps at cell edges.
+                BoxDrawingPainter.drawCell(
+                    canvas,
+                    boxStroke,
+                    fillPaint,
+                    boxArc,
+                    x,
+                    top,
+                    x + runWidth,
+                    bottom,
+                    segments,
+                    gridForeground[gridBase + col],
+                    gridBackground[gridBase + col],
+                )
+                continue
+            }
+            canvas.drawText(rowChars, textOffset, textLength, x, top + baseline, paint)
             if (flags and FLAG_UNDERLINE != 0) {
                 drawUnderline(canvas, x, bottom, runWidth, flags ushr 16, paint)
             }
@@ -1375,6 +1396,13 @@ public class GhosttyTerminalView @JvmOverloads constructor(
     override fun isOpaque(): Boolean = true
 
     override fun onDraw(canvas: Canvas) {
+        // Compose's AndroidViewsHandler does not clip child views, and this
+        // view paints a full-canvas background plus keyboard-transition
+        // offsets. Clip to our own bounds or the background bleeds over the
+        // Compose chrome above (tab rail) and the first grid row lands
+        // off-screen.
+        val root = canvas.save()
+        canvas.clipRect(0f, 0f, width.toFloat(), height.toFloat())
         canvas.drawColor(defaultBackground)
         val bitmapSave = canvas.save()
         canvas.translate(0f, gridOffsetY - bitmapGridOffsetY)
@@ -1398,6 +1426,7 @@ public class GhosttyTerminalView @JvmOverloads constructor(
         drawSelectionHandles(canvas)
         drawScrollIndicator(canvas)
         drawJumpToBottomChip(canvas)
+        canvas.restoreToCount(root)
     }
 
     private fun drawComposingText(canvas: Canvas) {

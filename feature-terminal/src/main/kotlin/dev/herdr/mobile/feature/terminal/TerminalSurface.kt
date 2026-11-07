@@ -79,6 +79,9 @@ internal fun TerminalSurface(
             context = context,
             scrollbackLimit = settings.scrollbackLimit,
             cursorStyle = settings.cursorStyle.toGhosttyCursorStyle(),
+            typeface = Typeface.create(settings.terminalFont.familyName, Typeface.NORMAL),
+            fontSizeSp = settings.terminalFontSizeSp,
+            scheme = scheme,
             onInput = { bytes -> viewModel.sendBytes(bytes) },
             onResize = { cols, rows ->
                 viewModel.setAttachGrid(cols, rows)

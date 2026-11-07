@@ -1,5 +1,31 @@
 # Changelog
 
+## 2.0.1 — 2026-11-07
+
+Regression fixes for 2.0.0, found by comparing against the 1.9.1 build on the
+same fixture.
+
+- **Chrome invisible**: the terminal view painted its background outside its
+  own bounds (Compose's AndroidViewsHandler does not clip child views), blacking
+  out the workspace/tab rails and clipping the first grid row. The view now
+  clips itself in `onDraw`.
+- **Box-drawing gaps restored**: system-font box glyphs stop short of cell
+  edges. The cell-exact stroke painter (light/heavy/double rails, double and
+  rounded corners) is back inside the renderer.
+- **Font size**: the engine now gets the user's typeface/size before the
+  session attaches; previously the library default (14sp, default palette)
+  rendered first and then resized, which read as a size change. Grid parity
+  with 1.9.1 at the same setting (56×44 in the reference layout).
+- Tapping the terminal no longer raises the IME (manual summon only), bell
+  haptics fire once (library's own haptic disabled), and DEC 2031 colour-scheme
+  reports follow the selected theme.
+- Long-press selection no longer clears instantly: 1.0's row-selection query is
+  a sized struct (`GHOSTTY_INIT_SIZED`).
+- Release APK: arm64-v8a only and compressed native libraries (8.7 MB → 4.6 MB);
+  startup baseline profile regenerated for the engine.
+- `tools/smoke.sh` now fails when the rails are not painted; the engine module
+  guards clipping and the box table with tests.
+
 ## 2.0.0 — 2026-11-07
 
 The terminal engine is now **libghostty-vt 1.0**, the same VT engine Herdr runs

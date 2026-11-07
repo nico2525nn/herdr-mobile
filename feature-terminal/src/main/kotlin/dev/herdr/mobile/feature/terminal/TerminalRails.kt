@@ -1,5 +1,7 @@
 package dev.herdr.mobile.feature.terminal
 
+import androidx.compose.foundation.background
+
 import androidx.compose.foundation.lazy.items
 import androidx.compose.ui.input.nestedscroll.nestedScroll
 import androidx.compose.foundation.layout.Arrangement
