@@ -87,9 +87,15 @@ fun TerminalScreen(
     // so neither DisposableEffect nor onCleared runs. Release the controller or
     // its resize lock leaks until the process dies.
     val lifecycle = androidx.lifecycle.compose.LocalLifecycleOwner.current.lifecycle
+    val focusManager = androidx.compose.ui.platform.LocalFocusManager.current
     DisposableEffect(lifecycle, viewModel) {
         val observer = androidx.lifecycle.LifecycleEventObserver { _, event ->
             if (event == androidx.lifecycle.Lifecycle.Event.ON_STOP) {
+                // A focused CJK field makes the IME come back on resume, even
+                // though the user dismissed it before leaving. Focus dies with
+                // the backgrounded screen; the terminal keeps its own view
+                // focus and no IME request is replayed.
+                focusManager.clearFocus(force = true)
                 viewModel.releaseForBackground()
             } else if (event == androidx.lifecycle.Lifecycle.Event.ON_START) {
                 viewModel.resumeAfterBackground()
@@ -222,6 +228,7 @@ fun TerminalScreen(
                     keyboardShowHandled = keyboardShowHandled,
                     onKeyboardShowHandled = { keyboardShowHandled = it },
                     inputTick = viewModel.inputTick,
+                    cjkFocus = cjkFocus,
                 )
             }
             // Floats over the terminal's top rows; sub-second drops never show.

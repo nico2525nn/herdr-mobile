@@ -22,6 +22,7 @@ import androidx.compose.ui.input.pointer.PointerInputChange
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.platform.LocalHapticFeedback
+import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.semantics.toggleableState
 import androidx.compose.ui.state.ToggleableState
@@ -229,11 +230,17 @@ private fun RepeatableKeyButton(
         if (onFlickDown != null && key.flickDownLabel != null) {
             // Dual label in one line: tap action + flick hint (two lines
             // would stretch this button taller than its row siblings).
+            // "PGUP ↓PGDN" is too wide for a seventh of the panel and got
+            // ellipsized. The arrow is the whole hint (flick down for the
+            // alternate); screen readers still get the full description.
             Text(
-                text = "${key.label} ↓${key.flickDownLabel}",
+                text = "${key.label}↓",
                 style = MaterialTheme.typography.labelSmall,
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis,
+                modifier = Modifier.semantics {
+                    contentDescription = "${key.label}, flick down for ${key.flickDownLabel}"
+                },
             )
         } else {
             Text(

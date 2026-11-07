@@ -888,10 +888,12 @@ public class GhosttyTerminalView @JvmOverloads constructor(
             repeat(rowCount) { drawRowRecord(buffer, canvas, snapshotCols) }
             canvas.restoreToCount(save)
             updateKittyImages(handle)
-            val now = SystemClock.uptimeMillis()
-            val nextFrame = GhosttyVt.nativeKittyTick(handle, now)
-            if (nextFrame > now) {
-                postInvalidateDelayed((nextFrame - now).coerceIn(16L, 1_000L))
+            if (kittyImages.isNotEmpty()) {
+                val now = SystemClock.uptimeMillis()
+                val nextFrame = GhosttyVt.nativeKittyTick(handle, now)
+                if (nextFrame > now) {
+                    postInvalidateDelayed((nextFrame - now).coerceIn(16L, 1_000L))
+                }
             }
             if (selectionActive) {
                 if (selectionBounds() == null) clearSelection() else invalidateActionModeContentRect()

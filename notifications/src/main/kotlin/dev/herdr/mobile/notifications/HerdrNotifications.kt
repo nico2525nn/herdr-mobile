@@ -123,16 +123,18 @@ object HerdrNotifications {
     }
 
     fun notificationId(event: SemanticEvent): Int {
-        return notificationId(event.workspaceId, event.tabId, event.paneId, event.status)
+        return notificationId(event.workspaceId, event.paneId, event.status)
     }
 
     fun notificationId(
         workspaceId: String?,
-        tabId: String?,
         paneId: String?,
         status: AgentStatus?,
     ): Int {
-        val key = "$workspaceId/$tabId/$paneId/$status"
+        // Deliberately excludes the tab: moving a pane to another tab changes
+        // its tab id, and including it would orphan the posted notification
+        // (the retraction computes a different id).
+        val key = "$workspaceId/$paneId/$status"
         return key.hashCode()
     }
 
@@ -147,7 +149,6 @@ object HerdrNotifications {
     fun dismissPane(
         context: Context,
         workspaceId: String?,
-        tabId: String?,
         paneId: String?,
     ) {
         if (paneId == null) return
@@ -156,7 +157,7 @@ object HerdrNotifications {
         // pane are separate notifications; a leave-status retraction must clear
         // whichever (or both) were posted.
         for (status in listOf(AgentStatus.DONE, AgentStatus.BLOCKED)) {
-            manager.cancel(TAG_AGENTS, notificationId(workspaceId, tabId, paneId, status))
+            manager.cancel(TAG_AGENTS, notificationId(workspaceId, paneId, status))
         }
     }
 }

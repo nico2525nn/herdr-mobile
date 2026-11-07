@@ -43,7 +43,6 @@ class NotificationRelay(
     private data class NotifiedState(
         val status: AgentStatus,
         val workspaceId: String?,
-        val tabId: String?,
     )
 
     // Concurrent: the event path and the snapshot-diff path run on
@@ -65,11 +64,9 @@ class NotificationRelay(
                 // before recording so a crash between the two can only leave a
                 // stale alert, never lose a fresh one.
                 if (prev != null && prev.status != status) {
-                    HerdrNotifications.dismissPane(
-                        context, prev.workspaceId, prev.tabId, paneId,
-                    )
+                    HerdrNotifications.dismissPane(context, prev.workspaceId, paneId)
                 }
-                lastNotified[paneId] = NotifiedState(status, event.workspaceId, event.tabId)
+                lastNotified[paneId] = NotifiedState(status, event.workspaceId)
                 persist()
                 maybeNotify(event)
             }
@@ -96,21 +93,19 @@ class NotificationRelay(
                     if (persisted.isEmpty()) {
                         for (pane in snapshot.workspaces.flatMap { it.tabs }.flatMap { it.panes }) {
                             lastNotified[pane.id] =
-                                NotifiedState(pane.status, pane.workspaceId, pane.tabId)
+                                NotifiedState(pane.status, pane.workspaceId)
                         }
                     } else {
                         for (pane in snapshot.workspaces.flatMap { it.tabs }.flatMap { it.panes }) {
                             val old = persisted[pane.id]
                             lastNotified[pane.id] =
-                                NotifiedState(pane.status, pane.workspaceId, pane.tabId)
+                                NotifiedState(pane.status, pane.workspaceId)
                             if (old != null && old.status != pane.status) {
                                 // Changed while dead. Retract the stale shade
                                 // entry first (it survives process death —
                                 // e.g. done read on desktop, now idle here),
                                 // then alert the new state if worthy.
-                                HerdrNotifications.dismissPane(
-                                    context, old.workspaceId, old.tabId, pane.id,
-                                )
+                                HerdrNotifications.dismissPane(context, old.workspaceId, pane.id)
                                 // Advanced while dead (working->done with no live
                                 // process to see it): alert now, exactly once —
                                 // lastNotified already records it, so the event
@@ -136,7 +131,7 @@ class NotificationRelay(
                         for ((paneId, old) in persisted) {
                             if (!current.containsKey(paneId)) {
                                 HerdrNotifications.dismissPane(
-                                    context, old.workspaceId, old.tabId, paneId,
+                                    context, old.workspaceId, paneId,
                                 )
                             }
                         }
@@ -151,11 +146,9 @@ class NotificationRelay(
                         if (old != null && old != pane.status &&
                             lastNotified[pane.id]?.status != pane.status
                         ) {
-                            HerdrNotifications.dismissPane(
-                                context, pane.workspaceId, pane.tabId, pane.id,
-                            )
+                            HerdrNotifications.dismissPane(context, pane.workspaceId, pane.id)
                             lastNotified[pane.id] =
-                                NotifiedState(pane.status, pane.workspaceId, pane.tabId)
+                                NotifiedState(pane.status, pane.workspaceId)
                             persist()
                             val tab = snapshot.tab(pane.tabId)
                             val workspace = snapshot.workspace(pane.workspaceId)
@@ -179,9 +172,7 @@ class NotificationRelay(
                 for (paneId in vanished) {
                     val old = lastNotified.remove(paneId)
                     if (old != null) {
-                        HerdrNotifications.dismissPane(
-                            context, old.workspaceId, old.tabId, paneId,
-                        )
+                        HerdrNotifications.dismissPane(context, old.workspaceId, paneId)
                     }
                 }
                 if (vanished.isNotEmpty()) persist()
@@ -193,7 +184,7 @@ class NotificationRelay(
     /** Best-effort write-through: transitions are rare, DataStore writes are cheap. */
     private fun persist() {
         val copy = HashMap(lastNotified).mapValues {
-            "${it.value.status.wire}|${it.value.workspaceId}|${it.value.tabId}"
+            "${it.value.status.wire}|${it.value.workspaceId}"
         }
         scope.launch {
             runCatching { settings.saveNotified(copy) }
@@ -205,7 +196,6 @@ class NotificationRelay(
         return NotifiedState(
             status = AgentStatus.fromWire(parts.getOrNull(0)),
             workspaceId = parts.getOrNull(1)?.takeUnless { it == "null" },
-            tabId = parts.getOrNull(2)?.takeUnless { it == "null" },
         )
     }
 

@@ -1,5 +1,28 @@
 # Changelog
 
+## 2.0.7 — 2026-11-07
+
+- **CJK page keyboard button**: it focused the terminal, not the CJK field,
+  because the panel's `FocusRequester` was never passed to the terminal surface
+  (`cjkFocus == null` made the whole branch dead). The button now focuses the
+  field and raises the IME; if the field cannot take focus, it switches to the
+  shortcut panel and raises the terminal IME. The pager follows external page
+  changes, and backgrounding the screen clears field focus so the IME does not
+  reopen on resume.
+- **Notifications**: the notification identity no longer includes the tab id —
+  moving a pane between tabs changed the id and orphaned the shade entry (the
+  retraction computed a different id). The relay state dropped its unused tab
+  field. Only Done/Blocked alert; Herdr 0.9.x has no failure status.
+- **PGUP key label**: "PGUP ↓PGDN" was ellipsized to "PGUP …" in the seven-key
+  row; it now shows "PGUP↓" with a full accessibility description.
+- **Smaller APK**: release builds are per-ABI (arm64-v8a 3.38 MB, armeabi-v7a
+  3.42 MB, down from 5.68 MB universal) and the multi-megabyte BouncyCastle
+  Picnic (PQC) resource tables are excluded — R8 strips the classes but not
+  those blobs, which the app never uses.
+- `showIme()` retries once the view is attached (a tab switch could show the
+  keyboard button before the new view existed); the kitty animation tick is
+  skipped when no images are displayed.
+
 ## 2.0.6 — 2026-11-07
 
 Tab/workspace switching and a batch of engine details.

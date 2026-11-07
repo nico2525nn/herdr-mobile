@@ -14,8 +14,8 @@ android {
         applicationId = "dev.herdr.mobile"
         minSdk = 26
         targetSdk = 37
-        versionCode = 71
-        versionName = "2.0.6"
+        versionCode = 72
+        versionName = "2.0.7"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
@@ -30,8 +30,14 @@ android {
             buildConfigField("String", "DEFAULT_DIRECT_URL", "\"http://127.0.0.1:8766\"")
         }
         release {
-            // Phones are arm64; x86_64 is emulator-only (debug keeps both).
-            ndk { abiFilters += listOf("arm64-v8a", "armeabi-v7a") }
+            // One ABI per APK (download size): -Pabi=armeabi-v7a builds the
+            // 32-bit artifact; the default is the arm64 one. Debug keeps all
+            // four for the emulator.
+            val releaseAbi = providers.gradleProperty("abi").orNull ?: "arm64-v8a"
+            ndk {
+                abiFilters.clear()
+                abiFilters += releaseAbi
+            }
             buildConfigField("String", "DEFAULT_DIRECT_URL", "\"http://10.0.2.2:8765\"")
             isMinifyEnabled = true
             isShrinkResources = true
@@ -81,6 +87,10 @@ android {
         resources.excludes += setOf(
             "/META-INF/{AL2.0,LGPL2.1}",
             "META-INF/DEPENDENCIES",
+            // bcprov ships multi-megabyte Picnic (PQC) lookup tables as
+            // resources; R8 strips the classes but not these blobs. The app
+            // never selects a Picnic signature (SSH uses standard algorithms).
+            "org/bouncycastle/pqc/**",
         )
     }
 

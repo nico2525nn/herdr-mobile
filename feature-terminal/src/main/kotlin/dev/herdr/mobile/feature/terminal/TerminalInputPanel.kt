@@ -52,6 +52,15 @@ internal fun BottomInputPanel(
             pagerState.scrollToPage(0)
         }
     }
+    // External page changes (the keyboard-button fallback switches the CJK page
+    // to the shortcut panel) must move the pager too; it otherwise stayed on a
+    // page the state no longer describes.
+    LaunchedEffect(state.inputPage, pages.size) {
+        val index = pages.indexOf(state.inputPage)
+        if (index >= 0 && pagerState.currentPage != index) {
+            pagerState.scrollToPage(index)
+        }
+    }
     // Switching pages never touches keyboard visibility: no auto-focus of the
     // CJK field (only the keyboard button summons the IME) and no dismiss.
     LaunchedEffect(pagerState.currentPage, pages.size) {

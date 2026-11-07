@@ -22,7 +22,9 @@ remote host). Kotlin/Compose app + Rust daemon in `daemon/`.
 - **Scroll routing follows the pane report.** The attach prelude carries no
   modes; choose host/wheel/page/local from the snapshot (`scrollRoutingFor`).
 - Release convention: bump `versionCode`/`versionName`, commit, annotated tag, push
-  main + tag, `gh release create` with the signed APK.
+  main + tag, `gh release create` with **two per-ABI signed APKs** (arm64-v8a
+  default, `-Pabi=armeabi-v7a` for 32-bit devices); never attach a universal
+  APK.
 
 ## Layout
 

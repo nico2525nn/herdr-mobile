@@ -12,6 +12,9 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberUpdatedState
+import androidx.compose.runtime.snapshotFlow
+import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.Modifier
@@ -26,9 +29,11 @@ import dev.herdr.mobile.feature.terminal.theme.TerminalColorScheme
 import io.github.sagernet.libghostty.GhosttyExtraKeysState
 import io.github.sagernet.libghostty.GhosttyTerminalView
 import io.github.sagernet.libghostty.GhosttyTerminalView.ScrollRouting
-import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.withTimeoutOrNull
 
 /**
  * The terminal surface: one libghostty engine + view per attached backend.
@@ -46,7 +51,7 @@ internal fun TerminalSurface(
     keyboardShowHandled: Int,
     onKeyboardShowHandled: (Int) -> Unit,
     inputTick: Flow<Int>,
-    cjkFocus: FocusRequester? = null,
+    cjkFocus: FocusRequester,
     modifier: Modifier = Modifier,
 ) {
     val backend = state.backend ?: return
@@ -200,7 +205,7 @@ internal fun TerminalSurface(
     LaunchedEffect(state.inputPage, imeVisible, controller) {
         if (!imeVisible) return@LaunchedEffect
         if (state.inputPage == InputPanelPage.CJK_INPUT) {
-            cjkFocus?.requestFocus()
+            cjkFocus.requestFocus()
         } else {
             controller.view.requestFocus()
         }
@@ -208,10 +213,38 @@ internal fun TerminalSurface(
 
     // One deliberate summon per request (the ledger stops re-summons on
     // recomposition after a pane switch).
+    val softwareKeyboard = LocalSoftwareKeyboardController.current
+    val imeVisibleNow = rememberUpdatedState(imeVisible)
     LaunchedEffect(keyboardShowRequest, controller) {
         if (keyboardShowRequest > keyboardShowHandled) {
             onKeyboardShowHandled(keyboardShowRequest)
-            controller.showKeyboard()
+            if (state.inputPage == InputPanelPage.CJK_INPUT) {
+                // The CJK page owns a Compose text field, not the terminal:
+                // focus it and let the window show the IME. If the keyboard
+                // still does not appear, fall back to the shortcut panel and
+                // raise the terminal IME directly (explicit user preference).
+                val focused = runCatching { cjkFocus.requestFocus() }.isSuccess
+                if (!focused) {
+                    viewModel.setInputPage(InputPanelPage.EXTRA_KEYS)
+                    controller.showKeyboard()
+                    return@LaunchedEffect
+                }
+                softwareKeyboard?.show()
+                // Wait for the field's IME to appear. If it never does (some
+                // IMEs ignore show() until the field is laid out), move to the
+                // shortcut panel and raise the terminal IME instead. Using the
+                // first visible emission (not a fixed sleep) also means a user
+                // who dismisses the keyboard is not overridden.
+                val appeared = withTimeoutOrNull(500) {
+                    snapshotFlow { imeVisibleNow.value }.first { it }
+                } != null
+                if (!appeared) {
+                    viewModel.setInputPage(InputPanelPage.EXTRA_KEYS)
+                    controller.showKeyboard()
+                }
+            } else {
+                controller.showKeyboard()
+            }
         }
     }
 

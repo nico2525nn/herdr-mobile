@@ -213,6 +213,29 @@ sleep 2
 [[ "$(ime_shown)" == "mInputShown=false" ]] && pass "back hides the IME" \
   || fail "back did not hide the IME ($(ime_shown))"
 
+# CJK page: the keyboard button must focus the field (typing lands there) or
+# fall back to the shortcut panel with the terminal IME raised. Swipe between
+# the key rows; the buttons otherwise swallow the drag.
+adb_ shell input swipe 900 2150 150 2150 800
+sleep 1
+adb_ shell uiautomator dump /sdcard/cjk.xml >/dev/null 2>&1 || true
+adb_ shell cat /sdcard/cjk.xml 2>/dev/null | grep -q 'Type, convert, then send' \
+  && pass "swiping the panel reaches the CJK field" \
+  || fail "CJK field not found after swiping the panel"
+adb_ shell input tap 860 255   # keyboard button
+sleep 2
+[[ "$(ime_shown)" == "mInputShown=true" ]] && pass "CJK keyboard button raises the IME" \
+  || fail "CJK keyboard button did not raise the IME ($(ime_shown))"
+adb_ shell input text "zzz"
+sleep 1
+adb_ shell uiautomator dump /sdcard/cjk-typed.xml >/dev/null 2>&1 || true
+adb_ shell cat /sdcard/cjk-typed.xml 2>/dev/null | grep -q 'text="zzz"' \
+  && pass "CJK keyboard button focuses its field" \
+  || fail "typing did not reach the CJK field"
+adb_ shell input keyevent 4
+sleep 1
+[[ "$(ime_shown)" == "mInputShown=false" ]] && pass "back hides the CJK IME" \
+  || fail "back did not hide the CJK IME ($(ime_shown))"
 adb_ shell input keyevent 3     # home
 sleep 2
 adb_ shell am start -n "$ACTIVITY" >/dev/null

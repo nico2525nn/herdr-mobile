@@ -81,7 +81,7 @@ class HerdrNotificationsTest {
         val e = event(SemanticEvent.TYPE_PANE_STATUS_CHANGED, AgentStatus.DONE)
         assertEquals(
             HerdrNotifications.notificationId(e),
-            HerdrNotifications.notificationId("w1", "w1:t1", "w1:p1", AgentStatus.DONE),
+            HerdrNotifications.notificationId("w1", "w1:p1", AgentStatus.DONE),
         )
     }
 
@@ -89,8 +89,8 @@ class HerdrNotificationsTest {
     fun doneAndBlockedIdsDifferPerPane() {
         // dismissPane cancels both: if they collided, one alert would clobber
         // the other instead of coexisting.
-        val done = HerdrNotifications.notificationId("w1", "w1:t1", "w1:p1", AgentStatus.DONE)
-        val blocked = HerdrNotifications.notificationId("w1", "w1:t1", "w1:p1", AgentStatus.BLOCKED)
+        val done = HerdrNotifications.notificationId("w1", "w1:p1", AgentStatus.DONE)
+        val blocked = HerdrNotifications.notificationId("w1", "w1:p1", AgentStatus.BLOCKED)
         assertNotEquals(done, blocked)
     }
 
