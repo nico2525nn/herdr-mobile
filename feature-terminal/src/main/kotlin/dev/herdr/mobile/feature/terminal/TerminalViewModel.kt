@@ -72,8 +72,13 @@ internal suspend fun focusTabForReadAck(
     } catch (e: CancellationException) {
         throw e
     } catch (e: Exception) {
+        val detail = e.message ?: "unknown error"
+        // The core backend has no focus RPC (501 unavailable); it cannot clear
+        // DONE, so reporting a persistent read-ack error on every open is
+        // noise. Real link failures still surface.
+        if (detail.contains("unavailable") || detail.contains("501")) return
         // Detail only: the UI renderer owns the sentence and its category.
-        onFailure(e.message ?: "unknown error")
+        onFailure(detail)
     }
 }
 
@@ -158,9 +163,16 @@ class TerminalViewModel(
     // eat half-composed Japanese. The panel writes through on every keystroke.
     private val draftFlow = MutableStateFlow<Map<String, String>>(emptyMap())
 
-    fun cjkDraft(tabId: String?): StateFlow<String> =
-        draftFlow.map { it[tabId].orEmpty() }
-            .stateIn(viewModelScope, SharingStarted.Eagerly, draftFlow.value[tabId].orEmpty())
+    // One flow per tab: cjkDraft() runs from composition, and a fresh
+    // Eagerly-shared StateFlow on every call leaked a collector per keystroke.
+    private val draftFlows = HashMap<String?, StateFlow<String>>()
+
+    fun cjkDraft(tabId: String?): StateFlow<String> = synchronized(draftFlows) {
+        draftFlows.getOrPut(tabId) {
+            draftFlow.map { it[tabId].orEmpty() }
+                .stateIn(viewModelScope, SharingStarted.Eagerly, draftFlow.value[tabId].orEmpty())
+        }
+    }
 
     fun setCjkDraft(tabId: String?, text: String) {
         if (tabId == null) return

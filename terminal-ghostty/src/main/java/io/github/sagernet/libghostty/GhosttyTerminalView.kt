@@ -102,6 +102,22 @@ public class GhosttyTerminalView @JvmOverloads constructor(
     public enum class ScrollRouting { AUTO, LOCAL, REMOTE_WHEEL, REMOTE_PAGE, REMOTE_HOST }
 
     public var scrollRouting: ScrollRouting = ScrollRouting.AUTO
+        set(value) {
+            if (field != value) {
+                field = value
+                pageAccumulator = 0
+                wheelRowAccumulator = 0
+            }
+        }
+
+    /** Rows of finger travel per wheel notch for the pane's agent. */
+    public var wheelRowsPerEvent: Int = 1
+        set(value) {
+            if (field != value) {
+                field = value
+                wheelRowAccumulator = 0
+            }
+        }
 
     /**
      * REMOTE_WHEEL may send raw SGR reports even when the engine has not seen
@@ -222,6 +238,8 @@ public class GhosttyTerminalView @JvmOverloads constructor(
 
     private var combiningAccent = 0
     private var secondaryMouseButton = 0
+    private var primaryMouseDown = false
+    private var dragAnchorPending = false
 
     private val accessibilityManager = context.getSystemService(Context.ACCESSIBILITY_SERVICE) as AccessibilityManager
     private var accessibilityTextPending = false
@@ -298,7 +316,13 @@ public class GhosttyTerminalView @JvmOverloads constructor(
     private val boxArc = RectF()
 
     /** Decoded kitty images currently visible, drawn above the text. */
-    private class KittyImage(val bitmap: Bitmap, val source: Rect, val dest: RectF)
+    private class KittyImage(
+        val bitmap: Bitmap,
+        val source: Rect,
+        val dest: RectF,
+        val layer: Int,
+        val z: Int,
+    )
     private var kittyImages: List<KittyImage> = emptyList()
     private val kittyPaint = Paint(Paint.FILTER_BITMAP_FLAG)
     private data class KittyKey(val imageId: Int, val generation: Long)
@@ -384,6 +408,10 @@ public class GhosttyTerminalView @JvmOverloads constructor(
                         ?: if (urlDetectionEnabled) detectUrlAt(lastPressRow, lastPressCol) else null
                     // Selecting text wins over opening a link; a link menu is
                     // only the fallback when there is nothing to select.
+                    // Drop cached row ranges so the first drag cannot adopt the
+                    // previous selection's anchor before the new frame lands.
+                    rowSelectionStart.fill(-1)
+                    rowSelectionEnd.fill(-1)
                     selectionActive = GhosttyVt.nativeSelectWord(handle, lastPressCol, lastPressRow)
                     scheduleFrame()
                     if (!selectionActive && link != null) {
@@ -392,8 +420,12 @@ public class GhosttyTerminalView @JvmOverloads constructor(
                     }
                     if (selectionActive) {
                         draggingHandle = HANDLE_END
+                        // The word already extends before the pressed cell;
+                        // anchoring at the press point dropped that prefix as
+                        // soon as the user dragged the handle.
                         dragAnchorCol = lastPressCol
                         dragAnchorRow = lastPressRow
+                        dragAnchorPending = true
                         dragBiasRows = 0
                         dragPastSlop = false
                         longPressX = e.x
@@ -536,7 +568,18 @@ public class GhosttyTerminalView @JvmOverloads constructor(
             }
             ScrollRouting.REMOTE_WHEEL -> {
                 if (state and GhosttyVt.VIEWPORT_MOUSE_TRACKING != 0 || allowRawWheel) {
-                    sendRawWheel(deltaRows, col, row)
+                    // Agents differ in rows per wheel notch (pi 2, qwen 3);
+                    // sending one notch per gesture made them scroll 2-3x too
+                    // fast. Accumulate the remainder across gestures.
+                    val stride = wheelRowsPerEvent.coerceAtLeast(1)
+                    wheelRowAccumulator += deltaRows
+                    val notches = wheelRowAccumulator / stride
+                    if (notches != 0) {
+                        wheelRowAccumulator -= notches * stride
+                        repeat(abs(notches)) {
+                            sendRawWheel(if (notches > 0) 1 else -1, col, row)
+                        }
+                    }
                 } else {
                     pageAccumulator += deltaRows
                     flushPages(force = false)
@@ -577,6 +620,7 @@ public class GhosttyTerminalView @JvmOverloads constructor(
     }
 
     private var pageAccumulator = 0
+    private var wheelRowAccumulator = 0
 
     /** One gesture must not turn a 1-row drag into a whole screenful. */
     private fun flushPages(force: Boolean) {
@@ -836,6 +880,8 @@ public class GhosttyTerminalView @JvmOverloads constructor(
         }
     }
 
+    private val kittyTickRunnable = Runnable { scheduleFrame() }
+
     internal fun scheduleFrame() {
         if (framePending || !isAttachedToWindow) return
         framePending = true
@@ -846,6 +892,10 @@ public class GhosttyTerminalView @JvmOverloads constructor(
         val buffer = snapshotBuffer ?: return
         val canvas = bitmapCanvas ?: return
         session?.withTerminal { handle ->
+            // Images composite into the persistent bitmap; a partial dirty
+            // frame would stamp them over already-drawn glyphs. Full frames
+            // also erase deleted images.
+            if (kittyImages.isNotEmpty()) GhosttyVt.nativeForceFullRepaint(handle)
             val rowCount = GhosttyVt.nativeSnapshot(handle, buffer)
             if (rowCount == SNAPSHOT_SYNC_DEFERRED) {
                 removeCallbacks(syncRetryRunnable)
@@ -885,16 +935,51 @@ public class GhosttyTerminalView @JvmOverloads constructor(
             canvas.translate(0f, bitmapGridOffsetY.toFloat())
             canvas.clipRect(0, 0, gridWidthPx, gridHeightPx)
             if (dirtyKind == DIRTY_FULL) canvas.drawColor(defaultBackground)
-            repeat(rowCount) { drawRowRecord(buffer, canvas, snapshotCols) }
-            canvas.restoreToCount(save)
+            val hadKittyImages = kittyImages.isNotEmpty()
             updateKittyImages(handle)
+            if (!hadKittyImages && kittyImages.isNotEmpty()) {
+                // First frame that sees an image may have been partial; force
+                // one full repaint so below-text pixels are composited cleanly.
+                scheduleFrame()
+            }
+            // Schedule the animation's next frame through renderFrame (the
+            // old postInvalidateDelayed only repainted cached bitmaps, so an
+            // animated image froze after its first frame).
             if (kittyImages.isNotEmpty()) {
                 val now = SystemClock.uptimeMillis()
                 val nextFrame = GhosttyVt.nativeKittyTick(handle, now)
                 if (nextFrame > now) {
-                    postInvalidateDelayed((nextFrame - now).coerceIn(16L, 1_000L))
+                    removeCallbacks(kittyTickRunnable)
+                    postDelayed(kittyTickRunnable, (nextFrame - now).coerceIn(16L, 1_000L))
                 }
             }
+            // Ghostty layers: 0 below cell backgrounds, 1 below text, 2 above
+            // text. Kitty images drawn into the bitmap must be composited
+            // between the background and glyph passes; drawing them after the
+            // bitmap put them over the text.
+            val rowsStart = buffer.position()
+            val hasLayer0 = kittyImages.any { it.layer == 0 }
+            val hasLayer1 = kittyImages.any { it.layer == 1 }
+            if (hasLayer0 || hasLayer1) {
+                if (hasLayer0) drawKittyImages(canvas, 0f, layer = 0)
+                repeat(rowCount) {
+                    drawRowRecord(
+                        buffer,
+                        canvas,
+                        snapshotCols,
+                        drawText = false,
+                        skipDefaultFill = hasLayer0,
+                    )
+                }
+                buffer.position(rowsStart)
+                if (hasLayer1) drawKittyImages(canvas, 0f, layer = 1)
+                repeat(rowCount) {
+                    drawRowRecord(buffer, canvas, snapshotCols, drawBackground = false)
+                }
+            } else {
+                repeat(rowCount) { drawRowRecord(buffer, canvas, snapshotCols) }
+            }
+            canvas.restoreToCount(save)
             if (selectionActive) {
                 if (selectionBounds() == null) clearSelection() else invalidateActionModeContentRect()
             }
@@ -913,7 +998,14 @@ public class GhosttyTerminalView @JvmOverloads constructor(
         }
     }
 
-    private fun drawRowRecord(buffer: ByteBuffer, canvas: Canvas, snapshotCols: Int) {
+    private fun drawRowRecord(
+        buffer: ByteBuffer,
+        canvas: Canvas,
+        snapshotCols: Int,
+        drawBackground: Boolean = true,
+        drawText: Boolean = true,
+        skipDefaultFill: Boolean = false,
+    ) {
         val rowIndex = buffer.int
         val selectionStart = buffer.int
         val selectionEnd = buffer.int
@@ -983,16 +1075,21 @@ public class GhosttyTerminalView @JvmOverloads constructor(
         val top = (rowIndex * cellHeight).toFloat()
         val bottom = top + cellHeight
 
-        fillPaint.color = defaultBackground
-        canvas.drawRect(0f, top, canvas.width.toFloat(), bottom, fillPaint)
-        for (col in 0 until colCount) {
-            val background = gridBackground[gridBase + col]
-            if (background == defaultBackground) continue
-            val cellSpan = if (gridFlags[gridBase + col] and FLAG_WIDE != 0) cellWidth * 2 else cellWidth
-            val x = col * cellWidth
-            fillPaint.color = background
-            canvas.drawRect(x, top, x + cellSpan, bottom, fillPaint)
+        if (drawBackground) {
+            if (!skipDefaultFill) {
+                fillPaint.color = defaultBackground
+                canvas.drawRect(0f, top, canvas.width.toFloat(), bottom, fillPaint)
+            }
+            for (col in 0 until colCount) {
+                val background = gridBackground[gridBase + col]
+                if (background == defaultBackground) continue
+                val cellSpan = if (gridFlags[gridBase + col] and FLAG_WIDE != 0) cellWidth * 2 else cellWidth
+                val x = col * cellWidth
+                fillPaint.color = background
+                canvas.drawRect(x, top, x + cellSpan, bottom, fillPaint)
+            }
         }
+        if (!drawText) return
 
         val rowChars = gridRowChars[rowIndex]
         for (col in 0 until colCount) {
@@ -1438,6 +1535,7 @@ public class GhosttyTerminalView @JvmOverloads constructor(
         scroller.abortAnimation()
         removeCallbacks(flingRunnable)
         removeCallbacks(syncRetryRunnable)
+        removeCallbacks(kittyTickRunnable)
         removeCallbacks(accessibilityTextRunnable)
         accessibilityTextPending = false
         dismissMagnifier()
@@ -1466,7 +1564,7 @@ public class GhosttyTerminalView @JvmOverloads constructor(
         canvas.clipRect(0, 0, gridWidthPx, gridHeightPx + bitmapGridOffsetY)
         bitmap?.let { canvas.drawBitmap(it, 0f, 0f, null) }
         canvas.restoreToCount(bitmapSave)
-        drawKittyImages(canvas)
+        drawKittyImages(canvas, gridOffsetY, layer = 2)
         val save = canvas.save()
         canvas.translate(0f, gridOffsetY)
         canvas.clipRect(0, 0, gridWidthPx, gridHeightPx)
@@ -1494,21 +1592,23 @@ public class GhosttyTerminalView @JvmOverloads constructor(
             kittyPlacementCount = 0
             return
         }
-        val images = ArrayList<KittyImage>(placements.size / 13)
+        val images = ArrayList<KittyImage>(placements.size / 14)
         var i = 0
-        while (i + 13 <= placements.size) {
+        while (i + 14 <= placements.size) {
             val imageId = placements[i].toInt()
             val generation = placements[i + 1]
-            val col = placements[i + 2].toInt()
-            val row = placements[i + 3].toInt()
-            val pixelW = placements[i + 4].toInt()
-            val pixelH = placements[i + 5].toInt()
-            val sourceX = placements[i + 6].toInt()
-            val sourceY = placements[i + 7].toInt()
-            val sourceW = placements[i + 8].toInt()
-            val sourceH = placements[i + 9].toInt()
-            val xOffset = placements[i + 11].toInt()
-            val yOffset = placements[i + 12].toInt()
+            val layer = placements[i + 2].toInt()
+            val z = placements[i + 3].toInt()
+            val col = placements[i + 4].toInt()
+            val row = placements[i + 5].toInt()
+            val pixelW = placements[i + 6].toInt()
+            val pixelH = placements[i + 7].toInt()
+            val sourceX = placements[i + 8].toInt()
+            val sourceY = placements[i + 9].toInt()
+            val sourceW = placements[i + 10].toInt()
+            val sourceH = placements[i + 11].toInt()
+            val xOffset = placements[i + 12].toInt()
+            val yOffset = placements[i + 13].toInt()
             val bitmap = kittyBitmap(handle, imageId, generation)
             if (bitmap != null && pixelW > 0 && pixelH > 0) {
                 val srcW = if (sourceW > 0) sourceW else bitmap.width
@@ -1527,10 +1627,13 @@ public class GhosttyTerminalView @JvmOverloads constructor(
                     bitmap,
                     source,
                     RectF(left, top, left + pixelW, top + pixelH),
+                    layer,
+                    z,
                 )
             }
-            i += 13
+            i += 14
         }
+        images.sortWith(compareBy({ it.layer }, { it.z }))
         kittyImages = images
         kittyPlacementCount = images.size
     }
@@ -1592,12 +1695,13 @@ public class GhosttyTerminalView @JvmOverloads constructor(
         return bitmap
     }
 
-    private fun drawKittyImages(canvas: Canvas) {
+    private fun drawKittyImages(canvas: Canvas, yOffset: Float, layer: Int) {
         if (kittyImages.isEmpty()) return
         val save = canvas.save()
-        canvas.translate(0f, gridOffsetY)
+        canvas.translate(0f, yOffset)
         canvas.clipRect(0f, 0f, gridWidthPx.toFloat(), gridHeightPx.toFloat())
         for (image in kittyImages) {
+            if (image.layer != layer) continue
             canvas.drawBitmap(image.bitmap, image.source, image.dest, kittyPaint)
         }
         canvas.restoreToCount(save)
@@ -1779,9 +1883,13 @@ public class GhosttyTerminalView @JvmOverloads constructor(
         ) {
             flushPages(force = true)
         }
-        if (event.isFromSource(InputDevice.SOURCE_MOUSE) && handleSecondaryMouse(event)) return true
+        if (event.isFromSource(InputDevice.SOURCE_MOUSE)) {
+            if (handleSecondaryMouse(event)) return true
+            if (!selectionActive && handlePrimaryMouse(event)) return true
+        }
         if (event.actionMasked == MotionEvent.ACTION_DOWN) {
             scroller.abortAnimation()
+            wheelRowAccumulator = 0
             gestureDownCol = (event.x / cellWidth).toInt().coerceIn(0, cols - 1)
             gestureDownRow = rowAt(event.y)
         }
@@ -1811,6 +1919,17 @@ public class GhosttyTerminalView @JvmOverloads constructor(
                     invalidateActionModeContentRect()
                 }
                 MotionEvent.ACTION_MOVE -> if (draggingHandle != HANDLE_NONE) {
+                    if (dragAnchorPending) {
+                        // selectionBounds() is filled by the render pass; the
+                        // long-press runs before that frame, so the first move
+                        // is the earliest reliable point to read the word start.
+                        val bounds = selectionBounds()
+                        if (bounds != null) {
+                            dragAnchorCol = bounds.topCol
+                            dragAnchorRow = bounds.top
+                            dragAnchorPending = false
+                        }
+                    }
                     if (!dragPastSlop) {
                         if (hypot(event.x - longPressX, event.y - longPressY) < touchSlop) return true
                         dragPastSlop = true
@@ -1821,6 +1940,7 @@ public class GhosttyTerminalView @JvmOverloads constructor(
                 MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL ->
                     if (draggingHandle != HANDLE_NONE) {
                         draggingHandle = HANDLE_NONE
+                        dragAnchorPending = false
                         dismissMagnifier()
                         if (actionMode != null) invalidateActionModeContentRect() else startTerminalActionMode()
                         return true
@@ -1828,6 +1948,57 @@ public class GhosttyTerminalView @JvmOverloads constructor(
             }
         }
         return gestureDetector.onTouchEvent(event) || super.onTouchEvent(event)
+    }
+
+    /**
+     * Primary-button press/drag/release in mouse-tracking mode. The tap path
+     * used to synthesize PRESS+RELEASE at the up position, so a real mouse
+     * drag reached the app as motion without a press and never released.
+     */
+    private fun handlePrimaryMouse(event: MotionEvent): Boolean {
+        when (event.actionMasked) {
+            MotionEvent.ACTION_DOWN -> {
+                if (event.buttonState and MotionEvent.BUTTON_PRIMARY == 0) return false
+                var tracked = false
+                session?.withTerminal { handle ->
+                    if (GhosttyVt.nativeViewportState(handle) and GhosttyVt.VIEWPORT_MOUSE_TRACKING == 0) {
+                        return@withTerminal
+                    }
+                    val col = (event.x / cellWidth).toInt().coerceIn(0, cols - 1)
+                    val row = rowAt(event.y)
+                    sendMouseReport(handle, GhosttyVt.MOUSE_ACTION_PRESS, GhosttyVt.MOUSE_BUTTON_LEFT, col, row)
+                    tracked = true
+                }
+                if (tracked) {
+                    primaryMouseDown = true
+                    scroller.abortAnimation()
+                    requestFocus()
+                    gestureDownCol = (event.x / cellWidth).toInt().coerceIn(0, cols - 1)
+                    gestureDownRow = rowAt(event.y)
+                }
+                return tracked
+            }
+            MotionEvent.ACTION_MOVE -> {
+                if (!primaryMouseDown) return false
+                session?.withTerminal { handle ->
+                    val col = (event.x / cellWidth).toInt().coerceIn(0, cols - 1)
+                    val row = rowAt(event.y)
+                    sendMouseReport(handle, GhosttyVt.MOUSE_ACTION_MOTION, GhosttyVt.MOUSE_BUTTON_LEFT, col, row)
+                }
+                return true
+            }
+            MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
+                if (!primaryMouseDown) return false
+                primaryMouseDown = false
+                session?.withTerminal { handle ->
+                    val col = (event.x / cellWidth).toInt().coerceIn(0, cols - 1)
+                    val row = rowAt(event.y)
+                    sendMouseReport(handle, GhosttyVt.MOUSE_ACTION_RELEASE, GhosttyVt.MOUSE_BUTTON_LEFT, col, row)
+                }
+                return true
+            }
+        }
+        return false
     }
 
     private fun handleSecondaryMouse(event: MotionEvent): Boolean {

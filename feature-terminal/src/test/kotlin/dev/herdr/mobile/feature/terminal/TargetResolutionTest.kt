@@ -54,6 +54,20 @@ class TargetResolutionTest {
     }
 
     @Test
+    fun `a pane that moved to another tab is followed`() {
+        val moved = snapshot(
+            workspace(
+                "w1",
+                listOf(
+                    tab("t1", "w1", listOf(p1)),
+                    tab("t2", "w1", listOf(p2)),
+                ),
+            ),
+        )
+        assertEquals(TerminalTarget("w1", "t2", "w1:p2"), resolveTarget(moved, "w1", "t1", "w1:p2"))
+    }
+
+    @Test
     fun `a pane from another tab is ignored`() {
         assertEquals(TerminalTarget("w2", "t2", "w2:p1"), resolveTarget(snap, "w2", null, "w1:p2"))
     }

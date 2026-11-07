@@ -16,6 +16,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
@@ -37,8 +38,10 @@ fun SettingsScreen(
     val ui by viewModel.uiState.collectAsStateWithLifecycle()
     val error = ui.error
     val settings = ui.settings
-    var editingProfile by remember { mutableStateOf<HostProfile?>(null) }
-    var showAddProfile by remember { mutableStateOf(false) }
+    // Rotation must not close the editor or discard its saveable fields.
+    var editingProfileId by rememberSaveable { mutableStateOf<String?>(null) }
+    val editingProfile = editingProfileId?.let { id -> settings.hostProfiles.firstOrNull { it.id == id } }
+    var showAddProfile by rememberSaveable { mutableStateOf(false) }
 
     LazyColumn(
         modifier = modifier.fillMaxSize(),
@@ -67,7 +70,7 @@ fun SettingsScreen(
             settings = settings,
             testResult = ui.testResult,
             testing = ui.testing,
-            onEditProfile = { editingProfile = it },
+            onEditProfile = { editingProfileId = it.id },
             onAddProfile = { showAddProfile = true },
             viewModel = viewModel,
         )
@@ -77,17 +80,17 @@ fun SettingsScreen(
     }
 
     editingProfile?.let { profile ->
-        ProfileEditorDialog(
+            ProfileEditorDialog(
             profile = profile,
-            onDismiss = { editingProfile = null },
+            onDismiss = { editingProfileId = null },
             onSave = { updated, password, token, keyPem, keyLabel ->
                 viewModel.saveProfileWithSecrets(updated, password, token, keyPem, keyLabel)
-                editingProfile = null
+                editingProfileId = null
             },
         )
     }
     if (showAddProfile) {
-        ProfileEditorDialog(
+            ProfileEditorDialog(
             profile = HostProfile(
                 id = viewModel.newProfileId(),
                 label = "New host",

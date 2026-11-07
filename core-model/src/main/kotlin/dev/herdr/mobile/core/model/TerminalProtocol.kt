@@ -177,6 +177,7 @@ data class RawTerminalRecord(
     val type: String? = null,
     val code: String? = null,
     val message: String? = null,
+    val reason: String? = null,
 )
 
 /** `{"type":"release"}` — client to daemon: close the child and the socket. */

@@ -70,8 +70,13 @@ say "creating an isolated workspace running less on numbered lines"
 # The pane runs on the DAEMON host, not on the phone: the fixture must live
 # there. (Pushing it to /data/local/tmp was the first version's bug.)
 LINES=/tmp/herdr-smoke-lines.txt
-awk 'BEGIN { pad = ""; for (j = 0; j < 8; j++) pad = pad "0123456789";
-             for (i = 1; i <= 400; i++) printf "LINE-%04d %s\n", i, pad }' > "$LINES"
+# Random-looking line bodies: identical digits made a whole-page scroll
+# differ by only the line numbers, so a working page move looked like a
+# dead scroll to the pixel-delta check.
+awk 'BEGIN { srand(42); for (i = 1; i <= 400; i++) {
+               body = "";
+               for (j = 0; j < 60; j++) body = body sprintf("%c", 65 + int(rand() * 26));
+               printf "LINE-%04d %s\n", i, body } }' > "$LINES"
 FOCUS_BEFORE=$(api "$BASE_URL/v1/snapshot" | python3 -c '
 import sys,json
 print(",".join(sorted(w["id"] for w in json.load(sys.stdin)["workspaces"] if w.get("focused"))))')
@@ -214,14 +219,19 @@ sleep 2
   || fail "back did not hide the IME ($(ime_shown))"
 
 # CJK page: the keyboard button must focus the field (typing lands there) or
-# fall back to the shortcut panel with the terminal IME raised. Swipe between
-# the key rows; the buttons otherwise swallow the drag.
-adb_ shell input swipe 900 2150 150 2150 800
-sleep 1
-adb_ shell uiautomator dump /sdcard/cjk.xml >/dev/null 2>&1 || true
-adb_ shell cat /sdcard/cjk.xml 2>/dev/null | grep -q 'Type, convert, then send' \
-  && pass "swiping the panel reaches the CJK field" \
-  || fail "CJK field not found after swiping the panel"
+# fall back to the shortcut panel with the terminal IME raised. Use the
+# explicit page toggle (swiping over the key buttons is unreliable).
+CJK_BOUNDS="$(tab_bounds CJK)"
+if [[ -n "$CJK_BOUNDS" ]]; then
+  adb_ shell input tap $CJK_BOUNDS
+  sleep 1
+  adb_ shell uiautomator dump /sdcard/cjk.xml >/dev/null 2>&1 || true
+  adb_ shell cat /sdcard/cjk.xml 2>/dev/null | grep -q 'Type, convert, then send' \
+    && pass "the panel switch reaches the CJK field" \
+    || fail "CJK field not found after the panel switch"
+else
+  fail "CJK page switch not found"
+fi
 adb_ shell input tap 860 255   # keyboard button
 sleep 2
 [[ "$(ime_shown)" == "mInputShown=true" ]] && pass "CJK keyboard button raises the IME" \

@@ -89,6 +89,9 @@ internal object GhosttyVt {
     /** Next animation frame time (same clock), or 0 when nothing is playing. */
     external fun nativeKittyTick(handle: Long, nowMs: Long): Long
 
+    /** Force the next snapshot to carry every row (used while images composite). */
+    external fun nativeForceFullRepaint(handle: Long)
+
     /** Visible kitty placements: 14 longs each (see ghostty_jni.cpp). */
     external fun nativeKittyPlacements(handle: Long): LongArray?
 

@@ -109,7 +109,11 @@ object HerdrNotifications {
             .setContentText(body)
             .setStyle(NotificationCompat.BigTextStyle().bigText(body))
             .setContentIntent(pending)
-            .setAutoCancel(true)
+            // Not auto-cancel: tapping posts the read-ack focus, and the
+            // notification disappears when the status leaves DONE/BLOCKED.
+            // With autoCancel, a failed read-ack (offline) silently destroyed
+            // the only copy of an alert for a still-done agent.
+            .setAutoCancel(false)
             .setOnlyAlertOnce(false)
             // IDs only, never terminal output: private even with the body above.
             .setVisibility(NotificationCompat.VISIBILITY_PRIVATE)

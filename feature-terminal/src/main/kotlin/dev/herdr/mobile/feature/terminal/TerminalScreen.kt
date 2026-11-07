@@ -21,6 +21,8 @@ import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.saveable.Saver
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.semantics.LiveRegionMode
@@ -30,6 +32,7 @@ import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import dev.herdr.mobile.core.designsystem.LocalUiCopy
+import dev.herdr.mobile.core.model.UiFocusState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.setValue
 
@@ -38,6 +41,31 @@ import androidx.compose.runtime.setValue
  * two-page bottom input panel. The rails never grow under selection; overflow scrolls
  * horizontally.
  */
+private val TabMenuTargetSaver: Saver<TabMenuTarget?, Any> = Saver(
+    save = { target -> target?.let { listOf(it.workspaceId, it.tabId, it.label) } },
+    restore = { raw ->
+        val parts = raw as? List<*> ?: return@Saver null
+        if (parts.size != 3) null
+        else TabMenuTarget(
+            workspaceId = parts[0] as? String ?: return@Saver null,
+            tabId = parts[1] as? String ?: return@Saver null,
+            label = parts[2] as? String ?: return@Saver null,
+        )
+    },
+)
+
+private val WorkspaceMenuTargetSaver: Saver<WorkspaceMenuTarget?, Any> = Saver(
+    save = { target -> target?.let { listOf(it.workspaceId, it.label) } },
+    restore = { raw ->
+        val parts = raw as? List<*> ?: return@Saver null
+        if (parts.size != 2) null
+        else WorkspaceMenuTarget(
+            workspaceId = parts[0] as? String ?: return@Saver null,
+            label = parts[1] as? String ?: return@Saver null,
+        )
+    },
+)
+
 @Composable
 fun TerminalScreen(
     viewModel: TerminalViewModel,
@@ -45,11 +73,21 @@ fun TerminalScreen(
     modifier: Modifier = Modifier,
 ) {
     val state by viewModel.uiState.collectAsStateWithLifecycle()
-    var tabMenu by remember { mutableStateOf<TabMenuTarget?>(null) }
-    var renameTarget by remember { mutableStateOf<TabMenuTarget?>(null) }
-    var workspaceMenu by remember { mutableStateOf<WorkspaceMenuTarget?>(null) }
-    var workspaceRenameTarget by remember { mutableStateOf<WorkspaceMenuTarget?>(null) }
-    var workspaceCloseTarget by remember { mutableStateOf<WorkspaceMenuTarget?>(null) }
+    var tabMenu by rememberSaveable(stateSaver = TabMenuTargetSaver) {
+        mutableStateOf<TabMenuTarget?>(null)
+    }
+    var renameTarget by rememberSaveable(stateSaver = TabMenuTargetSaver) {
+        mutableStateOf<TabMenuTarget?>(null)
+    }
+    var workspaceMenu by rememberSaveable(stateSaver = WorkspaceMenuTargetSaver) {
+        mutableStateOf<WorkspaceMenuTarget?>(null)
+    }
+    var workspaceRenameTarget by rememberSaveable(stateSaver = WorkspaceMenuTargetSaver) {
+        mutableStateOf<WorkspaceMenuTarget?>(null)
+    }
+    var workspaceCloseTarget by rememberSaveable(stateSaver = WorkspaceMenuTargetSaver) {
+        mutableStateOf<WorkspaceMenuTarget?>(null)
+    }
     // Manual keyboard summon (CJK panel button). Counter, not boolean: two
     // consecutive requests must both fire. Nothing else shows the IME — no
     // tap, no swipe, no focus change (Termux behavior). Page swipes never
@@ -64,6 +102,13 @@ fun TerminalScreen(
     // One requester for the CJK draft field, shared by the terminal surface
     // (page-switch IME retargeting) and the bottom panel (field attachment).
     val cjkFocus = remember { androidx.compose.ui.focus.FocusRequester() }
+    // No backend means the surface returns before its key effect, so a summon
+    // while detached would otherwise fire on its own after reattach.
+    LaunchedEffect(state.backend, keyboardShowRequest) {
+        if (state.backend == null && keyboardShowRequest > keyboardShowHandled) {
+            keyboardShowHandled = keyboardShowRequest
+        }
+    }
 
     // Screen-level IME hygiene: the keyboard must not outlive its pane. Closing
     // the last workspace/tab (backend becomes null) or leaving the screen used
@@ -83,6 +128,15 @@ fun TerminalScreen(
         onDispose { hideImeNow() }
     }
 
+    // Suppress alerts for the pane the user is looking at: the relay only
+    // needs to know that the terminal is on screen and which pane it shows.
+    DisposableEffect(state.target) {
+        UiFocusState.paneId = state.target?.paneId
+        onDispose {
+            if (UiFocusState.paneId == state.target?.paneId) UiFocusState.paneId = null
+        }
+    }
+
     // App backgrounded (Home button, task switch) does NOT dispose this screen,
     // so neither DisposableEffect nor onCleared runs. Release the controller or
     // its resize lock leaks until the process dies.
@@ -91,6 +145,7 @@ fun TerminalScreen(
     DisposableEffect(lifecycle, viewModel) {
         val observer = androidx.lifecycle.LifecycleEventObserver { _, event ->
             if (event == androidx.lifecycle.Lifecycle.Event.ON_STOP) {
+                UiFocusState.terminalVisible = false
                 // A focused CJK field makes the IME come back on resume, even
                 // though the user dismissed it before leaving. Focus dies with
                 // the backgrounded screen; the terminal keeps its own view
@@ -98,6 +153,7 @@ fun TerminalScreen(
                 focusManager.clearFocus(force = true)
                 viewModel.releaseForBackground()
             } else if (event == androidx.lifecycle.Lifecycle.Event.ON_START) {
+                UiFocusState.terminalVisible = true
                 viewModel.resumeAfterBackground()
             }
         }

@@ -80,7 +80,10 @@ impl EventBus {
             revision: Some(cache.revision()),
             detail: None,
         };
-        // Advance the cache counter past the number we just used.
+        // Reserve the number so the next real event cannot collide. Do NOT
+        // stamp the snapshot with it: the cache is still the pre-break copy,
+        // and a client refetching now would receive stale data marked current
+        // (then no gap would ever force another fetch).
         let _ = cache.next_seq_for_broadcast(seq);
         self.broadcast(event);
     }

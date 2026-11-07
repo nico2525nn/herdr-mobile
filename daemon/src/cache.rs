@@ -231,7 +231,7 @@ impl SessionCache {
     /// Bring the stored snapshot's seq up to the global cursor AFTER emitting
     /// the events for a mutation. mutate() runs before emit() mints seqs, so
     /// reading the cursor there always lags; call this once per mutation batch.
-    fn sync_snapshot_seq(&self) {
+    pub(crate) fn sync_snapshot_seq(&self) {
         let mut inner = self.inner.write().expect("cache lock");
         if let Some(snapshot) = inner.snapshot.as_mut() {
             snapshot.seq = self.seq.load(Ordering::SeqCst);
@@ -325,7 +325,7 @@ impl SessionCache {
             return out;
         };
         // Re-read the aggregates to decide which level events to emit.
-        let (tab_id, tab_status, workspace_status) = snapshot
+        let Some((tab_id, tab_status, workspace_status)) = snapshot
             .workspaces
             .iter()
             .find(|w| w.id == workspace_id)
@@ -338,7 +338,11 @@ impl SessionCache {
                     )
                 })
             })
-            .unwrap_or_default();
+        else {
+            // The pane is not in the cached tree (moved across workspaces or a
+            // close race); emitting Unknown here erased the real status.
+            return out;
+        };
         out.push(self.emit(
             "pane.status_changed",
             Some(workspace_id.to_string()),
@@ -347,7 +351,9 @@ impl SessionCache {
             Some(status),
             None,
             revision,
-            None,
+            detected_agent
+                .clone()
+                .map(|agent| serde_json::json!({"status": {"app": agent}})),
             message.clone(),
         ));
         out.push(self.emit(
@@ -936,8 +942,9 @@ pub async fn run_resync_loop(cache: Arc<SessionCache>, bus: Arc<EventBus>) {
                 Err(e) => {
                     let msg = format!("{e:#}");
                     if msg.contains("events_lost") {
+                        // The post-loop resync path broadcasts snapshot.required
+                        // once; doing it here too sent two refetch requests.
                         warn!("herdr reported events_lost; invalidating every subscriber");
-                        bus.broadcast_snapshot_required(&cache);
                     } else {
                         warn!("herdr event stream broke ({e:#}); resubscribing");
                     }

@@ -204,7 +204,8 @@ class PaneSessionController(
                 if (attempts >= AUTO_REATTACH_ATTEMPTS) return@collect
                 val delayMs = AUTO_REATTACH_DELAY_MS * (1L shl attempts)
                 attempts++
-                scope.launch {
+                retryJob?.cancel()
+                retryJob = scope.launch {
                     delay(delayMs)
                     retryAttach()
                 }
@@ -240,6 +241,8 @@ class PaneSessionController(
 
     private var pendingScrollRows = 0
     private var scrollFlushJob: Job? = null
+    private var retryJob: Job? = null
+    private var backgrounded = false
 
     /**
      * The view's settled grid: forward to the live backend without counting as
@@ -271,12 +274,14 @@ class PaneSessionController(
      * the live controller.
      */
     fun retryAttach() {
+        if (backgrounded) return
         if (targetOwnerGeneration != session.targetGeneration) return
         val target = targetFlow.value ?: return
         openTarget(target)
     }
 
     private fun openTarget(target: TerminalTarget, preserveMessage: Boolean) {
+        backgrounded = false
         if (!preserveMessage) onMessage(null)
         val generation = session.targetGeneration
         val snapshot = session.state.value.snapshot ?: return
@@ -359,7 +364,10 @@ class PaneSessionController(
 
     /** Release a detached socket without depending on the caller's lifetime. */
     private fun releaseInBackground(backend: ConnectionTerminalBackend) {
-        scope.launch {
+        // NonCancellable: onCleared runs after viewModelScope is cancelled, so
+        // a plain launch was a no-op and closed screens leaked their socket.
+        // The coroutine still rides the caller's dispatcher (tests drive it).
+        scope.launch(NonCancellable) {
             try {
                 withTimeout(5_000) { backend.release() }
             } catch (_: Exception) {
@@ -431,6 +439,9 @@ class PaneSessionController(
 
     /** Activity ON_STOP keeps the Compose tree alive: release the stream. */
     fun releaseForBackground() {
+        backgrounded = true
+        retryJob?.cancel()
+        retryJob = null
         attachJob?.cancel()
         scrollFlushJob?.cancel()
         pendingScrollRows = 0
@@ -445,6 +456,7 @@ class PaneSessionController(
      * Waits for the link first — after minutes in background the tunnel is dead.
      */
     fun resumeAfterBackground() {
+        backgrounded = false
         val target = targetFlow.value ?: return
         if (backendFlow.value != null) return
         if (targetOwnerGeneration != session.targetGeneration) return
@@ -461,6 +473,8 @@ class PaneSessionController(
     }
 
     fun shutdown() {
+        backgrounded = true
+        retryJob?.cancel()
         attachJob?.cancel()
         pendingFlushJob?.cancel()
         scrollFlushJob?.cancel()

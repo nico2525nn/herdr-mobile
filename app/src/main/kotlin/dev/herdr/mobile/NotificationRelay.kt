@@ -3,9 +3,13 @@ package dev.herdr.mobile
 import android.content.Context
 import dev.herdr.mobile.core.model.AgentStatus
 import dev.herdr.mobile.core.model.SemanticEvent
+import dev.herdr.mobile.core.model.UiFocusState
 import dev.herdr.mobile.core.network.HerdrClient
 import dev.herdr.mobile.notifications.HerdrNotifications
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.collectLatest
+import kotlinx.coroutines.flow.filterNotNull
 import kotlinx.coroutines.launch
 
 /**
@@ -49,30 +53,31 @@ class NotificationRelay(
     // Dispatchers.Default (multi-threaded); a plain HashMap races (lost
     // dedupe = double alerts, torn reads = skipped alerts, CME = dead path).
     private val lastNotified = java.util.concurrent.ConcurrentHashMap<String, NotifiedState>()
+    // Serializes the two collectors' check->dismiss->record->notify sequence.
+    // The event path fires before its snapshot is folded, so without this both
+    // paths can read the same stale status and buzz twice for one transition.
+    private val transitionLock = Any()
+    private val persistRequests = MutableStateFlow<Map<String, String>?>(null)
     private var seeded = false
+    @Volatile private var resetEpoch = 0
 
     init {
+        scope.launch {
+            // Latest snapshot wins; an older queued write must not land after
+            // a newer one and resurrect a stale status.
+            persistRequests.filterNotNull().collectLatest { runCatching { settings.saveNotified(it) } }
+        }
         scope.launch {
             client.events.collect { event ->
                 val paneId = event.paneId
                 if (!event.isAlertWorthy || paneId == null) return@collect
                 val status = event.status ?: return@collect
-                val prev = lastNotified[paneId]
-                if (prev?.status == status) return@collect
-                // Leave-status first: a done/blocked alert for this pane is
-                // now stale (read-ack elsewhere, resolved, re-driven). Retract
-                // before recording so a crash between the two can only leave a
-                // stale alert, never lose a fresh one.
-                if (prev != null && prev.status != status) {
-                    HerdrNotifications.dismissPane(context, prev.workspaceId, paneId)
-                }
-                lastNotified[paneId] = NotifiedState(status, event.workspaceId)
-                persist()
-                maybeNotify(event)
+                transitionAndNotify(paneId, status, event.workspaceId, event)
             }
         }
         scope.launch {
             var previous: Map<String, AgentStatus> = emptyMap()
+            var seenEpoch = resetEpoch
             // Persisted map from the last process: diffed at seed so dead-window
             // completions alert once instead of being blanket-suppressed. Fresh
             // installs read empty — but then every existing done would alert on
@@ -80,15 +85,28 @@ class NotificationRelay(
             // silently; only panes that ADVANCED vs a non-empty map alert.
             // Values are "wire|workspaceId|tabId" (pre-dismiss builds wrote bare
             // wire — those parse with null ids and simply skip retraction).
-            val persisted = runCatching { settings.loadNotified() }.getOrDefault(emptyMap())
-                .mapValues { parseNotified(it.value) }
             client.state.collect { state ->
                 val snapshot = state.snapshot ?: return@collect
+                if (resetEpoch != seenEpoch) {
+                    seenEpoch = resetEpoch
+                    seeded = false
+                    previous = emptyMap()
+                }
                 val current = snapshot.workspaces
                     .flatMap { it.tabs }
                     .flatMap { it.panes }
                     .associate { it.id to it.status }
                 if (!seeded) {
+                    // After a host switch the persisted map belongs to the old
+                    // host; seed silently instead of diffing two hosts' ids.
+                    // Loaded outside the critical section (it suspends).
+                    val persisted = if (seenEpoch == 0) {
+                        runCatching { settings.loadNotified() }.getOrDefault(emptyMap())
+                            .mapValues { parseNotified(it.value) }
+                    } else {
+                        emptyMap()
+                    }
+                    synchronized(transitionLock) {
                     previous = current
                     if (persisted.isEmpty()) {
                         for (pane in snapshot.workspaces.flatMap { it.tabs }.flatMap { it.panes }) {
@@ -136,20 +154,15 @@ class NotificationRelay(
                             }
                         }
                     }
-                    persist()
+                    persistLocked()
                     seeded = true
                     return@collect
+                    }
                 }
                 if (previous.isNotEmpty()) {
                     for (pane in snapshot.workspaces.flatMap { it.tabs }.flatMap { it.panes }) {
                         val old = previous[pane.id]
-                        if (old != null && old != pane.status &&
-                            lastNotified[pane.id]?.status != pane.status
-                        ) {
-                            HerdrNotifications.dismissPane(context, pane.workspaceId, pane.id)
-                            lastNotified[pane.id] =
-                                NotifiedState(pane.status, pane.workspaceId)
-                            persist()
+                        if (old != null && old != pane.status) {
                             val tab = snapshot.tab(pane.tabId)
                             val workspace = snapshot.workspace(pane.workspaceId)
                             val event = SemanticEvent(
@@ -160,7 +173,14 @@ class NotificationRelay(
                                 paneId = pane.id,
                                 status = pane.status,
                             )
-                            maybeNotify(event, workspace?.label, tab?.displayLabel)
+                            transitionAndNotify(
+                                pane.id,
+                                pane.status,
+                                pane.workspaceId,
+                                event,
+                                workspace?.label,
+                                tab?.displayLabel,
+                            )
                         }
                     }
                 }
@@ -168,27 +188,66 @@ class NotificationRelay(
                 // same-id pane re-created later is a new transition source.
                 // Retract first — a closed-while-done tab must not leave its
                 // alert in the shade forever.
-                val vanished = lastNotified.keys - current.keys
-                for (paneId in vanished) {
-                    val old = lastNotified.remove(paneId)
-                    if (old != null) {
-                        HerdrNotifications.dismissPane(context, old.workspaceId, paneId)
+                synchronized(transitionLock) {
+                    val vanished = lastNotified.keys - current.keys
+                    for (paneId in vanished) {
+                        val old = lastNotified.remove(paneId)
+                        if (old != null) {
+                            HerdrNotifications.dismissPane(context, old.workspaceId, paneId)
+                        }
                     }
+                    if (vanished.isNotEmpty()) persistLocked()
                 }
-                if (vanished.isNotEmpty()) persist()
                 previous = current
             }
         }
     }
 
-    /** Best-effort write-through: transitions are rare, DataStore writes are cheap. */
-    private fun persist() {
+    /**
+     * Decide and apply one pane status transition atomically. Returns true when
+     * this call was the one that recorded (and possibly posted) the status.
+     */
+    private fun transitionAndNotify(
+        paneId: String,
+        status: AgentStatus,
+        workspaceId: String?,
+        event: SemanticEvent,
+        workspaceLabel: String? = null,
+        tabLabel: String? = null,
+    ): Boolean = synchronized(transitionLock) {
+        val prev = lastNotified[paneId]
+        if (prev?.status == status) return@synchronized false
+        // Leave-status first: a done/blocked alert for this pane is now stale.
+        if (prev != null) {
+            HerdrNotifications.dismissPane(context, prev.workspaceId, paneId)
+        }
+        lastNotified[paneId] = NotifiedState(status, workspaceId)
+        persistLocked()
+        maybeNotify(event, workspaceLabel, tabLabel)
+        true
+    }
+
+    /** Host switch: ids from the previous host must not leak into this one. */
+    fun resetForTargetChange() {
+        synchronized(transitionLock) {
+            // Cancel the old host's shade entries first: without events from
+            // that host they can never be retracted later.
+            for ((paneId, state) in lastNotified) {
+                HerdrNotifications.dismissPane(context, state.workspaceId, paneId)
+            }
+            resetEpoch++
+            lastNotified.clear()
+            seeded = false
+            persistLocked()
+        }
+    }
+
+    /** Write-through: transitions are rare; a conflating writer keeps order. */
+    private fun persistLocked() {
         val copy = HashMap(lastNotified).mapValues {
             "${it.value.status.wire}|${it.value.workspaceId}"
         }
-        scope.launch {
-            runCatching { settings.saveNotified(copy) }
-        }
+        persistRequests.value = copy
     }
 
     private fun parseNotified(raw: String): NotifiedState {
@@ -204,6 +263,10 @@ class NotificationRelay(
         // Monitoring OFF = no alerts, even in the cached-process window where
         // the link is still up (or while UI is open — the user sees live dots).
         if (!s.backgroundMonitoring) return
+        // The user is already looking at this pane: a heads-up + sound for the
+        // very screen in front of them is noise. The status is still recorded,
+        // so leaving it later does not re-alert a stale transition.
+        if (UiFocusState.isShowing(event.paneId)) return
         if (!HerdrNotifications.shouldNotify(event, s.notifyDone, s.notifyBlocked)) return
         val snapshot = client.state.value.snapshot
         val ws = workspaceLabel ?: snapshot?.workspace(event.workspaceId)?.label

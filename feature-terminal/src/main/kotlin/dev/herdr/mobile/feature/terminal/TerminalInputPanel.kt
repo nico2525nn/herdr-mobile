@@ -1,21 +1,28 @@
 package dev.herdr.mobile.feature.terminal
 
+import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.PaddingValues
+import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.pager.HorizontalPager
 import androidx.compose.foundation.pager.rememberPagerState
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
+import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import dev.herdr.mobile.core.model.InputPanelPage
+import dev.herdr.mobile.core.model.SwipeBehavior
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.setValue
 
@@ -76,7 +83,36 @@ internal fun BottomInputPanel(
     ) {
         Column(modifier = Modifier.padding(horizontal = 12.dp, vertical = 10.dp)) {
             if (pages.size > 1) {
-                HorizontalPager(state = pagerState, modifier = Modifier.fillMaxWidth()) { index ->
+                // Swiping over the key buttons does not reliably page (the
+                // buttons own the gesture), so give the panel an explicit
+                // switch. It also makes the second page discoverable.
+                val current = pages.getOrNull(pagerState.currentPage) ?: pages.first()
+                val other = pages.firstOrNull { it != current } ?: current
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.End,
+                ) {
+                    TextButton(
+                        onClick = { onPageChange(other) },
+                        contentPadding = PaddingValues(horizontal = 8.dp, vertical = 0.dp),
+                        modifier = Modifier.heightIn(min = 32.dp),
+                    ) {
+                        Text(
+                            text = if (other == InputPanelPage.CJK_INPUT) "CJK" else "KEYS",
+                            style = MaterialTheme.typography.labelSmall,
+                        )
+                    }
+                }
+            }
+            if (pages.size > 1) {
+                // Honor the swipe setting: only PAGE switches panels. NONE and
+                // SCROLLBACK must not hijack horizontal swipes (the explicit
+                // page button remains available).
+                HorizontalPager(
+                    state = pagerState,
+                    modifier = Modifier.fillMaxWidth(),
+                    userScrollEnabled = settings.swipeBehavior == SwipeBehavior.PAGE,
+                ) { index ->
                     when (pages[index]) {
                         InputPanelPage.EXTRA_KEYS -> ExtraKeysPanel(
                             onKey = onExtraKey,

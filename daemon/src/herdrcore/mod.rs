@@ -5,6 +5,7 @@ use anyhow::{anyhow, bail, Context, Result};
 use serde_json::{json, Value};
 use tokio::io::{AsyncBufReadExt, AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt, BufReader};
 use tokio::net::UnixStream;
+use tokio::time::{timeout, Duration};
 
 pub mod terminal;
 
@@ -60,6 +61,10 @@ impl CoreEventCursor {
     }
 }
 
+const CORE_RPC_TIMEOUT: Duration = Duration::from_secs(15);
+// Core emits a heartbeat every 15 s; three missed beats means wedged.
+const CORE_STREAM_IDLE_TIMEOUT: Duration = Duration::from_secs(45);
+
 impl CoreClient {
     pub fn new(socket_path: impl Into<PathBuf>) -> Self {
         Self { socket_path: socket_path.into() }
@@ -79,7 +84,9 @@ impl CoreClient {
             &json!({"jsonrpc":"2.0","id":0,"method":"hello","params":{"generation":1,"framed":false}}),
         )
         .await?;
-        let hello = read_json_line(&mut reader).await?;
+        let hello = timeout(CORE_RPC_TIMEOUT, read_json_line(&mut reader))
+            .await
+            .context("herdr-core hello timed out")??;
         let result = rpc_result(hello, 0)?;
         let generation = result.get("generation").and_then(Value::as_u64).unwrap_or(0);
         if generation != 1 {
@@ -98,7 +105,9 @@ impl CoreClient {
             &json!({"jsonrpc":"2.0","id":0,"method":"hello","params":{"generation":1,"framed":true}}),
         )
         .await?;
-        let hello = read_json_line(&mut reader).await?;
+        let hello = timeout(CORE_RPC_TIMEOUT, read_json_line(&mut reader))
+            .await
+            .context("herdr-core hello timed out")??;
         let result = rpc_result(hello, 0)?;
         let generation = result.get("generation").and_then(Value::as_u64).unwrap_or(0);
         if generation != 1 || result.get("framed").and_then(Value::as_bool) != Some(true) {
@@ -114,7 +123,9 @@ impl CoreClient {
             &json!({"jsonrpc":"2.0","id":1,"method":method,"params":params}),
         )
         .await?;
-        let response = read_json_line(&mut reader).await?;
+        let response = timeout(CORE_RPC_TIMEOUT, read_json_line(&mut reader))
+            .await
+            .context("herdr-core RPC timed out")??;
         rpc_result(response, 1)
     }
 
@@ -130,7 +141,9 @@ impl CoreClient {
             &json!({"jsonrpc":"2.0","id":1,"method":"events.subscribe","params":{}}),
         )
         .await?;
-        let response = read_json_line(&mut reader).await?;
+        let response = timeout(CORE_RPC_TIMEOUT, read_json_line(&mut reader))
+            .await
+            .context("herdr-core events.subscribe timed out")??;
         let initial = rpc_result(response, 1)?;
         let seq = initial.get("seq").and_then(Value::as_i64).unwrap_or(0);
         let terminals = initial
@@ -174,7 +187,9 @@ impl CoreClient {
         )
         .await?;
         let response = loop {
-            let frame = read_frame(&mut stream).await?;
+            let frame = timeout(CORE_RPC_TIMEOUT, read_frame(&mut stream))
+                .await
+                .context("herdr-core attach timed out")??;
             if frame.channel == JSON_CHANNEL && frame.kind == FRAME_DATA {
                 let message: Value = serde_json::from_slice(&frame.payload).context("invalid herdr-core attach response")?;
                 if message.get("id").and_then(Value::as_i64) == Some(1) {
@@ -272,10 +287,13 @@ impl CoreClient {
 
     pub async fn close_tab(&self, tab_id: &str) -> Result<()> {
         let terminals = self.list(true).await?;
-        self.close_selected(terminals.into_iter().filter(|terminal| {
+        let selected = terminals.into_iter().filter(|terminal| {
             field_string(terminal.get("labels").unwrap_or(&Value::Null), "herdr.tab")
                 .unwrap_or_else(|| field_string(terminal, "address").unwrap_or_default()) == tab_id
-        })).await
+        }).collect::<Vec<_>>();
+        // Idempotent: a second tap after a concurrent tab.closed is a success,
+        // not a 404 the app surfaces as a failure.
+        self.close_selected(selected.into_iter()).await
     }
 
     pub async fn close_workspace(&self, workspace_id: &str) -> Result<()> {
@@ -286,28 +304,44 @@ impl CoreClient {
                 .and_then(|address| locations.get(address))
                 .is_some_and(|(space, _)| space == workspace_id)
         }).cloned().collect::<Vec<_>>();
-        if selected.is_empty() { bail!("not_found: workspace {workspace_id}"); }
+        // Idempotent like close_tab: a concurrent/duplicate close is success.
         self.close_selected(selected.into_iter()).await
     }
 
     async fn close_selected(&self, terminals: impl Iterator<Item = Value>) -> Result<()> {
+        let mut closed = 0usize;
+        let mut first_error: Option<anyhow::Error> = None;
         for terminal in terminals {
             let Some(address) = field_string(&terminal, "address") else { continue };
-            let mut finished = field_string(&terminal, "state") == Some("finished");
-            if field_string(&terminal, "state") == Some("live") {
+            let state = field_string(&terminal, "state").unwrap_or("unknown");
+            let mut finished = state == "finished";
+            if state == "live" {
                 let result = self.call("terminal.kill", json!({"terminal":address})).await?;
                 finished = field_string(&result, "state") == Some("finished");
             }
             if finished {
                 match self.call("terminal.rm", json!({"terminal":address})).await {
-                    Ok(_) => {}
-                    Err(error) if format!("{error:#}").contains("not_found") => {}
-                    Err(error) if format!("{error:#}").contains("live") => {}
-                    Err(error) => return Err(error),
+                    Ok(_) => closed += 1,
+                    Err(error) if format!("{error:#}").contains("not_found") => closed += 1,
+                    Err(error) if format!("{error:#}").contains("live") => {
+                        if first_error.is_none() {
+                            first_error = Some(anyhow!("failed: terminal {address} is live"));
+                        }
+                    }
+                    Err(error) => {
+                        if first_error.is_none() { first_error = Some(error); }
+                    }
                 }
+            } else if first_error.is_none() {
+                first_error = Some(anyhow!("failed: terminal {address} is {state}"));
             }
         }
-        Ok(())
+        // A multi-pane tab may close most of its panes; report success then.
+        if closed > 0 || first_error.is_none() {
+            Ok(())
+        } else {
+            Err(first_error.unwrap())
+        }
     }
 
     pub async fn rename_tab(&self, tab_id: &str, label: &str) -> Result<()> {
@@ -356,7 +390,10 @@ pub struct CoreSubscription {
 impl CoreSubscription {
     pub async fn next(&mut self) -> Result<Option<Value>> {
         let mut line = String::new();
-        if self.reader.read_line(&mut line).await? == 0 {
+        let read = timeout(CORE_STREAM_IDLE_TIMEOUT, self.reader.read_line(&mut line))
+            .await
+            .context("herdr-core event stream went idle")??;
+        if read == 0 {
             return Ok(None);
         }
         let message: Value = serde_json::from_str(&line).context("invalid herdr-core event notification")?;
@@ -398,7 +435,9 @@ impl CoreAttachment {
     }
 
     pub async fn next_frame(&mut self) -> Result<CoreFrame> {
-        read_frame(&mut self.stream).await
+        timeout(CORE_STREAM_IDLE_TIMEOUT, read_frame(&mut self.stream))
+            .await
+            .context("herdr-core terminal stream went idle")?
     }
 }
 

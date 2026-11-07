@@ -48,6 +48,7 @@ class HerdrMonitorService : Service() {
 
     override fun onCreate() {
         super.onCreate()
+        markRunning()
         ensureChannel(this)
         // startForeground FIRST: Android 14 kills an FGS that doesn't promote
         // within seconds. Container init never blocks (network runs on its own
@@ -102,6 +103,7 @@ class HerdrMonitorService : Service() {
     }
 
     override fun onDestroy() {
+        markStopped()
         scope.cancel()
         super.onDestroy()
     }
@@ -159,7 +161,10 @@ class HerdrMonitorService : Service() {
                 .build()
         }
 
+        @Volatile private var running = false
+
         fun start(context: Context) {
+            if (running) return
             val intent = Intent(context, HerdrMonitorService::class.java)
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
                 context.startForegroundService(intent)
@@ -171,5 +176,9 @@ class HerdrMonitorService : Service() {
         fun stop(context: Context) {
             context.stopService(Intent(context, HerdrMonitorService::class.java))
         }
+
+        internal fun markRunning() { running = true }
+
+        internal fun markStopped() { running = false }
     }
 }

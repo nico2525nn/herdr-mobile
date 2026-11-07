@@ -28,6 +28,7 @@ import androidx.compose.ui.semantics.toggleableState
 import androidx.compose.ui.state.ToggleableState
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import kotlin.math.abs
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
@@ -168,27 +169,30 @@ private fun RepeatableKeyButton(
                 if (dualAction) {
                     Modifier.pointerInput(key) {
                         awaitEachGesture {
-                            var traveled = 0f
                             val down = awaitFirstDown(requireUnconsumed = false)
-                            var slop: PointerInputChange? =
-                                awaitTouchSlopOrCancellation(down.id) { c, over ->
-                                    c.consume()
-                                    traveled += over.y
-                                }
-                            // Slop passed: drain the rest so a long swipe
-                            // counts fully, not just the slop overshoot.
-                            while (slop != null && slop.pressed) {
+                            var dx = 0f
+                            var dy = 0f
+                            var claimed = false
+                            val slop = viewConfiguration.touchSlop
+                            while (true) {
                                 val event = awaitPointerEvent()
-                                val c = event.changes.firstOrNull { it.id == down.id }
-                                if (c == null || !c.pressed) break
-                                traveled += c.position.y - c.previousPosition.y
-                                c.consume()
-                                slop = c
+                                val change = event.changes.firstOrNull { it.id == down.id } ?: break
+                                if (!change.pressed) break
+                                dx += change.position.x - change.previousPosition.x
+                                dy += change.position.y - change.previousPosition.y
+                                if (!claimed) {
+                                    if (abs(dx) > slop && abs(dx) >= abs(dy)) {
+                                        // Horizontal gesture belongs to the
+                                        // pager; consuming it made a swipe
+                                        // over PGUP↓ fire a page-up instead.
+                                        return@awaitEachGesture
+                                    }
+                                    if (abs(dy) > slop && abs(dy) > abs(dx)) claimed = true
+                                }
+                                if (claimed) change.consume()
                             }
-                            if (traveled > 24.dp.toPx()) {
-                                onFlickDown?.invoke()
-                            } else {
-                                onPress()
+                            if (claimed) {
+                                if (dy > 24.dp.toPx()) onFlickDown?.invoke() else onPress()
                             }
                         }
                     }

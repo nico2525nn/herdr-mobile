@@ -25,6 +25,7 @@ import okhttp3.Request
 import okhttp3.RequestBody.Companion.toRequestBody
 import java.io.IOException
 import java.net.URLEncoder
+import java.util.concurrent.TimeUnit
 
 private val JSON_MEDIA = "application/json; charset=utf-8".toMediaType()
 
@@ -210,7 +211,23 @@ class DaemonApi(
      * install + handoff beat); callers show progress from the returned log.
      */
     suspend fun runHerdrUpdate(): String {
-        val obj = post("v1/herdr/update/run", "{}")
+        // Download + install + handoff + manifest fetch routinely exceeds the
+        // REST client's 15 s read timeout; a timeout here reported failure
+        // while the daemon kept updating (retry then hit "already running").
+        // No per-read deadline: the handler is silent until it finishes. The
+        // call timeout is the real bound (the daemon's worst case is longer).
+        val updateHttp = http.newBuilder()
+            .readTimeout(0, TimeUnit.MILLISECONDS)
+            .callTimeout(300, TimeUnit.SECONDS)
+            .build()
+        val text = withContext(Dispatchers.IO) {
+            updateHttp.newCall(request("POST", "v1/herdr/update/run", "{}")).execute().use { response ->
+                val body = response.body?.string().orEmpty()
+                if (!response.isSuccessful) throw mapError(response.code, body)
+                body
+            }
+        }
+        val obj = HerdrJson.parseToJsonElement(text).jsonObject
         return obj["log"]?.jsonPrimitive?.contentOrNull.orEmpty()
     }
 

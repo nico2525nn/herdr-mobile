@@ -130,10 +130,17 @@ fn default_socket_path() -> Option<String> {
 }
 
 fn default_core_socket() -> Option<String> {
+    use std::os::unix::fs::MetadataExt;
     std::env::var("XDG_RUNTIME_DIR")
         .ok()
         .map(|runtime| format!("{runtime}/herdr-core/default.sock"))
-        .or_else(|| std::env::var("UID").ok().map(|uid| format!("/run/user/{uid}/herdr-core/default.sock")))
+        .or_else(|| {
+            // $UID is not exported by POSIX shells (and dash has no UID), so
+            // the old fallback baked in uid 1000 for everyone.
+            std::fs::metadata("/proc/self")
+                .ok()
+                .map(|meta| format!("/run/user/{}/herdr-core/default.sock", meta.uid()))
+        })
 }
 
 fn help_text() -> &'static str {

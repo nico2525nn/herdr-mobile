@@ -16,6 +16,7 @@ import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberUpdatedState
 import kotlinx.coroutines.launch
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.graphicsLayer
@@ -90,6 +91,10 @@ fun <T> rememberReorderState(
         }
     }
     val vertical = remember { mutableStateOf(true) }
+    // The state bag is remembered without keys, so callbacks captured here
+    // would keep the first composition's workspace/state forever.
+    val currentOnDrop = rememberUpdatedState(onDrop)
+    val currentOnLongPress = rememberUpdatedState(onLongPressWithoutMove)
     return remember {
         ReorderState(
             listState = listState,
@@ -238,13 +243,13 @@ fun <T> rememberReorderState(
                         scrollDir.intValue = 0
                         dragOffsetPx.floatValue = 0f
                         if (moved) {
-                            if (to >= 0) onDrop(item, to)
-                        } else if (onLongPressWithoutMove != null) {
+                            if (to >= 0) currentOnDrop.value(item, to)
+                        } else if (currentOnLongPress.value != null) {
                             // Deferred past the gesture: opening a menu
                             // synchronously inside UP-handling lets the
                             // in-flight UP interact with the newborn UI
                             // (instant suicide-dismiss or phantom clicks).
-                            val cb = onLongPressWithoutMove
+                            val cb = currentOnLongPress.value
                             scope.launch {
                                 kotlinx.coroutines.delay(50)
                                 cb?.invoke(item)

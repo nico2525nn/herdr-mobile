@@ -53,6 +53,8 @@ private data object SettingsRoute
 @Serializable
 private data class TerminalRoute(val workspaceId: String? = null, val tabId: String? = null, val paneId: String? = null)
 
+private const val DEEP_LINK_STATE = "handled_deep_link"
+
 class MainActivity : ComponentActivity() {
 
     /**
@@ -62,10 +64,36 @@ class MainActivity : ComponentActivity() {
      */
     private val deepLinkTarget = MutableStateFlow<TerminalRoute?>(null)
 
+    /**
+     * The deep link this activity already applied. Saved across recreation so a
+     * configuration change does not re-navigate, while a new notification tap
+     * (different route) still wins.
+     */
+    private var lastHandledDeepLink: TerminalRoute? = null
+
     private val notificationPermission =
         registerForActivityResult(ActivityResultContracts.RequestPermission()) { _ ->
             // Granted or not, the relay no-ops safely; no retry nag here.
         }
+
+    private fun encodeRoute(route: TerminalRoute?): String? =
+        route?.let { listOf(it.workspaceId, it.tabId, it.paneId).joinToString("|") { id -> id ?: "" } }
+
+    private fun decodeRoute(raw: String?): TerminalRoute? {
+        if (raw == null) return null
+        val parts = raw.split('|')
+        if (parts.size != 3) return null
+        return TerminalRoute(
+            workspaceId = parts[0].ifBlank { null },
+            tabId = parts[1].ifBlank { null },
+            paneId = parts[2].ifBlank { null },
+        )
+    }
+
+    override fun onSaveInstanceState(outState: Bundle) {
+        super.onSaveInstanceState(outState)
+        outState.putString(DEEP_LINK_STATE, encodeRoute(lastHandledDeepLink))
+    }
 
     private fun routeFromIntent(intent: Intent?): TerminalRoute? {
         val workspace = intent?.getStringExtra(HerdrNotifications.EXTRA_WORKSPACE_ID) ?: return null
@@ -77,13 +105,19 @@ class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
+        // A configuration change re-delivers the original intent. Reapplying
+        // its deep link yanked the user back into the notification's pane
+        // after they navigated away; the nav back stack already restores the
+        // real route. Likewise, do not re-prompt for notifications on every
+        // recreation after a denial.
+        val restoring = savedInstanceState != null
         // POST_NOTIFICATIONS defaults to denied on API 33+; without this every
         // relay notification is silently dropped while the user believes done /
         // blocked / failed alerts are enabled. Ask once per install.
         // Skipped on notification-tap landings: the prompt would cover the
         // deep-link target the user explicitly asked to see (grant state is
         // also surfaced in Settings with a system link).
-        if (routeFromIntent(intent) == null &&
+        if (!restoring && routeFromIntent(intent) == null &&
             Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
             checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) !=
                 PackageManager.PERMISSION_GRANTED
@@ -91,7 +125,7 @@ class MainActivity : ComponentActivity() {
             notificationPermission.launch(Manifest.permission.POST_NOTIFICATIONS)
         }
         val container = (application as HerdrApp).container
-        deepLinkTarget.value = routeFromIntent(intent)
+        deepLinkTarget.value = if (restoring) null else routeFromIntent(intent)
         setContent {
             val settings by container.settingsRepository.settings.collectAsStateWithLifecycle()
             val deepLink by deepLinkTarget.collectAsStateWithLifecycle()
@@ -109,7 +143,10 @@ class MainActivity : ComponentActivity() {
         super.onNewIntent(intent)
         setIntent(intent)
         // Notification deep link: open the target terminal after a foreground refresh.
-        routeFromIntent(intent)?.let { deepLinkTarget.value = it }
+        routeFromIntent(intent)?.let {
+            lastHandledDeepLink = it
+            deepLinkTarget.value = it
+        }
     }
 }
 

@@ -1,5 +1,46 @@
 # Changelog
 
+## 2.0.8 — 2026-11-07
+
+Audit pass over terminal, UI, notifications, daemon and protocol seams.
+
+- Terminal rendering: Kitty placements now come from the render-state image
+  list (virtual/Unicode-placeholder images included) with Ghostty layer and
+  z-index ordering; below-background, below-text and above-text images are
+  composited in the right pass, frames with images are forced full so text is
+  not stamped over on partial updates, deleted images no longer ghost, and
+  animations schedule a render instead of repainting cached bitmaps.
+- Input: mouse-tracking panes get primary-button press/drag/release (not a
+  synthetic tap at the up position); SGR 1016 reports surface pixels; per-agent
+  wheel stride is accumulated (pi 2 rows, qwen 3) and reset on direction or
+  route changes; explicit "Mouse wheel" mode no longer degrades to PgUp/PgDn;
+  long-press selection keeps the word prefix and never adopts a stale anchor;
+  a horizontal swipe starting on PGUP↓ goes to the pager instead of paging.
+- Lifecycle: terminal release outlives `viewModelScope` (closed screens no longer
+  leak sockets); auto-reattach is cancelled when backgrounded; CJK draft flows
+  are cached instead of leaking an Eagerly-shared flow per keystroke.
+- Notifications: transition decisions are serialized across the event and
+  snapshot paths; alerts for the pane currently on screen are suppressed;
+  tapping a DONE alert without a link no longer destroys it (autoCancel off);
+  host switches cancel the old host's shade entries and reseed silently;
+  notification deep links survive activity recreation.
+- UI: the input panel has an explicit KEYS/CJK switch (swiping over key buttons
+  is unreliable); the "panel swipe" setting is honored; session reordering uses
+  live callbacks instead of the first composition's workspace; rename/close and
+  profile dialogs survive rotation; CJK fallback does not select a disabled
+  panel page.
+- Daemon/protocol: `closed` reasons are parsed (lagged_resync retry works);
+  attach failures are replayed to bridges that subscribed after the failure;
+  core RPCs have timeouts; closing an unknown tab/workspace returns an error;
+  reserved broadcast sequences are published in the snapshot (no spurious gap
+  refetch); live clients receive agent-detection changes; the core socket
+  fallback derives the uid from `/proc/self`; the update call gets a 180s read
+  timeout instead of failing while the daemon keeps updating (no per-read
+  deadline; a drop guard clears the single-flight flag); core event and terminal
+  streams have idle timeouts; duplicate tab/workspace closes are idempotent and
+  a multi-pane close reports success when most panes closed; `snapshot.required`
+  no longer stamps the stale pre-refresh snapshot with the reserved seq.
+
 ## 2.0.7 — 2026-11-07
 
 - **CJK page keyboard button**: it focused the terminal, not the CJK field,

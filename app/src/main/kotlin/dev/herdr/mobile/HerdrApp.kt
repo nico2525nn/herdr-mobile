@@ -17,8 +17,32 @@ class HerdrApp : Application() {
     override fun onCreate() {
         super.onCreate()
         registerActivityLifecycleCallbacks(object : android.app.Application.ActivityLifecycleCallbacks {
-            override fun onActivityStarted(a: android.app.Activity) { foregroundActivities++ }
-            override fun onActivityStopped(a: android.app.Activity) { foregroundActivities-- }
+            override fun onActivityStarted(a: android.app.Activity) {
+                foregroundActivities++
+                dev.herdr.mobile.core.model.UiFocusState.appForeground = true
+                // Retry a rejected FGS start on every foreground entry; the
+                // service is idempotent while running.
+                runCatching {
+                    if (container.settingsRepository.settings.value.backgroundMonitoring) {
+                        HerdrMonitorService.start(this@HerdrApp)
+                    }
+                }
+            }
+
+            override fun onActivityStopped(a: android.app.Activity) {
+                foregroundActivities--
+                if (foregroundActivities <= 0) {
+                    dev.herdr.mobile.core.model.UiFocusState.appForeground = false
+                    // Monitoring OFF must end SSE/tunnel work when the last
+                    // activity leaves; the toggle alone only ran while the UI
+                    // was visible, so a later Home left the link up forever.
+                    runCatching {
+                        if (!container.settingsRepository.settings.value.backgroundMonitoring) {
+                            container.client.stop()
+                        }
+                    }
+                }
+            }
             override fun onActivityCreated(a: android.app.Activity, b: android.os.Bundle?) {}
             override fun onActivityResumed(a: android.app.Activity) {}
             override fun onActivityPaused(a: android.app.Activity) {}

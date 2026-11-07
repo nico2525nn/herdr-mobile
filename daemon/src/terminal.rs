@@ -28,6 +28,9 @@ pub struct TerminalSession {
     input_tx: mpsc::Sender<SessionCommand>,
     frames_tx: broadcast::Sender<SessionFrame>,
     closed_tx: broadcast::Sender<String>,
+    /// Last close reason, replayable: run_session can fail between attach()
+    /// returning and bridge() subscribing to the no-replay broadcast.
+    last_close_reason: std::sync::Mutex<Option<String>>,
     /// Viewport to restore on the Herdr side when the last bridge goes away, so the pane
     /// does not keep the phone's narrow grid after we detach.
     restore_tx: mpsc::Sender<RestoreViewport>,
@@ -130,7 +133,7 @@ impl TerminalRegistry {
     /// `Some((0, _))` disables the restore.
     pub async fn bridge(
         self: &Arc<Self>,
-        socket: WebSocket,
+        mut socket: WebSocket,
         pane_id: String,
         takeover: bool,
         cols: u32,
@@ -145,6 +148,16 @@ impl TerminalRegistry {
         // bridge on a blank terminal.
         let frames_rx = session.frames_tx.subscribe();
         let closed_rx = session.closed_tx.subscribe();
+        let close_reason = session
+            .last_close_reason
+            .lock()
+            .expect("close reason poisoned")
+            .clone();
+        if let Some(reason) = close_reason {
+            let closed = serde_json::json!({"type": "closed", "reason": reason});
+            let _ = socket.send(Message::Text(closed.to_string().into())).await;
+            return Ok(());
+        }
         let restore: Option<RestoreViewport> = match restore {
             // Explicit client value (or disable) wins.
             Some((0, _)) => None,
@@ -330,6 +343,7 @@ impl TerminalRegistry {
                         input_tx,
                         frames_tx,
                         closed_tx,
+                        last_close_reason: std::sync::Mutex::new(None),
                         restore_tx,
                         bridges: std::sync::Mutex::new(BridgeState { count: 1, closing: false }),
                         shutdown: tokio::sync::Notify::new(),
@@ -386,6 +400,8 @@ async fn run_session(
             // a late joiner must not miss the already-sent attach_failed on a
             // broadcast channel that replays nothing.
             session.bridges.lock().expect("bridges poisoned").closing = true;
+            *session.last_close_reason.lock().expect("close reason poisoned") =
+                Some("attach_failed".to_string());
             let _ = session.closed_tx.send("attach_failed".to_string());
             registry.remove(&pane_id, &session).await;
             return;
@@ -508,6 +524,7 @@ async fn run_session(
         }
     }
     child.kill().await;
+    *session.last_close_reason.lock().expect("close reason poisoned") = Some(end_reason.clone());
     let _ = session.closed_tx.send(end_reason.clone());
     registry.remove(&pane_id, &session).await;
     info!("terminal session for pane {pane_id} ended ({end_reason})");
@@ -1152,6 +1169,7 @@ mod tests {
             input_tx,
             frames_tx,
             closed_tx,
+            last_close_reason: std::sync::Mutex::new(None),
             restore_tx,
             bridges: std::sync::Mutex::new(BridgeState { count: n, closing: false }),
             shutdown: tokio::sync::Notify::new(),

@@ -97,6 +97,8 @@ fn core_error(error: anyhow::Error) -> Response {
         api_error(StatusCode::CONFLICT, "terminal_state", message)
     } else if message.contains("unavailable") {
         api_error(StatusCode::NOT_IMPLEMENTED, "unavailable", message)
+    } else if message.contains("timed out") || message.contains("went idle") {
+        api_error(StatusCode::SERVICE_UNAVAILABLE, "daemon_unavailable", message)
     } else if message.contains("cannot connect to herdr-core socket") {
         api_error(StatusCode::SERVICE_UNAVAILABLE, "daemon_unavailable", message)
     } else {

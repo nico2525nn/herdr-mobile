@@ -162,9 +162,18 @@ impl UpdateWatcher {
             }
             *running = true;
         }
-        let result = self.run_update_inner().await;
-        *self.updater.running.lock().expect("update lock") = false;
-        result
+        struct RunningGuard<'a>(&'a std::sync::Mutex<bool>);
+        impl Drop for RunningGuard<'_> {
+            fn drop(&mut self) {
+                if let Ok(mut running) = self.0.lock() {
+                    *running = false;
+                }
+            }
+        }
+        // Drop runs even when the axum handler is cancelled (client timeout):
+        // the old straight-line reset left the flag stuck forever.
+        let _guard = RunningGuard(&self.updater.running);
+        self.run_update_inner().await
     }
 
     async fn run_update_inner(&self) -> Result<String> {

@@ -119,10 +119,13 @@ internal fun TerminalSurface(
         state.pane?.agent,
         state.pane?.hostScrollable,
     ) { scrollRoutingFor(settings.scrollMode, state.pane) }
-    LaunchedEffect(controller, routing) {
+    LaunchedEffect(controller, routing, state.pane?.agent) {
         controller.view.scrollRouting = routing
         controller.view.allowRawWheel =
-            dev.herdr.mobile.core.model.AgentMatrix.useWheelScroll(state.pane?.agent)
+            settings.scrollMode == dev.herdr.mobile.core.model.ScrollMode.WHEEL ||
+                dev.herdr.mobile.core.model.AgentMatrix.useWheelScroll(state.pane?.agent)
+        controller.view.wheelRowsPerEvent =
+            dev.herdr.mobile.core.model.AgentMatrix.wheelRowsPerEvent(state.pane?.agent)
     }
     LaunchedEffect(controller) {
         controller.view.onRemoteScroll = { rows -> viewModel.scrollRemote(rows) }
@@ -225,7 +228,9 @@ internal fun TerminalSurface(
                 // raise the terminal IME directly (explicit user preference).
                 val focused = runCatching { cjkFocus.requestFocus() }.isSuccess
                 if (!focused) {
-                    viewModel.setInputPage(InputPanelPage.EXTRA_KEYS)
+                    if (state.settings.extraKeysEnabled) {
+                        viewModel.setInputPage(InputPanelPage.EXTRA_KEYS)
+                    }
                     controller.showKeyboard()
                     return@LaunchedEffect
                 }
@@ -239,7 +244,9 @@ internal fun TerminalSurface(
                     snapshotFlow { imeVisibleNow.value }.first { it }
                 } != null
                 if (!appeared) {
-                    viewModel.setInputPage(InputPanelPage.EXTRA_KEYS)
+                    if (state.settings.extraKeysEnabled) {
+                        viewModel.setInputPage(InputPanelPage.EXTRA_KEYS)
+                    }
                     controller.showKeyboard()
                 }
             } else {

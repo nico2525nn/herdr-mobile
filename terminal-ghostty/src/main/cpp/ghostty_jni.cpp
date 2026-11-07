@@ -1396,10 +1396,15 @@ Java_io_github_sagernet_libghostty_GhosttyVt_nativeEncodeMouse(
 
   GhosttyMouseEncoderSize size{};
   size.size = sizeof(size);
-  size.screen_width = session->cols;
-  size.screen_height = session->rows;
-  size.cell_width = 1;
-  size.cell_height = 1;
+  // The encoder converts the pixel position below into cell coordinates for
+  // SGR 1006 and reports it as-is for SGR 1016. Passing 1x1 cells and cell
+  // indices made 1016 report x=1..cols instead of surface pixels.
+  const uint32_t cw = session->cellWidthPx == 0 ? 1 : session->cellWidthPx;
+  const uint32_t ch = session->cellHeightPx == 0 ? 1 : session->cellHeightPx;
+  size.screen_width = session->cols * cw;
+  size.screen_height = session->rows * ch;
+  size.cell_width = cw;
+  size.cell_height = ch;
   ghostty_mouse_encoder_set(session->mouseEncoder, GHOSTTY_MOUSE_ENCODER_OPT_SIZE, &size);
 
   const auto mouseAction = static_cast<GhosttyMouseAction>(action);
@@ -1419,7 +1424,9 @@ Java_io_github_sagernet_libghostty_GhosttyVt_nativeEncodeMouse(
     ghostty_mouse_event_set_button(session->mouseEvent, mouseButton);
   }
   ghostty_mouse_event_set_mods(session->mouseEvent, mapMods(metaState));
-  GhosttyMousePosition position{static_cast<float>(col), static_cast<float>(row)};
+  GhosttyMousePosition position{
+      static_cast<float>(col) * static_cast<float>(cw),
+      static_cast<float>(row) * static_cast<float>(ch)};
   ghostty_mouse_event_set_position(session->mouseEvent, position);
 
   uint8_t buf[64];
@@ -1574,66 +1581,79 @@ Java_io_github_sagernet_libghostty_GhosttyVt_nativeKittyTick(
   return static_cast<jlong>(next);
 }
 
+JNIEXPORT void JNICALL
+Java_io_github_sagernet_libghostty_GhosttyVt_nativeForceFullRepaint(
+    JNIEnv*, jobject, jlong handle) {
+  auto* session = fromHandle(handle);
+  if (session == nullptr) return;
+  markRenderDirtyFull(session);
+}
+
 JNIEXPORT jlongArray JNICALL
 Java_io_github_sagernet_libghostty_GhosttyVt_nativeKittyPlacements(
     JNIEnv* env, jobject, jlong handle) {
   auto* session = fromHandle(handle);
   if (session == nullptr) return nullptr;
-  GhosttyKittyGraphics storage = nullptr;
-  if (ghostty_terminal_get(session->term, GHOSTTY_TERMINAL_DATA_KITTY_GRAPHICS, &storage) !=
+  // The render-state image list includes virtual (Unicode-placeholder)
+  // placements and reports the layer/z-index needed for correct stacking;
+  // the storage placement iterator does neither.
+  // Keep the render state fresh even when called outside renderFrame (tests,
+  // a paused view); a no-op update must not discard valid placements.
+  (void)ghostty_render_state_update(session->renderState, session->term);
+  // The getter populates an EXISTING iterator (a null one is invalid).
+  GhosttyRenderStateImageIterator it = session->imageIter;
+  if (ghostty_render_state_get(session->renderState,
+                               GHOSTTY_RENDER_STATE_DATA_IMAGE_ITERATOR, &it) !=
           GHOSTTY_SUCCESS ||
-      storage == nullptr) {
-    return nullptr;
-  }
-  GhosttyKittyGraphicsPlacementIterator it = nullptr;
-  if (ghostty_kitty_graphics_placement_iterator_new(nullptr, &it) != GHOSTTY_SUCCESS) {
-    return nullptr;
-  }
-  struct IteratorGuard {
-    GhosttyKittyGraphicsPlacementIterator i;
-    ~IteratorGuard() { if (i != nullptr) ghostty_kitty_graphics_placement_iterator_free(i); }
-  } guard{it};
-  if (ghostty_kitty_graphics_get(storage, GHOSTTY_KITTY_GRAPHICS_DATA_PLACEMENT_ITERATOR, &it) !=
-      GHOSTTY_SUCCESS) {
+      it == nullptr) {
     return nullptr;
   }
 
   std::vector<jlong> out;
-  while (ghostty_kitty_graphics_placement_next(it)) {
-    uint32_t imageId = 0;
-    if (ghostty_kitty_graphics_placement_get(it, GHOSTTY_KITTY_GRAPHICS_PLACEMENT_DATA_IMAGE_ID,
-                                              &imageId) != GHOSTTY_SUCCESS) {
-      continue;
-    }
-    int32_t z = 0;
-    ghostty_kitty_graphics_placement_get(it, GHOSTTY_KITTY_GRAPHICS_PLACEMENT_DATA_Z, &z);
-    GhosttyKittyGraphicsImage image = ghostty_kitty_graphics_image(storage, imageId);
-    if (image == nullptr) continue;
-    auto info = GHOSTTY_INIT_SIZED(GhosttyKittyGraphicsPlacementRenderInfo);
-    if (ghostty_kitty_graphics_placement_render_info(it, image, session->term, &info) !=
+  while (ghostty_render_state_image_iterator_next(it)) {
+    uint32_t protocol = 0;
+    if (ghostty_render_state_image_get(it, GHOSTTY_RENDER_STATE_IMAGE_DATA_PROTOCOL, &protocol) !=
             GHOSTTY_SUCCESS ||
-        !info.viewport_visible || info.pixel_width == 0 || info.pixel_height == 0) {
+        protocol != GHOSTTY_IMAGE_PROTOCOL_KITTY) {
       continue;
     }
+    uint32_t imageId = 0;
     uint64_t generation = 0;
-    ghostty_kitty_graphics_image_get(image, GHOSTTY_KITTY_GRAPHICS_IMAGE_DATA_GENERATION,
-                                     &generation);
+    int32_t layer = 0, z = 0, col = 0, row = 0;
+    uint32_t pixelW = 0, pixelH = 0, sourceX = 0, sourceY = 0, sourceW = 0, sourceH = 0;
     uint32_t xOffset = 0, yOffset = 0;
-    ghostty_kitty_graphics_placement_get(it, GHOSTTY_KITTY_GRAPHICS_PLACEMENT_DATA_X_OFFSET,
-                                         &xOffset);
-    ghostty_kitty_graphics_placement_get(it, GHOSTTY_KITTY_GRAPHICS_PLACEMENT_DATA_Y_OFFSET,
-                                         &yOffset);
+    ghostty_render_state_image_get(it, GHOSTTY_RENDER_STATE_IMAGE_DATA_IMAGE_ID, &imageId);
+    ghostty_render_state_image_get(it, GHOSTTY_RENDER_STATE_IMAGE_DATA_IMAGE_GENERATION,
+                                   &generation);
+    ghostty_render_state_image_get(it, GHOSTTY_RENDER_STATE_IMAGE_DATA_LAYER, &layer);
+    ghostty_render_state_image_get(it, GHOSTTY_RENDER_STATE_IMAGE_DATA_Z, &z);
+    ghostty_render_state_image_get(it, GHOSTTY_RENDER_STATE_IMAGE_DATA_VIEWPORT_COL, &col);
+    ghostty_render_state_image_get(it, GHOSTTY_RENDER_STATE_IMAGE_DATA_VIEWPORT_ROW, &row);
+    ghostty_render_state_image_get(it, GHOSTTY_RENDER_STATE_IMAGE_DATA_PIXEL_WIDTH, &pixelW);
+    ghostty_render_state_image_get(it, GHOSTTY_RENDER_STATE_IMAGE_DATA_PIXEL_HEIGHT, &pixelH);
+    ghostty_render_state_image_get(it, GHOSTTY_RENDER_STATE_IMAGE_DATA_SOURCE_X, &sourceX);
+    ghostty_render_state_image_get(it, GHOSTTY_RENDER_STATE_IMAGE_DATA_SOURCE_Y, &sourceY);
+    ghostty_render_state_image_get(it, GHOSTTY_RENDER_STATE_IMAGE_DATA_SOURCE_WIDTH, &sourceW);
+    ghostty_render_state_image_get(it, GHOSTTY_RENDER_STATE_IMAGE_DATA_SOURCE_HEIGHT,
+                                   &sourceH);
+    ghostty_render_state_image_get(it, GHOSTTY_RENDER_STATE_IMAGE_DATA_CELL_OFFSET_X, &xOffset);
+    ghostty_render_state_image_get(it, GHOSTTY_RENDER_STATE_IMAGE_DATA_CELL_OFFSET_Y, &yOffset);
+    if (pixelW == 0 || pixelH == 0) continue;
+    // 14 longs per placement:
+    // [imageId, generation, layer, z, viewportCol, viewportRow, pixelW, pixelH,
+    //  sourceX, sourceY, sourceW, sourceH, xOffsetPx, yOffsetPx]
     out.push_back(static_cast<jlong>(imageId));
     out.push_back(static_cast<jlong>(generation));
-    out.push_back(info.viewport_col);
-    out.push_back(info.viewport_row);
-    out.push_back(info.pixel_width);
-    out.push_back(info.pixel_height);
-    out.push_back(info.source_x);
-    out.push_back(info.source_y);
-    out.push_back(info.source_width);
-    out.push_back(info.source_height);
+    out.push_back(layer);
     out.push_back(z);
+    out.push_back(col);
+    out.push_back(row);
+    out.push_back(pixelW);
+    out.push_back(pixelH);
+    out.push_back(sourceX);
+    out.push_back(sourceY);
+    out.push_back(sourceW);
+    out.push_back(sourceH);
     out.push_back(xOffset);
     out.push_back(yOffset);
   }

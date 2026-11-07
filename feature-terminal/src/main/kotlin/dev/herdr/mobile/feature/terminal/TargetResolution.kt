@@ -20,12 +20,20 @@ internal fun resolveTarget(
     val workspace = snapshot.workspace(workspaceId)
         ?: snapshot.workspaces.firstOrNull()
         ?: return null
-    val tab = snapshot.tab(tabId?.takeIf { snapshot.tab(it)?.workspaceId == workspace.id })
+    // A deep link carries the pane id captured when the notification was
+    // posted. The pane may have moved to another tab since (the notification
+    // identity itself ignores tabs), so look it up across the whole workspace
+    // before falling back to the requested/active tab.
+    val paneTab = paneId?.let { id ->
+        workspace.tabs.firstOrNull { candidate -> candidate.panes.any { it.id == id } }
+    }
+    val requestedPane = paneTab?.panes?.firstOrNull { it.id == paneId }
+    val tab = paneTab
+        ?: snapshot.tab(tabId?.takeIf { snapshot.tab(it)?.workspaceId == workspace.id })
         ?: workspace.tabs.firstOrNull { it.id == workspace.activeTabId }
         ?: workspace.tabs.firstOrNull()
         ?: return null
-    val pane = paneId?.let { id -> tab.panes.firstOrNull { it.id == id } }
-        ?: tab.activePane ?: return null
+    val pane = requestedPane ?: tab.activePane ?: return null
     return TerminalTarget(workspace.id, tab.id, pane.id)
 }
 

@@ -114,6 +114,11 @@ class TerminalControlTest {
         assertEquals(TerminalAttachmentState.Detached("pane exited"), withMessage!!.state)
         assertEquals(TerminalInbound.Closed("pane exited"), withMessage.inbound)
 
+        val withReason = parseClosedRecord("""{"type":"closed","reason":"lagged_resync"}""")
+        assertTrue(withReason != null)
+        assertEquals(TerminalAttachmentState.Detached("lagged_resync"), withReason!!.state)
+        assertEquals(TerminalInbound.Closed("lagged_resync"), withReason.inbound)
+
         val bare = parseClosedRecord("""{"type":"closed"}""")
         assertTrue(bare != null)
         assertEquals(TerminalAttachmentState.Detached("closed"), bare!!.state)

@@ -89,7 +89,7 @@ internal fun parseReadyRecord(
 /** `{"type":"closed"}` → Detached, or null when the frame is malformed. */
 internal fun parseClosedRecord(text: String): TerminalControlTransition? {
     val record = decodeControlRecord(text) ?: return null
-    val reason = record.message ?: "closed"
+    val reason = record.reason ?: record.message ?: "closed"
     return TerminalControlTransition(
         state = TerminalAttachmentState.Detached(reason),
         inbound = TerminalInbound.Closed(reason),

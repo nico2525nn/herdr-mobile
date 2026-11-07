@@ -100,6 +100,7 @@ class AppContainer(context: Context) {
                     previousTarget = target
                     if (changedTarget && !targetInvalidated) {
                         client.invalidateTarget()
+                        notificationRelay.resetForTargetChange()
                         targetInvalidated = true
                     }
                     kotlinx.coroutines.delay(500)
