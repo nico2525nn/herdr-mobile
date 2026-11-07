@@ -86,7 +86,11 @@ internal fun decodeSettings(
     themeMode = ThemeMode.fromWire(prefs[SettingsKeys.THEME_MODE]),
     dynamicColor = prefs[SettingsKeys.DYNAMIC_COLOR] ?: true,
     terminalColorScheme = TerminalColorScheme.fromWire(prefs[SettingsKeys.TERMINAL_SCHEME]),
-    terminalFont = TerminalFont.fromWire(prefs[SettingsKeys.TERMINAL_FONT]),
+    terminalFont = TerminalFont.fromWire(prefs[SettingsKeys.TERMINAL_FONT]).let {
+            // Only the platform monospace family is guaranteed on every device;
+            // the other enum values always rendered with it, so normalise.
+            if (it == TerminalFont.MONOSPACE) it else TerminalFont.MONOSPACE
+        },
     terminalFontSizeSp = prefs[SettingsKeys.FONT_SIZE] ?: 12,
     terminalLineHeight = prefs[SettingsKeys.LINE_HEIGHT] ?: 1.15f,
     cursorStyle = CursorStyle.fromWire(prefs[SettingsKeys.CURSOR_STYLE]),

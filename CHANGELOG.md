@@ -1,5 +1,12 @@
 # Changelog
 
+## 2.0.4 — 2026-11-07
+
+- The terminal font picker only offers the platform monospace family; the other
+  entries never resolved to their named typeface and silently rendered
+  monospace, so they promised a font the app could not deliver. Stored values
+  are normalised on load.
+
 ## 2.0.3 — 2026-11-07
 
 - Selection now uses the theme's selection colour (with a readable contrasting

@@ -30,7 +30,7 @@ class SettingsCodecTest {
         themeMode = ThemeMode.MIDNIGHT,
         dynamicColor = false,
         terminalColorScheme = TerminalColorScheme.DRACULA,
-        terminalFont = TerminalFont.JETBRAINS_MONO,
+        terminalFont = TerminalFont.MONOSPACE,
         terminalFontSizeSp = 17,
         terminalLineHeight = 1.4f,
         cursorStyle = CursorStyle.BAR,

@@ -49,7 +49,7 @@ internal fun LazyListScope.settingsAppearanceSection(
                 headline = "Terminal font",
                 supporting = "Typeface and text size (${settings.terminalFontSizeSp}sp)",
                 value = settings.terminalFont.displayName,
-                options = TerminalFont.entries.map { it to it.displayName },
+                options = listOf(TerminalFont.MONOSPACE to TerminalFont.MONOSPACE.displayName),
                 onSelect = { viewModel.setTerminalFont(it) },
                 showDivider = true,
             )
