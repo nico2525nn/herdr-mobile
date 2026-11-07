@@ -1,5 +1,14 @@
 # Changelog
 
+## 2.0.3 — 2026-11-07
+
+- Selection now uses the theme's selection colour (with a readable contrasting
+  text colour) instead of always inverting video.
+- The extra-keys sticky latch clears when the engine consumes it on a hardware
+  key; the engine and the panel no longer disagree about CTRL/ALT state.
+- 32-bit ARM phones can install again: libghostty is vendored for armeabi-v7a
+  as well (arm64 + armv7 in release; x86_64 stays debug/emulator only).
+
 ## 2.0.2 — 2026-11-07
 
 More terminal-engine correctness fixes from the 50-item audit.

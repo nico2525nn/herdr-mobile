@@ -125,10 +125,8 @@ public class GhosttyTerminalSession private constructor(
         get() = _exitStatus.value != null
 
     public var selectionBackground: Int? = null
-        private set
 
     public var selectionForeground: Int? = null
-        private set
 
     public var columns: Int = 0
         private set

@@ -14,8 +14,8 @@ android {
         applicationId = "dev.herdr.mobile"
         minSdk = 26
         targetSdk = 37
-        versionCode = 67
-        versionName = "2.0.2"
+        versionCode = 68
+        versionName = "2.0.3"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
@@ -31,7 +31,7 @@ android {
         }
         release {
             // Phones are arm64; x86_64 is emulator-only (debug keeps both).
-            ndk { abiFilters += "arm64-v8a" }
+            ndk { abiFilters += listOf("arm64-v8a", "armeabi-v7a") }
             buildConfigField("String", "DEFAULT_DIRECT_URL", "\"http://10.0.2.2:8765\"")
             isMinifyEnabled = true
             isShrinkResources = true

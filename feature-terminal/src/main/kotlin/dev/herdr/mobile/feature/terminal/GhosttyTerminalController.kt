@@ -64,6 +64,7 @@ internal class GhosttyTerminalController(
         view.bellHapticEnabled = false
         session.setTheme(scheme.toGhosttyTheme())
         session.setColorScheme(scheme.isDark())
+        applySelectionColors(scheme)
         view.setBackgroundColor(scheme.background.toArgb())
         view.uiHandler = object : io.github.sagernet.libghostty.GhosttyUiHandler {
             override fun confirmUnsafePaste(context: Context, paste: () -> Unit) {
@@ -86,6 +87,17 @@ internal class GhosttyTerminalController(
         view.session = session
     }
 
+    /** Selection uses the theme colour and picks a readable foreground. */
+    private fun applySelectionColors(scheme: TerminalColorScheme) {
+        val background = scheme.selection.toArgb()
+        session.selectionBackground = background
+        session.selectionForeground = if (scheme.selection.isLight()) {
+            android.graphics.Color.BLACK
+        } else {
+            android.graphics.Color.WHITE
+        }
+    }
+
     /** Feed PTY bytes; the view redraws on the next frame. */
     fun feed(data: ByteArray) {
         if (!closed) session.feedOutput(data)
@@ -94,6 +106,8 @@ internal class GhosttyTerminalController(
     fun applyTheme(scheme: TerminalColorScheme) {
         session.setTheme(scheme.toGhosttyTheme())
         session.setColorScheme(scheme.isDark())
+        applySelectionColors(scheme)
+        applySelectionColors(scheme)
         view.setBackgroundColor(scheme.background.toArgb())
     }
 
@@ -134,6 +148,13 @@ internal class GhosttyTerminalController(
 }
 
 /** Relative luminance below 0.5 counts as a dark theme (DEC 2031 report). */
+internal fun dev.herdr.mobile.feature.terminal.theme.TerminalColor.isLight(): Boolean {
+    val r = red / 255f
+    val g = green / 255f
+    val b = blue / 255f
+    return 0.2126f * r + 0.7152f * g + 0.0722f * b > 0.5f
+}
+
 internal fun TerminalColorScheme.isDark(): Boolean {
     val r = background.red / 255f
     val g = background.green / 255f

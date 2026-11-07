@@ -25,6 +25,7 @@ import io.github.sagernet.libghostty.GhosttyExtraKeysState
 import io.github.sagernet.libghostty.GhosttyTerminalView
 import io.github.sagernet.libghostty.GhosttyTerminalView.ScrollRouting
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.flow.Flow
 
 /**
@@ -151,6 +152,29 @@ internal fun TerminalSurface(
         controller.view.listener = object : GhosttyTerminalView.Listener {
             override fun onFontSizeChanged(view: GhosttyTerminalView, fontSizeSp: Float) {
                 viewModel.onViewFontSizeChanged(fontSizeSp.toInt())
+            }
+        }
+    }
+    val stickyNow = androidx.compose.runtime.rememberUpdatedState(state.stickyModifiers)
+    LaunchedEffect(controller) {
+        kotlinx.coroutines.coroutineScope {
+            launch {
+                extraKeys.ctrl.collect { latch ->
+                    if (latch == GhosttyExtraKeysState.StickyState.INACTIVE &&
+                        TerminalKeyEncoder.Modifier.CTRL in stickyNow.value
+                    ) {
+                        viewModel.clearStickyModifiers()
+                    }
+                }
+            }
+            launch {
+                extraKeys.alt.collect { latch ->
+                    if (latch == GhosttyExtraKeysState.StickyState.INACTIVE &&
+                        TerminalKeyEncoder.Modifier.ALT in stickyNow.value
+                    ) {
+                        viewModel.clearStickyModifiers()
+                    }
+                }
             }
         }
     }
