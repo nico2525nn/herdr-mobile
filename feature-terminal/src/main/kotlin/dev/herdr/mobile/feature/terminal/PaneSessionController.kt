@@ -184,7 +184,7 @@ class PaneSessionController(
                 backendFlow.flatMapLatest { it?.state ?: flowOf(null) },
             ) { connection, backendState -> connection to backendState }
             .collect { (connection, backendState) ->
-                if (backendState is dev.herdr.mobile.terminal.view.BackendState.Attached) {
+                if (backendState is BackendState.Attached) {
                     attempts = 0
                     lastKey = null
                     return@collect
@@ -194,7 +194,7 @@ class PaneSessionController(
                     lastKey = null
                     return@collect
                 }
-                val detached = backendState as? dev.herdr.mobile.terminal.view.BackendState.Detached
+                val detached = backendState as? BackendState.Detached
                     ?: return@collect
                 val key = (targetFlow.value?.paneId ?: "?") to detached.reason
                 if (key != lastKey) {
@@ -215,6 +215,43 @@ class PaneSessionController(
 
     fun setAttachGrid(cols: Int, rows: Int) {
         gridFlow.value = cols to rows
+    }
+
+    /**
+     * Host-owned scrollback: forward row deltas without counting as input.
+     *
+     * A drag produces one delta per cell crossing; the server needs rows, not
+     * a frame per row. Coalesce for one scroll tick and send the sum.
+     */
+    fun scrollRemote(rows: Int) {
+        if (rows == 0) return
+        pendingScrollRows += rows
+        if (scrollFlushJob?.isActive == true) return
+        val backend = backendFlow.value ?: return
+        val generation = targetOwnerGeneration ?: return
+        scrollFlushJob = scope.launch {
+            delay(SCROLL_COALESCE_MS)
+            val delta = pendingScrollRows
+            pendingScrollRows = 0
+            if (delta == 0 || !isCurrent(backend, generation)) return@launch
+            runCatching { backend.scrollRemote(delta, "rows") }
+        }
+    }
+
+    private var pendingScrollRows = 0
+    private var scrollFlushJob: Job? = null
+
+    /**
+     * The view's settled grid: forward to the live backend without counting as
+     * user input (no inputTick, no pending queue).
+     */
+    fun resizeBackend(cols: Int, rows: Int) {
+        gridFlow.value = cols to rows
+        val backend = backendFlow.value ?: return
+        val generation = targetOwnerGeneration ?: return
+        scope.launch {
+            if (isCurrent(backend, generation)) runCatching { backend.resize(cols, rows) }
+        }
     }
 
     fun openTarget(target: TerminalTarget) {
@@ -429,3 +466,6 @@ private const val AUTO_REATTACH_DELAY_MS = 600L
 
 /** 0.6s, 1.2s, 2.4s, then the Retry button takes over. */
 private const val AUTO_REATTACH_ATTEMPTS = 4
+
+/** One scroll tick: the view reports per-row deltas during a drag. */
+private const val SCROLL_COALESCE_MS = 40L

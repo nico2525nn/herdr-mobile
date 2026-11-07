@@ -13,34 +13,17 @@ import dev.herdr.mobile.core.model.SessionSnapshot
 import dev.herdr.mobile.core.model.Tab
 import dev.herdr.mobile.core.model.TerminalColorScheme
 import dev.herdr.mobile.core.model.Workspace
-import dev.herdr.mobile.core.network.HerdrClient
-import dev.herdr.mobile.terminal.emulator.TerminalThemes
-import dev.herdr.mobile.terminal.view.TerminalKeyEncoder
+import dev.herdr.mobile.feature.terminal.theme.TerminalThemes
 import kotlinx.coroutines.CancellationException
-import kotlinx.coroutines.CoroutineScope
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.Job
-import kotlinx.coroutines.NonCancellable
-import kotlinx.coroutines.SupervisorJob
-import kotlinx.coroutines.cancel
-import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
-import kotlinx.coroutines.flow.asStateFlow
-import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.combine
-import kotlinx.coroutines.flow.distinctUntilChanged
-import kotlinx.coroutines.flow.flatMapLatest
-import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.stateIn
-import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
-import kotlinx.coroutines.withContext
-import kotlinx.coroutines.withTimeout
 
 /** Which pane Terminal shows right now, and how it got there. */
 
@@ -60,7 +43,7 @@ data class TerminalUiState(
     val tab: Tab? get() = snapshot?.tab(target?.tabId)
     val pane: Pane? get() = snapshot?.pane(target?.paneId)
 
-    fun terminalScheme(): dev.herdr.mobile.terminal.emulator.TerminalColorScheme =
+    fun terminalScheme(): dev.herdr.mobile.feature.terminal.theme.TerminalColorScheme =
         when (settings.terminalColorScheme) {
             TerminalColorScheme.DARK -> TerminalThemes.dark()
             TerminalColorScheme.LIGHT -> TerminalThemes.light()
@@ -153,6 +136,12 @@ class TerminalViewModel(
     }
 
     fun setAttachGrid(cols: Int, rows: Int) = panes.setAttachGrid(cols, rows)
+
+    /** The view's settled grid changed: resize the live backend too. */
+    fun resizeBackend(cols: Int, rows: Int) = panes.resizeBackend(cols, rows)
+
+    /** Host-owned scrollback: pane.scroll rows. */
+    fun scrollRemote(rows: Int) = panes.scrollRemote(rows)
 
     fun openTarget(target: TerminalTarget) = panes.openTarget(target)
 

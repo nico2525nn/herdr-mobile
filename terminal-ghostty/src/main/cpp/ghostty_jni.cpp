@@ -1,0 +1,1551 @@
+#include <jni.h>
+#include <android/input.h>
+#include <android/keycodes.h>
+#include <android/log.h>
+
+#include <algorithm>
+#include <array>
+#include <chrono>
+#include <cstdint>
+#include <cstdlib>
+#include <cstring>
+#include <deque>
+#include <iterator>
+#include <string>
+#include <tuple>
+#include <utility>
+#include <vector>
+
+#include <ghostty/vt.h>
+
+namespace {
+
+constexpr const char* kLogTag = "ghostty_android";
+
+constexpr uint16_t kFlagBold = 1 << 0;
+constexpr uint16_t kFlagItalic = 1 << 1;
+constexpr uint16_t kFlagFaint = 1 << 2;
+constexpr uint16_t kFlagUnderline = 1 << 3;
+constexpr uint16_t kFlagStrikethrough = 1 << 4;
+constexpr uint16_t kFlagInverse = 1 << 5;
+constexpr uint16_t kFlagInvisible = 1 << 6;
+constexpr uint16_t kFlagWide = 1 << 7;
+constexpr uint16_t kFlagSpacer = 1 << 8;
+constexpr uint16_t kFlagFgDefault = 1 << 9;
+constexpr uint16_t kFlagBgNone = 1 << 10;
+
+constexpr size_t kHeaderBytes = 15 * sizeof(int32_t);
+constexpr size_t kRowHeaderBytes = 4 * sizeof(int32_t);
+constexpr size_t kCellRecordBytes = 16;
+static_assert(kHeaderBytes == 60, "header size drifted from the Kotlin reader");
+static_assert(kCellRecordBytes == 2 * sizeof(int32_t) + 4 * sizeof(uint16_t),
+              "cell record size drifted from its field layout");
+constexpr uint32_t kMaxCellTextUnits = 32;
+
+constexpr jint kEventBell = 1;
+constexpr jint kEventTitle = 1 << 1;
+constexpr jint kEventClipboard = 1 << 2;
+constexpr jint kEventPwd = 1 << 3;
+constexpr jint kEventNotification = 1 << 4;
+constexpr jint kEventProgress = 1 << 5;
+constexpr jint kEventColors = 1 << 6;
+
+constexpr uint32_t kKittyPlaceholder = 0x10EEEE;
+
+constexpr auto kSyncOutputTimeout = std::chrono::milliseconds(1000);
+
+constexpr uint64_t kKittyImageStorageBytes = 128 * 1024 * 1024;
+constexpr size_t kContinuationMaxBytes = 8 * 1024 * 1024;
+
+JavaVM* gJavaVm = nullptr;
+jclass gBitmapFactoryClass = nullptr;
+jmethodID gDecodeByteArray = nullptr;
+jclass gBitmapClass = nullptr;
+jmethodID gBitmapGetWidth = nullptr;
+jmethodID gBitmapGetHeight = nullptr;
+jmethodID gBitmapGetPixels = nullptr;
+jmethodID gBitmapRecycle = nullptr;
+jclass gSessionClass = nullptr;
+jmethodID gClipboardHasText = nullptr;
+jmethodID gReadClipboardForProgram = nullptr;
+
+constexpr int64_t kMaxImagePixels = 100 * 1000 * 1000;
+
+bool decodePngCallback(void*, const GhosttyAllocator* allocator, const uint8_t* data,
+                       size_t dataLen, GhosttySysImage* out) {
+  if (gJavaVm == nullptr || data == nullptr || dataLen == 0) return false;
+  JNIEnv* env = nullptr;
+  if (gJavaVm->GetEnv(reinterpret_cast<void**>(&env), JNI_VERSION_1_6) != JNI_OK) return false;
+  if (env->PushLocalFrame(8) != 0) return false;
+
+  bool decoded = false;
+  do {
+    jbyteArray pngArray = env->NewByteArray(static_cast<jsize>(dataLen));
+    if (pngArray == nullptr) break;
+    env->SetByteArrayRegion(pngArray, 0, static_cast<jsize>(dataLen),
+                            reinterpret_cast<const jbyte*>(data));
+    jobject bitmap = env->CallStaticObjectMethod(gBitmapFactoryClass, gDecodeByteArray,
+                                                 pngArray, 0, static_cast<jint>(dataLen));
+    if (env->ExceptionCheck()) {
+      env->ExceptionClear();
+      break;
+    }
+    if (bitmap == nullptr) break;
+    const jint width = env->CallIntMethod(bitmap, gBitmapGetWidth);
+    const jint height = env->CallIntMethod(bitmap, gBitmapGetHeight);
+    if (width <= 0 || height <= 0 ||
+        static_cast<int64_t>(width) * height > kMaxImagePixels) {
+      break;
+    }
+    const size_t pixelCount = static_cast<size_t>(width) * static_cast<size_t>(height);
+    jintArray pixelArray = env->NewIntArray(static_cast<jsize>(pixelCount));
+    if (pixelArray == nullptr) break;
+    env->CallVoidMethod(bitmap, gBitmapGetPixels, pixelArray, 0, width, 0, 0, width, height);
+    if (env->ExceptionCheck()) {
+      env->ExceptionClear();
+      break;
+    }
+    env->CallVoidMethod(bitmap, gBitmapRecycle);
+
+    const size_t outLen = pixelCount * 4;
+    uint8_t* outData = ghostty_alloc(allocator, outLen);
+    if (outData == nullptr) break;
+    auto* pixels = static_cast<jint*>(env->GetPrimitiveArrayCritical(pixelArray, nullptr));
+    if (pixels == nullptr) {
+      ghostty_free(allocator, outData, outLen);
+      break;
+    }
+    for (size_t i = 0; i < pixelCount; i++) {
+      const auto argbPixel = static_cast<uint32_t>(pixels[i]);
+      outData[i * 4] = (argbPixel >> 16) & 0xFF;
+      outData[i * 4 + 1] = (argbPixel >> 8) & 0xFF;
+      outData[i * 4 + 2] = argbPixel & 0xFF;
+      outData[i * 4 + 3] = argbPixel >> 24;
+    }
+    env->ReleasePrimitiveArrayCritical(pixelArray, pixels, JNI_ABORT);
+
+    out->width = static_cast<uint32_t>(width);
+    out->height = static_cast<uint32_t>(height);
+    out->data = outData;
+    out->data_len = outLen;
+    decoded = true;
+  } while (false);
+
+  env->PopLocalFrame(nullptr);
+  return decoded;
+}
+
+struct Session {
+  GhosttyTerminal term = nullptr;
+  GhosttyRenderState renderState = nullptr;
+  GhosttyRenderStateRowIterator rowIter = nullptr;
+  GhosttyRenderStateRowCells cells = nullptr;
+  GhosttyKeyEncoder encoder = nullptr;
+  GhosttyKeyEvent keyEvent = nullptr;
+  GhosttyMouseEncoder mouseEncoder = nullptr;
+  GhosttyMouseEvent mouseEvent = nullptr;
+  GhosttyRenderStateImageIterator imageIter = nullptr;
+  uint16_t cols = 0;
+  uint16_t rows = 0;
+  uint32_t cellWidthPx = 0;
+  uint32_t cellHeightPx = 0;
+  bool mouseButtonDown = false;
+  std::vector<uint8_t> ptyOut;
+  jint pendingEvents = 0;
+  std::string clipboardText;
+  std::string xtversion;
+  std::deque<std::pair<std::string, std::string>> notifications;
+  int32_t progressState = 0;
+  int32_t progressPercent = -1;
+  bool colorSchemeDark = true;
+  JNIEnv* env = nullptr;
+  jobject owner = nullptr;
+  bool syncOutputActive = false;
+  std::chrono::steady_clock::time_point syncOutputSince{};
+  int32_t backgroundColor = 0;
+};
+
+void writePtyCallback(GhosttyTerminal, void* userdata, const uint8_t* data, size_t len) {
+  auto* session = static_cast<Session*>(userdata);
+  session->ptyOut.insert(session->ptyOut.end(), data, data + len);
+}
+
+void bellCallback(GhosttyTerminal, void* userdata) {
+  static_cast<Session*>(userdata)->pendingEvents |= kEventBell;
+}
+
+bool sizeCallback(GhosttyTerminal, void* userdata, GhosttySizeReportSize* out) {
+  auto* session = static_cast<Session*>(userdata);
+  if (session->cellWidthPx == 0 || session->cellHeightPx == 0) return false;
+  out->rows = session->rows;
+  out->columns = session->cols;
+  out->cell_width = session->cellWidthPx;
+  out->cell_height = session->cellHeightPx;
+  return true;
+}
+
+// The attributes ghostty itself reports (termio/stream_handler.zig): DA1
+// "CSI ? 62 ; 22 c", DA2 "CSI > 1 ; 10 ; 0 c".
+bool deviceAttributesCallback(GhosttyTerminal, void*, GhosttyDeviceAttributes* out) {
+  out->primary.conformance_level = GHOSTTY_DA_CONFORMANCE_VT220;
+  out->primary.features[0] = GHOSTTY_DA_FEATURE_ANSI_COLOR;
+  out->primary.num_features = 1;
+  out->secondary.device_type = GHOSTTY_DA_DEVICE_TYPE_VT220;
+  out->secondary.firmware_version = 10;
+  out->secondary.rom_cartridge = 0;
+  out->tertiary.unit_id = 0;
+  return true;
+}
+
+void titleChangedCallback(GhosttyTerminal, void* userdata) {
+  static_cast<Session*>(userdata)->pendingEvents |= kEventTitle;
+}
+
+void pwdChangedCallback(GhosttyTerminal, void* userdata) {
+  static_cast<Session*>(userdata)->pendingEvents |= kEventPwd;
+}
+
+void desktopNotificationCallback(GhosttyTerminal, void* userdata,
+                                 const GhosttyTerminalDesktopNotification* notification) {
+  auto* session = static_cast<Session*>(userdata);
+  if (session->notifications.size() >= 16) return;
+  session->notifications.emplace_back(
+      std::string(reinterpret_cast<const char*>(notification->title.ptr),
+                  notification->title.len),
+      std::string(reinterpret_cast<const char*>(notification->body.ptr),
+                  notification->body.len));
+  session->pendingEvents |= kEventNotification;
+}
+
+void progressReportCallback(GhosttyTerminal, void* userdata,
+                            const GhosttyTerminalProgressReport* report) {
+  auto* session = static_cast<Session*>(userdata);
+  session->progressState = static_cast<int32_t>(report->state);
+  session->progressPercent = report->progress;
+  session->pendingEvents |= kEventProgress;
+}
+
+void clipboardReadCallback(GhosttyTerminal, void* userdata, const GhosttyClipboardRead* read) {
+  auto* session = static_cast<Session*>(userdata);
+  GhosttyClipboardReadReply reply{};
+  reply.size = sizeof(reply);
+  reply.result = GHOSTTY_CLIPBOARD_READ_RESULT_DENIED;
+  JNIEnv* env = session->env;
+  if (env == nullptr || session->owner == nullptr) {
+    read->reply(read, &reply);
+    return;
+  }
+
+  const GhosttyString* textMime = nullptr;
+  for (size_t i = 0; i < read->mimes_len; i++) {
+    const GhosttyString& mime = read->mimes[i];
+    if (mime.len >= 5 && memcmp(mime.ptr, "text/", 5) == 0) {
+      textMime = &mime;
+      break;
+    }
+  }
+
+  GhosttyString available{};
+  available.ptr = reinterpret_cast<const uint8_t*>("text/plain");
+  available.len = 10;
+  if (read->list && env->CallBooleanMethod(session->owner, gClipboardHasText) == JNI_TRUE) {
+    reply.available = &available;
+    reply.available_len = 1;
+  }
+  if (env->ExceptionCheck()) {
+    env->ExceptionClear();
+    reply.available = nullptr;
+    reply.available_len = 0;
+  }
+
+  std::string text;
+  GhosttyClipboardContent content{};
+  if (textMime == nullptr) {
+    reply.result = GHOSTTY_CLIPBOARD_READ_RESULT_SUCCESS;
+  } else {
+    auto data = static_cast<jbyteArray>(env->CallObjectMethod(
+        session->owner, gReadClipboardForProgram, read->granted ? JNI_TRUE : JNI_FALSE));
+    if (env->ExceptionCheck()) {
+      env->ExceptionClear();
+      data = nullptr;
+    }
+    if (data != nullptr) {
+      const jsize len = env->GetArrayLength(data);
+      text.resize(static_cast<size_t>(len));
+      if (len > 0) env->GetByteArrayRegion(data, 0, len, reinterpret_cast<jbyte*>(&text[0]));
+      env->DeleteLocalRef(data);
+      reply.result = GHOSTTY_CLIPBOARD_READ_RESULT_SUCCESS;
+      reply.remember = true;
+      if (!text.empty()) {
+        content.mime = *textMime;
+        content.data.ptr = reinterpret_cast<const uint8_t*>(text.data());
+        content.data.len = text.size();
+        reply.contents = &content;
+        reply.contents_len = 1;
+      }
+    }
+  }
+  read->reply(read, &reply);
+}
+
+bool colorSchemeCallback(GhosttyTerminal, void* userdata, GhosttyColorScheme* out) {
+  *out = static_cast<Session*>(userdata)->colorSchemeDark ? GHOSTTY_COLOR_SCHEME_DARK
+                                                          : GHOSTTY_COLOR_SCHEME_LIGHT;
+  return true;
+}
+
+GhosttyString xtversionCallback(GhosttyTerminal, void* userdata) {
+  auto* session = static_cast<Session*>(userdata);
+  GhosttyString version{};
+  version.ptr = reinterpret_cast<const uint8_t*>(session->xtversion.data());
+  version.len = session->xtversion.size();
+  return version;
+}
+
+void clipboardWriteCallback(GhosttyTerminal, void* userdata, const GhosttyClipboardWrite* write) {
+  auto* session = static_cast<Session*>(userdata);
+  GhosttyClipboardWriteReply reply{};
+  reply.size = sizeof(reply);
+  reply.result = GHOSTTY_CLIPBOARD_WRITE_RESULT_UNSUPPORTED;
+  if (write->location == GHOSTTY_CLIPBOARD_LOCATION_STANDARD) {
+    if (write->contents_len == 0) {
+      session->clipboardText.clear();
+      session->pendingEvents |= kEventClipboard;
+      reply.result = GHOSTTY_CLIPBOARD_WRITE_RESULT_SUCCESS;
+    }
+    for (size_t i = 0; i < write->contents_len; i++) {
+      const GhosttyClipboardContent& content = write->contents[i];
+      if (content.mime.len >= 5 && memcmp(content.mime.ptr, "text/", 5) == 0) {
+        session->clipboardText.assign(reinterpret_cast<const char*>(content.data.ptr),
+                                      content.data.len);
+        session->pendingEvents |= kEventClipboard;
+        reply.result = GHOSTTY_CLIPBOARD_WRITE_RESULT_SUCCESS;
+        break;
+      }
+    }
+  }
+  write->reply(write, &reply);
+}
+
+bool pasteTextRead(void* userdata, GhosttyString, GhosttyWriter writer) {
+  const auto* text = static_cast<const std::vector<char>*>(userdata);
+  if (text->empty()) return true;
+  return writer.write(writer.userdata, reinterpret_cast<const uint8_t*>(text->data()),
+                      text->size());
+}
+
+jbyteArray bytesToArray(JNIEnv* env, const char* data, size_t len) {
+  jbyteArray out = env->NewByteArray(static_cast<jsize>(len));
+  if (out == nullptr) return nullptr;
+  env->SetByteArrayRegion(out, 0, static_cast<jsize>(len),
+                          reinterpret_cast<const jbyte*>(data));
+  return out;
+}
+
+jbyteArray stringData(JNIEnv* env, Session* session, GhosttyTerminalData key) {
+  GhosttyString str{};
+  if (ghostty_terminal_get(session->term, key, &str) != GHOSTTY_SUCCESS || str.len == 0) {
+    return nullptr;
+  }
+  return bytesToArray(env, reinterpret_cast<const char*>(str.ptr), str.len);
+}
+
+Session* fromHandle(jlong handle) {
+  return reinterpret_cast<Session*>(static_cast<intptr_t>(handle));
+}
+
+bool viewportGridRef(Session* session, jint col, jint row, GhosttyGridRef* out) {
+  GhosttyPoint point{};
+  point.tag = GHOSTTY_POINT_TAG_VIEWPORT;
+  point.value.coordinate.x = static_cast<uint16_t>(col);
+  point.value.coordinate.y = static_cast<uint32_t>(row);
+  return ghostty_terminal_grid_ref(session->term, point, out) == GHOSTTY_SUCCESS;
+}
+
+// ghostty's Screen.select does not mark the selected rows dirty.
+void markRenderDirtyFull(Session* session) {
+  GhosttyRenderStateDirty full = GHOSTTY_RENDER_STATE_DIRTY_FULL;
+  ghostty_render_state_set(session->renderState, GHOSTTY_RENDER_STATE_OPT_DIRTY, &full);
+}
+
+bool installSelection(Session* session, const GhosttySelection* selection) {
+  if (ghostty_terminal_set(session->term, GHOSTTY_TERMINAL_OPT_SELECTION, selection) !=
+      GHOSTTY_SUCCESS) {
+    return false;
+  }
+  markRenderDirtyFull(session);
+  return true;
+}
+
+jbyteArray formatSelection(JNIEnv* env, Session* session, const GhosttySelection* selection) {
+  // 1.0 formats through a GhosttyFormatter, not a one-shot terminal helper.
+  GhosttyFormatter formatter = nullptr;
+  if (ghostty_formatter_terminal_new(nullptr, &formatter, session->term) != GHOSTTY_SUCCESS) {
+    return nullptr;
+  }
+  struct FormatterGuard {
+    GhosttyFormatter f;
+    ~FormatterGuard() { if (f != nullptr) ghostty_formatter_free(f); }
+  } guard{formatter};
+
+  GhosttyFormatterFormat emit = GHOSTTY_FORMATTER_FORMAT_PLAIN;
+  bool unwrap = true;
+  bool trim = true;
+  ghostty_formatter_set(formatter, GHOSTTY_FORMATTER_OPT_EMIT, &emit);
+  ghostty_formatter_set(formatter, GHOSTTY_FORMATTER_OPT_UNWRAP, &unwrap);
+  ghostty_formatter_set(formatter, GHOSTTY_FORMATTER_OPT_TRIM, &trim);
+  ghostty_formatter_set(formatter, GHOSTTY_FORMATTER_OPT_SELECTION, selection);
+
+  size_t needed = 0;
+  GhosttyResult result = ghostty_formatter_format_buf(formatter, nullptr, 0, &needed);
+  if (result != GHOSTTY_OUT_OF_SPACE && result != GHOSTTY_SUCCESS) return nullptr;
+
+  std::vector<uint8_t> buf(needed);
+  size_t written = 0;
+  if (needed > 0) {
+    result = ghostty_formatter_format_buf(formatter, buf.data(), buf.size(), &written);
+    if (result != GHOSTTY_SUCCESS) return nullptr;
+  }
+  return bytesToArray(env, reinterpret_cast<const char*>(buf.data()), written);
+}
+
+int32_t argb(GhosttyColorRgb color) {
+  return static_cast<int32_t>(0xFF000000u | (static_cast<uint32_t>(color.r) << 16) |
+                              (static_cast<uint32_t>(color.g) << 8) | color.b);
+}
+
+bool colorFromArgb(jlong value, GhosttyColorRgb* out) {
+  if (value < 0) return false;
+  out->r = static_cast<uint8_t>((value >> 16) & 0xFF);
+  out->g = static_cast<uint8_t>((value >> 8) & 0xFF);
+  out->b = static_cast<uint8_t>(value & 0xFF);
+  return true;
+}
+
+int32_t effectiveBackgroundColor(Session* session) {
+  GhosttyColorRgb color{};
+  if (ghostty_terminal_get(session->term, GHOSTTY_TERMINAL_DATA_COLOR_BACKGROUND, &color) !=
+      GHOSTTY_SUCCESS) {
+    return 0;
+  }
+  return argb(color);
+}
+
+bool modeSet(Session* session, GhosttyMode mode) {
+  GhosttyTerminalModeConfig config{};
+  config.mode = mode;
+  if (ghostty_terminal_get(session->term, GHOSTTY_TERMINAL_DATA_MODE, &config) !=
+      GHOSTTY_SUCCESS) {
+    return false;
+  }
+  return config.value;
+}
+
+void destroySession(JNIEnv* env, Session* session) {
+  if (session == nullptr) return;
+  if (session->owner != nullptr) env->DeleteGlobalRef(session->owner);
+  ghostty_render_state_image_iterator_free(session->imageIter);
+  ghostty_mouse_event_free(session->mouseEvent);
+  ghostty_mouse_encoder_free(session->mouseEncoder);
+  ghostty_key_event_free(session->keyEvent);
+  ghostty_key_encoder_free(session->encoder);
+  ghostty_render_state_row_cells_free(session->cells);
+  ghostty_render_state_row_iterator_free(session->rowIter);
+  ghostty_render_state_free(session->renderState);
+  ghostty_terminal_free(session->term);
+  delete session;
+}
+
+Session* createSession(JNIEnv* env, GhosttyTerminal term, jstring xtversion,
+                       jstring terminfoName, jobject owner) {
+  auto* session = new Session();
+  session->term = term;
+  if (owner != nullptr) session->owner = env->NewGlobalRef(owner);
+
+  if (xtversion != nullptr) {
+    const char* utf = env->GetStringUTFChars(xtversion, nullptr);
+    if (utf != nullptr) {
+      session->xtversion.assign(utf);
+      env->ReleaseStringUTFChars(xtversion, utf);
+    }
+  }
+
+  if (ghostty_render_state_new(nullptr, &session->renderState) != GHOSTTY_SUCCESS ||
+      ghostty_render_state_row_iterator_new(nullptr, &session->rowIter) != GHOSTTY_SUCCESS ||
+      ghostty_render_state_row_cells_new(nullptr, &session->cells) != GHOSTTY_SUCCESS ||
+      ghostty_render_state_image_iterator_new(nullptr, &session->imageIter) != GHOSTTY_SUCCESS ||
+      ghostty_key_encoder_new(nullptr, &session->encoder) != GHOSTTY_SUCCESS ||
+      ghostty_key_event_new(nullptr, &session->keyEvent) != GHOSTTY_SUCCESS ||
+      ghostty_mouse_encoder_new(nullptr, &session->mouseEncoder) != GHOSTTY_SUCCESS ||
+      ghostty_mouse_event_new(nullptr, &session->mouseEvent) != GHOSTTY_SUCCESS) {
+    __android_log_print(ANDROID_LOG_ERROR, kLogTag, "failed to create terminal session");
+    destroySession(env, session);
+    return nullptr;
+  }
+
+  ghostty_terminal_get(term, GHOSTTY_TERMINAL_DATA_COLS, &session->cols);
+  ghostty_terminal_get(term, GHOSTTY_TERMINAL_DATA_ROWS, &session->rows);
+
+  const bool trackLastCell = true;
+  ghostty_mouse_encoder_set(session->mouseEncoder,
+                               GHOSTTY_MOUSE_ENCODER_OPT_TRACK_LAST_CELL, &trackLastCell);
+
+  ghostty_terminal_set(session->term, GHOSTTY_TERMINAL_OPT_USERDATA, session);
+  ghostty_terminal_set(session->term, GHOSTTY_TERMINAL_OPT_WRITE_PTY,
+                       reinterpret_cast<const void*>(&writePtyCallback));
+  ghostty_terminal_set(session->term, GHOSTTY_TERMINAL_OPT_BELL,
+                       reinterpret_cast<const void*>(&bellCallback));
+  ghostty_terminal_set(session->term, GHOSTTY_TERMINAL_OPT_TITLE_CHANGED,
+                       reinterpret_cast<const void*>(&titleChangedCallback));
+  ghostty_terminal_set(session->term, GHOSTTY_TERMINAL_OPT_CLIPBOARD_WRITE,
+                       reinterpret_cast<const void*>(&clipboardWriteCallback));
+  ghostty_terminal_set(session->term, GHOSTTY_TERMINAL_OPT_DEVICE_ATTRIBUTES,
+                       reinterpret_cast<const void*>(&deviceAttributesCallback));
+  ghostty_terminal_set(session->term, GHOSTTY_TERMINAL_OPT_SIZE,
+                       reinterpret_cast<const void*>(&sizeCallback));
+  ghostty_terminal_set(session->term, GHOSTTY_TERMINAL_OPT_PWD_CHANGED,
+                       reinterpret_cast<const void*>(&pwdChangedCallback));
+  ghostty_terminal_set(session->term, GHOSTTY_TERMINAL_OPT_DESKTOP_NOTIFICATION,
+                       reinterpret_cast<const void*>(&desktopNotificationCallback));
+  ghostty_terminal_set(session->term, GHOSTTY_TERMINAL_OPT_PROGRESS_REPORT,
+                       reinterpret_cast<const void*>(&progressReportCallback));
+  ghostty_terminal_set(session->term, GHOSTTY_TERMINAL_OPT_COLOR_SCHEME,
+                       reinterpret_cast<const void*>(&colorSchemeCallback));
+  ghostty_terminal_set(session->term, GHOSTTY_TERMINAL_OPT_XTVERSION,
+                       reinterpret_cast<const void*>(&xtversionCallback));
+  ghostty_terminal_set(session->term, GHOSTTY_TERMINAL_OPT_CLIPBOARD_READ,
+                       reinterpret_cast<const void*>(&clipboardReadCallback));
+
+  ghostty_terminal_set(session->term, GHOSTTY_TERMINAL_OPT_KITTY_IMAGE_STORAGE_LIMIT,
+                       &kKittyImageStorageBytes);
+
+  if (terminfoName != nullptr) {
+    const char* utf = env->GetStringUTFChars(terminfoName, nullptr);
+    if (utf != nullptr) {
+      GhosttyString name{};
+      name.ptr = reinterpret_cast<const uint8_t*>(utf);
+      name.len = strlen(utf);
+      ghostty_terminal_set(session->term, GHOSTTY_TERMINAL_OPT_TERMINFO_NAME, &name);
+      env->ReleaseStringUTFChars(terminfoName, utf);
+    }
+  }
+
+  return session;
+}
+
+GhosttyKey mapKey(int32_t keyCode) {
+  if (keyCode >= AKEYCODE_A && keyCode <= AKEYCODE_Z) {
+    return static_cast<GhosttyKey>(GHOSTTY_KEY_A + (keyCode - AKEYCODE_A));
+  }
+  if (keyCode >= AKEYCODE_0 && keyCode <= AKEYCODE_9) {
+    return static_cast<GhosttyKey>(GHOSTTY_KEY_DIGIT_0 + (keyCode - AKEYCODE_0));
+  }
+  if (keyCode >= AKEYCODE_NUMPAD_0 && keyCode <= AKEYCODE_NUMPAD_9) {
+    return static_cast<GhosttyKey>(GHOSTTY_KEY_NUMPAD_0 + (keyCode - AKEYCODE_NUMPAD_0));
+  }
+  if (keyCode >= AKEYCODE_F1 && keyCode <= AKEYCODE_F12) {
+    return static_cast<GhosttyKey>(GHOSTTY_KEY_F1 + (keyCode - AKEYCODE_F1));
+  }
+  switch (keyCode) {
+    case AKEYCODE_GRAVE: return GHOSTTY_KEY_BACKQUOTE;
+    case AKEYCODE_BACKSLASH: return GHOSTTY_KEY_BACKSLASH;
+    case AKEYCODE_LEFT_BRACKET: return GHOSTTY_KEY_BRACKET_LEFT;
+    case AKEYCODE_RIGHT_BRACKET: return GHOSTTY_KEY_BRACKET_RIGHT;
+    case AKEYCODE_COMMA: return GHOSTTY_KEY_COMMA;
+    case AKEYCODE_EQUALS: return GHOSTTY_KEY_EQUAL;
+    case AKEYCODE_MINUS: return GHOSTTY_KEY_MINUS;
+    case AKEYCODE_PERIOD: return GHOSTTY_KEY_PERIOD;
+    case AKEYCODE_APOSTROPHE: return GHOSTTY_KEY_QUOTE;
+    case AKEYCODE_SEMICOLON: return GHOSTTY_KEY_SEMICOLON;
+    case AKEYCODE_SLASH: return GHOSTTY_KEY_SLASH;
+    case AKEYCODE_ALT_LEFT: return GHOSTTY_KEY_ALT_LEFT;
+    case AKEYCODE_ALT_RIGHT: return GHOSTTY_KEY_ALT_RIGHT;
+    case AKEYCODE_DEL: return GHOSTTY_KEY_BACKSPACE;
+    case AKEYCODE_CAPS_LOCK: return GHOSTTY_KEY_CAPS_LOCK;
+    case AKEYCODE_CTRL_LEFT: return GHOSTTY_KEY_CONTROL_LEFT;
+    case AKEYCODE_CTRL_RIGHT: return GHOSTTY_KEY_CONTROL_RIGHT;
+    case AKEYCODE_ENTER: return GHOSTTY_KEY_ENTER;
+    case AKEYCODE_META_LEFT: return GHOSTTY_KEY_META_LEFT;
+    case AKEYCODE_META_RIGHT: return GHOSTTY_KEY_META_RIGHT;
+    case AKEYCODE_SHIFT_LEFT: return GHOSTTY_KEY_SHIFT_LEFT;
+    case AKEYCODE_SHIFT_RIGHT: return GHOSTTY_KEY_SHIFT_RIGHT;
+    case AKEYCODE_SPACE: return GHOSTTY_KEY_SPACE;
+    case AKEYCODE_TAB: return GHOSTTY_KEY_TAB;
+    case AKEYCODE_FORWARD_DEL: return GHOSTTY_KEY_DELETE;
+    case AKEYCODE_MOVE_END: return GHOSTTY_KEY_END;
+    case AKEYCODE_MOVE_HOME: return GHOSTTY_KEY_HOME;
+    case AKEYCODE_INSERT: return GHOSTTY_KEY_INSERT;
+    case AKEYCODE_PAGE_DOWN: return GHOSTTY_KEY_PAGE_DOWN;
+    case AKEYCODE_PAGE_UP: return GHOSTTY_KEY_PAGE_UP;
+    case AKEYCODE_DPAD_DOWN: return GHOSTTY_KEY_ARROW_DOWN;
+    case AKEYCODE_DPAD_LEFT: return GHOSTTY_KEY_ARROW_LEFT;
+    case AKEYCODE_DPAD_RIGHT: return GHOSTTY_KEY_ARROW_RIGHT;
+    case AKEYCODE_DPAD_UP: return GHOSTTY_KEY_ARROW_UP;
+    case AKEYCODE_DPAD_CENTER: return GHOSTTY_KEY_ENTER;
+    case AKEYCODE_SYSRQ: return GHOSTTY_KEY_PRINT_SCREEN;
+    case AKEYCODE_BREAK: return GHOSTTY_KEY_PAUSE;
+    case AKEYCODE_NUM_LOCK: return GHOSTTY_KEY_NUM_LOCK;
+    case AKEYCODE_NUMPAD_ADD: return GHOSTTY_KEY_NUMPAD_ADD;
+    case AKEYCODE_NUMPAD_COMMA: return GHOSTTY_KEY_NUMPAD_COMMA;
+    case AKEYCODE_NUMPAD_DOT: return GHOSTTY_KEY_NUMPAD_DECIMAL;
+    case AKEYCODE_NUMPAD_DIVIDE: return GHOSTTY_KEY_NUMPAD_DIVIDE;
+    case AKEYCODE_NUMPAD_ENTER: return GHOSTTY_KEY_NUMPAD_ENTER;
+    case AKEYCODE_NUMPAD_EQUALS: return GHOSTTY_KEY_NUMPAD_EQUAL;
+    case AKEYCODE_NUMPAD_MULTIPLY: return GHOSTTY_KEY_NUMPAD_MULTIPLY;
+    case AKEYCODE_NUMPAD_SUBTRACT: return GHOSTTY_KEY_NUMPAD_SUBTRACT;
+    case AKEYCODE_ESCAPE: return GHOSTTY_KEY_ESCAPE;
+    default: return GHOSTTY_KEY_UNIDENTIFIED;
+  }
+}
+
+GhosttyMods mapMods(int32_t metaState) {
+  GhosttyMods mods = 0;
+  if (metaState & AMETA_SHIFT_ON) mods |= GHOSTTY_MODS_SHIFT;
+  if (metaState & AMETA_SHIFT_RIGHT_ON) mods |= GHOSTTY_MODS_SHIFT_SIDE;
+  if (metaState & AMETA_CTRL_ON) mods |= GHOSTTY_MODS_CTRL;
+  if (metaState & AMETA_CTRL_RIGHT_ON) mods |= GHOSTTY_MODS_CTRL_SIDE;
+  if (metaState & AMETA_ALT_ON) mods |= GHOSTTY_MODS_ALT;
+  if (metaState & AMETA_ALT_RIGHT_ON) mods |= GHOSTTY_MODS_ALT_SIDE;
+  if (metaState & AMETA_META_ON) mods |= GHOSTTY_MODS_SUPER;
+  if (metaState & AMETA_META_RIGHT_ON) mods |= GHOSTTY_MODS_SUPER_SIDE;
+  if (metaState & AMETA_CAPS_LOCK_ON) mods |= GHOSTTY_MODS_CAPS_LOCK;
+  if (metaState & AMETA_NUM_LOCK_ON) mods |= GHOSTTY_MODS_NUM_LOCK;
+  return mods;
+}
+
+uint32_t appendUtf16(uint32_t cp, uint16_t* out, uint32_t used, uint32_t cap) {
+  if (cp < 0x10000) {
+    if (used + 1 > cap) return 0;
+    out[used] = static_cast<uint16_t>(cp);
+    return 1;
+  }
+  if (used + 2 > cap) return 0;
+  cp -= 0x10000;
+  out[used] = static_cast<uint16_t>(0xD800 + (cp >> 10));
+  out[used + 1] = static_cast<uint16_t>(0xDC00 + (cp & 0x3FF));
+  return 2;
+}
+
+}  // namespace
+
+extern "C" {
+
+JNIEXPORT jlong JNICALL
+Java_io_github_sagernet_libghostty_GhosttyVt_nativeCreate(
+    JNIEnv* env, jobject, jint cols, jint rows, jlong maxScrollbackLines, jstring xtversion,
+    jstring terminfoName, jint cursorStyle, jboolean cursorBlink, jobject owner) {
+  GhosttyTerminal term = nullptr;
+  if (ghostty_terminal_new(nullptr, &term, static_cast<uint16_t>(cols),
+                           static_cast<uint16_t>(rows)) != GHOSTTY_SUCCESS) {
+    __android_log_print(ANDROID_LOG_ERROR, kLogTag, "failed to create terminal");
+    return 0;
+  }
+  auto* session = createSession(env, term, xtversion, terminfoName, owner);
+  if (session == nullptr) return 0;
+
+  ghostty_terminal_set(session->term, GHOSTTY_TERMINAL_OPT_CONTINUATION_MAX_BYTES,
+                       &kContinuationMaxBytes);
+
+  const size_t scrollbackLines = static_cast<size_t>(maxScrollbackLines);
+  ghostty_terminal_set(session->term, GHOSTTY_TERMINAL_OPT_SCROLLBACK_MAX_LINES, &scrollbackLines);
+
+  GhosttyColorRgb bg{0x00, 0x00, 0x00};
+  GhosttyColorRgb fg{0xFF, 0xFF, 0xFF};
+  ghostty_terminal_set(session->term, GHOSTTY_TERMINAL_OPT_COLOR_BACKGROUND, &bg);
+  ghostty_terminal_set(session->term, GHOSTTY_TERMINAL_OPT_COLOR_FOREGROUND, &fg);
+
+  const auto style = static_cast<GhosttyCursorStyle>(cursorStyle);
+  ghostty_terminal_set(session->term, GHOSTTY_TERMINAL_OPT_DEFAULT_CURSOR_STYLE, &style);
+  const bool blinkDefault = cursorBlink != JNI_FALSE;
+  ghostty_terminal_set(session->term, GHOSTTY_TERMINAL_OPT_DEFAULT_CURSOR_BLINK, &blinkDefault);
+
+  session->pendingEvents = kEventColors;
+  session->backgroundColor = effectiveBackgroundColor(session);
+
+  return static_cast<jlong>(reinterpret_cast<intptr_t>(session));
+}
+
+JNIEXPORT void JNICALL
+Java_io_github_sagernet_libghostty_GhosttyVt_nativeFree(JNIEnv* env, jobject, jlong handle) {
+  destroySession(env, fromHandle(handle));
+}
+
+JNIEXPORT jbyteArray JNICALL
+Java_io_github_sagernet_libghostty_GhosttyVt_nativeSnapshotEncode(
+    JNIEnv* env, jobject, jlong handle) {
+  auto* session = fromHandle(handle);
+  uint8_t* data = nullptr;
+  size_t len = 0;
+  const GhosttyResult result = ghostty_snapshot_encode_alloc(session->term, nullptr, &data, &len);
+  if (result != GHOSTTY_SUCCESS) {
+    __android_log_print(ANDROID_LOG_WARN, kLogTag, "failed to encode snapshot: %d", result);
+    return nullptr;
+  }
+  jbyteArray out = bytesToArray(env, reinterpret_cast<const char*>(data), len);
+  ghostty_free(nullptr, data, len);
+  return out;
+}
+
+JNIEXPORT jlong JNICALL
+Java_io_github_sagernet_libghostty_GhosttyVt_nativeSnapshotDecode(
+    JNIEnv* env, jobject, jbyteArray data, jstring xtversion, jstring terminfoName,
+    jobject owner) {
+  std::vector<uint8_t> bytes(static_cast<size_t>(env->GetArrayLength(data)));
+  env->GetByteArrayRegion(data, 0, static_cast<jsize>(bytes.size()),
+                          reinterpret_cast<jbyte*>(bytes.data()));
+
+  GhosttySnapshotDecoder decoder = nullptr;
+  GhosttyResult result =
+      ghostty_snapshot_decoder_new_buf(nullptr, &decoder, bytes.data(), bytes.size());
+  GhosttyTerminal term = nullptr;
+  if (result == GHOSTTY_SUCCESS) {
+    const bool enabled = true;
+    ghostty_snapshot_decoder_set(decoder, GHOSTTY_SNAPSHOT_DECODER_OPT_MAX_CONTINUATION_BYTES,
+                                 &kContinuationMaxBytes);
+    ghostty_snapshot_decoder_set(decoder, GHOSTTY_SNAPSHOT_DECODER_OPT_RETAIN_CONTINUATION,
+                                 &enabled);
+    ghostty_snapshot_decoder_set(decoder, GHOSTTY_SNAPSHOT_DECODER_OPT_COMPRESS_HISTORY,
+                                 &enabled);
+    ghostty_snapshot_decoder_set(decoder, GHOSTTY_SNAPSHOT_DECODER_OPT_KITTY_IMAGE_STORAGE_LIMIT,
+                                 &kKittyImageStorageBytes);
+    result = ghostty_snapshot_decoder_decode(decoder, &term);
+  }
+  ghostty_snapshot_decoder_free(decoder);
+  if (result != GHOSTTY_SUCCESS) {
+    __android_log_print(ANDROID_LOG_WARN, kLogTag, "failed to decode snapshot: %d", result);
+    return 0;
+  }
+
+  auto* session = createSession(env, term, xtversion, terminfoName, owner);
+  if (session == nullptr) return 0;
+  session->pendingEvents = kEventTitle | kEventPwd | kEventColors;
+  session->backgroundColor = effectiveBackgroundColor(session);
+  return static_cast<jlong>(reinterpret_cast<intptr_t>(session));
+}
+
+JNIEXPORT jbyteArray JNICALL
+Java_io_github_sagernet_libghostty_GhosttyVt_nativeWrite(
+    JNIEnv* env, jobject, jlong handle, jbyteArray data, jint offset, jint length) {
+  auto* session = fromHandle(handle);
+
+  const jsize arrayLen = env->GetArrayLength(data);
+  if (offset < 0 || length < 0 || offset > arrayLen - length) return nullptr;
+
+  session->ptyOut.clear();
+  if (length > 0) {
+    jbyte* bytes = env->GetByteArrayElements(data, nullptr);
+    session->env = env;
+    ghostty_terminal_vt_write(session->term,
+                              reinterpret_cast<const uint8_t*>(bytes) + offset,
+                              static_cast<size_t>(length));
+    session->env = nullptr;
+    env->ReleaseByteArrayElements(data, bytes, JNI_ABORT);
+
+    // OSC 11 changes the background without any terminal callback; diff
+    // the effective color around each write to surface it as an event.
+    const int32_t background = effectiveBackgroundColor(session);
+    if (background != session->backgroundColor) {
+      session->backgroundColor = background;
+      session->pendingEvents |= kEventColors;
+    }
+  }
+
+  if (session->ptyOut.empty()) return nullptr;
+  return bytesToArray(env, reinterpret_cast<const char*>(session->ptyOut.data()),
+                      session->ptyOut.size());
+}
+
+JNIEXPORT jint JNICALL
+Java_io_github_sagernet_libghostty_GhosttyVt_nativeTakeEventFlags(
+    JNIEnv*, jobject, jlong handle) {
+  auto* session = fromHandle(handle);
+  const jint flags = session->pendingEvents;
+  session->pendingEvents = 0;
+  return flags;
+}
+
+JNIEXPORT jbyteArray JNICALL
+Java_io_github_sagernet_libghostty_GhosttyVt_nativeGetTitle(
+    JNIEnv* env, jobject, jlong handle) {
+  auto* session = fromHandle(handle);
+  return stringData(env, session, GHOSTTY_TERMINAL_DATA_TITLE);
+}
+
+JNIEXPORT jbyteArray JNICALL
+Java_io_github_sagernet_libghostty_GhosttyVt_nativeTakeClipboard(
+    JNIEnv* env, jobject, jlong handle) {
+  auto* session = fromHandle(handle);
+  if (session->clipboardText.empty()) return nullptr;
+  jbyteArray out = bytesToArray(env, session->clipboardText.data(), session->clipboardText.size());
+  if (out == nullptr) return nullptr;
+  session->clipboardText.clear();
+  return out;
+}
+
+JNIEXPORT void JNICALL
+Java_io_github_sagernet_libghostty_GhosttyVt_nativeResize(
+    JNIEnv*, jobject, jlong handle, jint cols, jint rows, jint cellWidthPx, jint cellHeightPx) {
+  auto* session = fromHandle(handle);
+  session->cols = static_cast<uint16_t>(cols);
+  session->rows = static_cast<uint16_t>(rows);
+  session->cellWidthPx = static_cast<uint32_t>(cellWidthPx);
+  session->cellHeightPx = static_cast<uint32_t>(cellHeightPx);
+  ghostty_terminal_resize(session->term, static_cast<uint16_t>(cols),
+                          static_cast<uint16_t>(rows), static_cast<uint32_t>(cellWidthPx),
+                          static_cast<uint32_t>(cellHeightPx));
+  markRenderDirtyFull(session);
+}
+
+JNIEXPORT void JNICALL
+Java_io_github_sagernet_libghostty_GhosttyVt_nativeSetTheme(
+    JNIEnv* env, jobject, jlong handle, jlong foreground, jlong background,
+    jlong cursor, jlongArray palette) {
+  auto* session = fromHandle(handle);
+
+  GhosttyColorRgb rgb{};
+  ghostty_terminal_set(session->term, GHOSTTY_TERMINAL_OPT_COLOR_FOREGROUND,
+                       colorFromArgb(foreground, &rgb) ? &rgb : nullptr);
+  ghostty_terminal_set(session->term, GHOSTTY_TERMINAL_OPT_COLOR_BACKGROUND,
+                       colorFromArgb(background, &rgb) ? &rgb : nullptr);
+  ghostty_terminal_set(session->term, GHOSTTY_TERMINAL_OPT_COLOR_CURSOR,
+                       colorFromArgb(cursor, &rgb) ? &rgb : nullptr);
+
+  if (palette == nullptr) {
+    ghostty_terminal_set(session->term, GHOSTTY_TERMINAL_OPT_COLOR_PALETTE, nullptr);
+  } else {
+    GhosttyColorRgb table[256];
+    ghostty_color_palette_default(table);
+    jsize count = env->GetArrayLength(palette);
+    if (count > 256) count = 256;
+    jlong* entries = env->GetLongArrayElements(palette, nullptr);
+    for (jsize i = 0; i < count; i++) {
+      GhosttyColorRgb parsed{};
+      if (colorFromArgb(entries[i], &parsed)) table[i] = parsed;
+    }
+    env->ReleaseLongArrayElements(palette, entries, JNI_ABORT);
+    ghostty_terminal_set(session->term, GHOSTTY_TERMINAL_OPT_COLOR_PALETTE, table);
+  }
+
+  session->backgroundColor = effectiveBackgroundColor(session);
+  markRenderDirtyFull(session);
+}
+
+JNIEXPORT jint JNICALL
+Java_io_github_sagernet_libghostty_GhosttyVt_nativeParseColor(
+    JNIEnv* env, jobject, jstring color) {
+  const char* utf = env->GetStringUTFChars(color, nullptr);
+  if (utf == nullptr) return 0;
+  GhosttyColorRgb rgb{};
+  const bool valid = ghostty_color_parse(utf, strlen(utf), &rgb) == GHOSTTY_SUCCESS;
+  if (!valid) {
+    __android_log_print(ANDROID_LOG_VERBOSE, kLogTag, "ignoring invalid theme color: %s", utf);
+  }
+  env->ReleaseStringUTFChars(color, utf);
+  return valid ? argb(rgb) : 0;
+}
+
+JNIEXPORT void JNICALL
+Java_io_github_sagernet_libghostty_GhosttyVt_nativeScroll(
+    JNIEnv*, jobject, jlong handle, jint deltaRows) {
+  auto* session = fromHandle(handle);
+  GhosttyTerminalScrollViewport behavior{};
+  behavior.tag = GHOSTTY_TERMINAL_SCROLL_VIEWPORT_DELTA;
+  behavior.value.delta = deltaRows;
+  ghostty_terminal_scroll_viewport(session->term, behavior);
+}
+
+JNIEXPORT void JNICALL
+Java_io_github_sagernet_libghostty_GhosttyVt_nativeScrollToBottom(
+    JNIEnv*, jobject, jlong handle) {
+  auto* session = fromHandle(handle);
+  GhosttyTerminalScrollViewport behavior{};
+  behavior.tag = GHOSTTY_TERMINAL_SCROLL_VIEWPORT_BOTTOM;
+  ghostty_terminal_scroll_viewport(session->term, behavior);
+}
+
+JNIEXPORT jboolean JNICALL
+Java_io_github_sagernet_libghostty_GhosttyVt_nativeSetDefaultCursorStyle(
+    JNIEnv*, jobject, jlong handle, jint style) {
+  auto* session = fromHandle(handle);
+  const auto cursorStyle = static_cast<GhosttyCursorStyle>(style);
+  return ghostty_terminal_set(session->term, GHOSTTY_TERMINAL_OPT_DEFAULT_CURSOR_STYLE,
+                              &cursorStyle) == GHOSTTY_SUCCESS
+             ? JNI_TRUE
+             : JNI_FALSE;
+}
+
+JNIEXPORT jint JNICALL
+Java_io_github_sagernet_libghostty_GhosttyVt_nativeViewportState(
+    JNIEnv*, jobject, jlong handle) {
+  auto* session = fromHandle(handle);
+  jint state = 0;
+  GhosttyTerminalScreen screen = GHOSTTY_TERMINAL_SCREEN_PRIMARY;
+  if (ghostty_terminal_get(session->term, GHOSTTY_TERMINAL_DATA_ACTIVE_SCREEN, &screen) ==
+          GHOSTTY_SUCCESS &&
+      screen == GHOSTTY_TERMINAL_SCREEN_ALTERNATE) {
+    state |= 1;
+  }
+  bool mouseTracking = false;
+  if (ghostty_terminal_get(session->term, GHOSTTY_TERMINAL_DATA_MOUSE_TRACKING,
+                           &mouseTracking) == GHOSTTY_SUCCESS &&
+      mouseTracking) {
+    state |= 2;
+  }
+  return state;
+}
+
+JNIEXPORT jlongArray JNICALL
+Java_io_github_sagernet_libghostty_GhosttyVt_nativeScrollbar(
+    JNIEnv* env, jobject, jlong handle) {
+  auto* session = fromHandle(handle);
+  GhosttyTerminalScrollbar scrollbar{};
+  if (ghostty_terminal_get(session->term, GHOSTTY_TERMINAL_DATA_SCROLLBAR, &scrollbar) !=
+      GHOSTTY_SUCCESS) {
+    return nullptr;
+  }
+  jlongArray out = env->NewLongArray(3);
+  if (out == nullptr) return nullptr;
+  const jlong values[3] = {static_cast<jlong>(scrollbar.total),
+                           static_cast<jlong>(scrollbar.offset),
+                           static_cast<jlong>(scrollbar.len)};
+  env->SetLongArrayRegion(out, 0, 3, values);
+  return out;
+}
+
+JNIEXPORT jint JNICALL
+Java_io_github_sagernet_libghostty_GhosttyVt_nativeSnapshot(
+    JNIEnv* env, jobject, jlong handle, jobject buffer) {
+  auto* session = fromHandle(handle);
+  auto* base = static_cast<uint8_t*>(env->GetDirectBufferAddress(buffer));
+  const auto cap = static_cast<size_t>(env->GetDirectBufferCapacity(buffer));
+  if (base == nullptr || cap < kHeaderBytes) return -1;
+
+  if (modeSet(session, GHOSTTY_MODE_SYNCHRONIZED_OUTPUT)) {
+    const auto now = std::chrono::steady_clock::now();
+    if (!session->syncOutputActive) {
+      session->syncOutputActive = true;
+      session->syncOutputSince = now;
+      return -2;
+    }
+    if (now - session->syncOutputSince < kSyncOutputTimeout) return -2;
+  } else {
+    session->syncOutputActive = false;
+  }
+
+  if (ghostty_render_state_update(session->renderState, session->term) != GHOSTTY_SUCCESS) {
+    return -1;
+  }
+
+  GhosttyRenderStateDirty dirty = GHOSTTY_RENDER_STATE_DIRTY_FALSE;
+  ghostty_render_state_get(session->renderState, GHOSTTY_RENDER_STATE_DATA_DIRTY, &dirty);
+
+  uint16_t cols = 0;
+  uint16_t rows = 0;
+  ghostty_render_state_get(session->renderState, GHOSTTY_RENDER_STATE_DATA_COLS, &cols);
+  ghostty_render_state_get(session->renderState, GHOSTTY_RENDER_STATE_DATA_ROWS, &rows);
+
+  GhosttyRenderStateColors colors{};
+  colors.size = sizeof(colors);
+  ghostty_render_state_get(session->renderState, GHOSTTY_RENDER_STATE_DATA_COLORS, &colors);
+
+  GhosttyRenderStateCursor cursor{};
+  cursor.size = sizeof(cursor);
+  ghostty_render_state_get(session->renderState, GHOSTTY_RENDER_STATE_DATA_CURSOR, &cursor);
+
+  bool passwordInput = false;
+  ghostty_render_state_get(session->renderState,
+                           GHOSTTY_RENDER_STATE_DATA_CURSOR_PASSWORD_INPUT, &passwordInput);
+
+  bool cursorColorSet = false;
+  ghostty_render_state_get(session->renderState,
+                           GHOSTTY_RENDER_STATE_DATA_COLOR_CURSOR_HAS_VALUE, &cursorColorSet);
+  int32_t cursorColor = 0;
+  if (cursorColorSet) {
+    GhosttyColorRgb cursorRgb{};
+    ghostty_render_state_get(session->renderState, GHOSTTY_RENDER_STATE_DATA_COLOR_CURSOR,
+                             &cursorRgb);
+    cursorColor = argb(cursorRgb);
+  }
+
+  auto* header = reinterpret_cast<int32_t*>(base);
+  header[0] = 2;
+  header[1] = static_cast<int32_t>(dirty);
+  header[2] = cols;
+  header[3] = rows;
+  header[4] = argb(colors.background);
+  header[5] = argb(colors.foreground);
+  header[6] = cursor.viewport_has_value ? cursor.viewport_x : -1;
+  header[7] = cursor.viewport_has_value ? cursor.viewport_y : -1;
+  header[8] = static_cast<int32_t>(cursor.visual_style);
+  header[9] = cursor.visible ? 1 : 0;
+  header[10] = 0;
+  header[11] = cursor.blinking ? 1 : 0;
+  header[12] = cursorColor;
+  header[13] = 0;
+  header[14] = passwordInput ? 1 : 0;
+
+  if (dirty == GHOSTTY_RENDER_STATE_DIRTY_FALSE) return 0;
+
+  if (ghostty_render_state_get(session->renderState, GHOSTTY_RENDER_STATE_DATA_ROW_ITERATOR,
+                               &session->rowIter) != GHOSTTY_SUCCESS) {
+    return -1;
+  }
+
+  GhosttyColorRgb palette[256];
+  const bool paletteValid =
+      ghostty_render_state_get(session->renderState, GHOSTTY_RENDER_STATE_DATA_COLOR_PALETTE,
+                               palette) == GHOSTTY_SUCCESS;
+
+  size_t offset = kHeaderBytes;
+  int32_t rowCount = 0;
+  int32_t rowIndex = -1;
+  bool truncated = false;
+  std::vector<uint32_t> bigGrapheme;
+
+  while (ghostty_render_state_row_iterator_next(session->rowIter)) {
+    rowIndex++;
+
+    bool rowDirty = false;
+    ghostty_render_state_row_get(session->rowIter, GHOSTTY_RENDER_STATE_ROW_DATA_DIRTY,
+                                 &rowDirty);
+    if (dirty != GHOSTTY_RENDER_STATE_DIRTY_FULL && !rowDirty) continue;
+
+    const size_t cellsOffset = offset + kRowHeaderBytes;
+    const size_t textOffset = cellsOffset + static_cast<size_t>(cols) * kCellRecordBytes;
+    if (textOffset > cap) {
+      truncated = true;
+      break;
+    }
+
+    auto* rowHeader = reinterpret_cast<int32_t*>(base + offset);
+    rowHeader[0] = rowIndex;
+
+    auto selection = GHOSTTY_INIT_SIZED(GhosttyRenderStateRowSelection);
+    const GhosttyResult selResult = ghostty_render_state_row_get(
+        session->rowIter, GHOSTTY_RENDER_STATE_ROW_DATA_SELECTION, &selection);
+    rowHeader[1] = selResult == GHOSTTY_SUCCESS ? selection.start_x : -1;
+    rowHeader[2] = selResult == GHOSTTY_SUCCESS ? selection.end_x : -1;
+
+    if (ghostty_render_state_row_get(session->rowIter, GHOSTTY_RENDER_STATE_ROW_DATA_CELLS,
+                                     &session->cells) != GHOSTTY_SUCCESS) {
+      truncated = true;
+      break;
+    }
+
+    auto* textBlob = reinterpret_cast<uint16_t*>(base + textOffset);
+    const uint32_t textCapUnits = static_cast<uint32_t>((cap - textOffset) / 2);
+    uint32_t textUnits = 0;
+
+    int32_t col = 0;
+    while (col < cols && ghostty_render_state_row_cells_next(session->cells)) {
+      uint8_t* record = base + cellsOffset + static_cast<size_t>(col) * kCellRecordBytes;
+      uint16_t flags = 0;
+      int32_t fg = 0;
+      int32_t bg = 0;
+
+      GhosttyCell raw = 0;
+      ghostty_render_state_row_cells_get(session->cells,
+                                         GHOSTTY_RENDER_STATE_ROW_CELLS_DATA_RAW, &raw);
+      GhosttyCellWide wide = GHOSTTY_CELL_WIDE_NARROW;
+      ghostty_cell_get(raw, GHOSTTY_CELL_DATA_WIDE, &wide);
+      if (wide == GHOSTTY_CELL_WIDE_WIDE) flags |= kFlagWide;
+      if (wide == GHOSTTY_CELL_WIDE_SPACER_TAIL || wide == GHOSTTY_CELL_WIDE_SPACER_HEAD) {
+        flags |= kFlagSpacer;
+      }
+
+      bool hasStyling = false;
+      ghostty_render_state_row_cells_get(session->cells,
+                                         GHOSTTY_RENDER_STATE_ROW_CELLS_DATA_HAS_STYLING,
+                                         &hasStyling);
+      uint16_t underlineStyle = 0;
+      int32_t brightIndex = -1;
+      if (hasStyling) {
+        GhosttyStyle style{};
+        ghostty_render_state_row_cells_get(session->cells,
+                                           GHOSTTY_RENDER_STATE_ROW_CELLS_DATA_STYLE, &style);
+        if ((style.flags & GHOSTTY_STYLE_FLAG_BOLD) || (style.flags & GHOSTTY_STYLE_FLAG_BLINK)) {
+          flags |= kFlagBold;
+        }
+        if (style.flags & GHOSTTY_STYLE_FLAG_ITALIC) flags |= kFlagItalic;
+        if (style.flags & GHOSTTY_STYLE_FLAG_FAINT) flags |= kFlagFaint;
+        if (style.flags & GHOSTTY_STYLE_UNDERLINE_MASK) {
+          flags |= kFlagUnderline;
+          underlineStyle = static_cast<uint16_t>(
+              (style.flags & GHOSTTY_STYLE_UNDERLINE_MASK) >> GHOSTTY_STYLE_UNDERLINE_SHIFT);
+        }
+        if (style.flags & GHOSTTY_STYLE_FLAG_STRIKETHROUGH) flags |= kFlagStrikethrough;
+        if (style.flags & GHOSTTY_STYLE_FLAG_INVERSE) flags |= kFlagInverse;
+        if (style.flags & GHOSTTY_STYLE_FLAG_INVISIBLE) flags |= kFlagInvisible;
+        if ((style.flags & GHOSTTY_STYLE_FLAG_BOLD) && paletteValid &&
+            style.fg_color.tag == GHOSTTY_STYLE_COLOR_PALETTE &&
+            style.fg_color.value.palette < 8) {
+          brightIndex = style.fg_color.value.palette + 8;
+        }
+      }
+
+      GhosttyColorRgb cellColor{};
+      if (brightIndex >= 0) {
+        fg = argb(palette[brightIndex]);
+      } else if (ghostty_render_state_row_cells_get(session->cells,
+                                                    GHOSTTY_RENDER_STATE_ROW_CELLS_DATA_FG_COLOR,
+                                                    &cellColor) == GHOSTTY_SUCCESS) {
+        fg = argb(cellColor);
+      } else {
+        flags |= kFlagFgDefault;
+      }
+      if (ghostty_render_state_row_cells_get(session->cells,
+                                             GHOSTTY_RENDER_STATE_ROW_CELLS_DATA_BG_COLOR,
+                                             &cellColor) == GHOSTTY_SUCCESS) {
+        bg = argb(cellColor);
+      } else {
+        flags |= kFlagBgNone;
+      }
+
+      const uint32_t cellTextStart = textUnits;
+      uint32_t cellUnits = 0;
+      uint32_t graphemeLen = 0;
+      if ((flags & kFlagSpacer) == 0) {
+        ghostty_render_state_row_cells_get(session->cells,
+                                           GHOSTTY_RENDER_STATE_ROW_CELLS_DATA_GRAPHEMES_LEN,
+                                           &graphemeLen);
+      }
+      if (graphemeLen > 0) {
+        uint32_t stackBuf[16];
+        uint32_t* codepoints = stackBuf;
+        if (graphemeLen > 16) {
+          bigGrapheme.resize(graphemeLen);
+          codepoints = bigGrapheme.data();
+        }
+        GhosttyCodepointBuffer graphemes{.ptr = codepoints, .cap = graphemeLen};
+        ghostty_render_state_row_cells_get(session->cells,
+                                           GHOSTTY_RENDER_STATE_ROW_CELLS_DATA_GRAPHEMES_BUF,
+                                           &graphemes);
+        if (codepoints[0] == kKittyPlaceholder) graphemeLen = 0;
+        for (uint32_t i = 0; i < graphemeLen; i++) {
+          const uint32_t needed = codepoints[i] >= 0x10000 ? 2 : 1;
+          if (cellUnits + needed > kMaxCellTextUnits) break;
+          const uint32_t written =
+              appendUtf16(codepoints[i], textBlob, textUnits + cellUnits, textCapUnits);
+          if (written == 0) break;
+          cellUnits += written;
+        }
+      }
+      textUnits += cellUnits;
+
+      *reinterpret_cast<int32_t*>(record) = fg;
+      *reinterpret_cast<int32_t*>(record + 4) = bg;
+      *reinterpret_cast<uint16_t*>(record + 8) = static_cast<uint16_t>(cellTextStart);
+      *reinterpret_cast<uint16_t*>(record + 10) = static_cast<uint16_t>(cellUnits);
+      *reinterpret_cast<uint16_t*>(record + 12) = flags;
+      *reinterpret_cast<uint16_t*>(record + 14) = underlineStyle;
+      col++;
+    }
+
+    for (; col < cols; col++) {
+      uint8_t* record = base + cellsOffset + static_cast<size_t>(col) * kCellRecordBytes;
+      memset(record, 0, kCellRecordBytes);
+      *reinterpret_cast<uint16_t*>(record + 12) = kFlagFgDefault | kFlagBgNone;
+    }
+
+    rowHeader[3] = static_cast<int32_t>(textUnits);
+    offset = textOffset + static_cast<size_t>(textUnits) * 2;
+    if (offset % 4 != 0) {
+      if (offset + 2 > cap) {
+        truncated = true;
+        break;
+      }
+      *reinterpret_cast<uint16_t*>(base + offset) = 0;
+      offset += 2;
+    }
+    rowCount++;
+  }
+
+  if (!truncated) {
+    ghostty_render_state_clean(session->renderState);
+  }
+
+  header[10] = rowCount;
+  header[13] = truncated ? 1 : 0;
+  return rowCount;
+}
+
+JNIEXPORT jboolean JNICALL
+Java_io_github_sagernet_libghostty_GhosttyVt_nativeSelectWord(
+    JNIEnv*, jobject, jlong handle, jint col, jint row) {
+  auto* session = fromHandle(handle);
+  GhosttyGridRef ref{};
+  if (!viewportGridRef(session, col, row, &ref)) return JNI_FALSE;
+  GhosttyTerminalSelectWordOptions options{};
+  options.size = sizeof(options);
+  options.ref = ref;
+  GhosttySelection selection{};
+  if (ghostty_terminal_select_word(session->term, &options, &selection) != GHOSTTY_SUCCESS) {
+    return JNI_FALSE;
+  }
+  return installSelection(session, &selection) ? JNI_TRUE : JNI_FALSE;
+}
+
+JNIEXPORT jboolean JNICALL
+Java_io_github_sagernet_libghostty_GhosttyVt_nativeSelectAll(JNIEnv*, jobject, jlong handle) {
+  auto* session = fromHandle(handle);
+  GhosttySelection selection{};
+  if (ghostty_terminal_select_all(session->term, &selection) != GHOSTTY_SUCCESS) {
+    return JNI_FALSE;
+  }
+  return installSelection(session, &selection) ? JNI_TRUE : JNI_FALSE;
+}
+
+JNIEXPORT jboolean JNICALL
+Java_io_github_sagernet_libghostty_GhosttyVt_nativeSetSelection(
+    JNIEnv*, jobject, jlong handle, jint anchorCol, jint anchorRow, jint col, jint row) {
+  auto* session = fromHandle(handle);
+  GhosttyGridRef start{};
+  GhosttyGridRef end{};
+  if (!viewportGridRef(session, anchorCol, anchorRow, &start) ||
+      !viewportGridRef(session, col, row, &end)) {
+    return JNI_FALSE;
+  }
+  GhosttySelection selection{};
+  selection.start = start;
+  selection.end = end;
+  selection.rectangle = false;
+  return installSelection(session, &selection) ? JNI_TRUE : JNI_FALSE;
+}
+
+JNIEXPORT void JNICALL
+Java_io_github_sagernet_libghostty_GhosttyVt_nativeClearSelection(JNIEnv*, jobject, jlong handle) {
+  auto* session = fromHandle(handle);
+  ghostty_terminal_set(session->term, GHOSTTY_TERMINAL_OPT_SELECTION, nullptr);
+  markRenderDirtyFull(session);
+}
+
+JNIEXPORT jbyteArray JNICALL
+Java_io_github_sagernet_libghostty_GhosttyVt_nativeSelectionText(
+    JNIEnv* env, jobject, jlong handle) {
+  auto* session = fromHandle(handle);
+  GhosttySelection selection{};
+  if (ghostty_terminal_get(session->term, GHOSTTY_TERMINAL_DATA_SELECTION, &selection) !=
+      GHOSTTY_SUCCESS) {
+    return nullptr;
+  }
+  return formatSelection(env, session, &selection);
+}
+
+JNIEXPORT jbyteArray JNICALL
+Java_io_github_sagernet_libghostty_GhosttyVt_nativeViewportText(
+    JNIEnv* env, jobject, jlong handle) {
+  auto* session = fromHandle(handle);
+  if (session->cols == 0 || session->rows == 0) return nullptr;
+  GhosttyGridRef start{};
+  GhosttyGridRef end{};
+  if (!viewportGridRef(session, 0, 0, &start) ||
+      !viewportGridRef(session, session->cols - 1, session->rows - 1, &end)) {
+    return nullptr;
+  }
+  GhosttySelection selection{};
+  selection.start = start;
+  selection.end = end;
+  selection.rectangle = false;
+  return formatSelection(env, session, &selection);
+}
+
+JNIEXPORT jbyteArray JNICALL
+Java_io_github_sagernet_libghostty_GhosttyVt_nativeTranscriptText(
+    JNIEnv* env, jobject, jlong handle) {
+  auto* session = fromHandle(handle);
+  GhosttyFormatter formatter = nullptr;
+  if (ghostty_formatter_terminal_new(nullptr, &formatter, session->term) != GHOSTTY_SUCCESS) {
+    return nullptr;
+  }
+  struct FormatterGuard {
+    GhosttyFormatter f;
+    ~FormatterGuard() { if (f != nullptr) ghostty_formatter_free(f); }
+  } guard{formatter};
+  GhosttyFormatterFormat emit = GHOSTTY_FORMATTER_FORMAT_PLAIN;
+  bool unwrap = true;
+  bool trim = true;
+  ghostty_formatter_set(formatter, GHOSTTY_FORMATTER_OPT_EMIT, &emit);
+  ghostty_formatter_set(formatter, GHOSTTY_FORMATTER_OPT_UNWRAP, &unwrap);
+  ghostty_formatter_set(formatter, GHOSTTY_FORMATTER_OPT_TRIM, &trim);
+
+  uint8_t* data = nullptr;
+  size_t len = 0;
+  jbyteArray out = nullptr;
+  if (ghostty_formatter_format_alloc(formatter, nullptr, &data, &len) == GHOSTTY_SUCCESS &&
+      data != nullptr) {
+    out = bytesToArray(env, reinterpret_cast<const char*>(data), len);
+    ghostty_free(nullptr, data, len);
+  }
+  return out;
+}
+
+JNIEXPORT jint JNICALL
+Java_io_github_sagernet_libghostty_GhosttyVt_nativeGetBackgroundColor(
+    JNIEnv*, jobject, jlong handle) {
+  return effectiveBackgroundColor(fromHandle(handle));
+}
+
+JNIEXPORT jboolean JNICALL
+Java_io_github_sagernet_libghostty_GhosttyVt_nativeIsPasteSafe(
+    JNIEnv* env, jobject, jbyteArray data) {
+  const jsize len = env->GetArrayLength(data);
+  if (len == 0) return JNI_TRUE;
+  jbyte* bytes = env->GetByteArrayElements(data, nullptr);
+  const bool safe = ghostty_paste_is_safe(reinterpret_cast<const char*>(bytes),
+                                          static_cast<size_t>(len));
+  env->ReleaseByteArrayElements(data, bytes, JNI_ABORT);
+  return safe ? JNI_TRUE : JNI_FALSE;
+}
+
+JNIEXPORT jbyteArray JNICALL
+Java_io_github_sagernet_libghostty_GhosttyVt_nativeEncodePaste(
+    JNIEnv* env, jobject, jlong handle, jbyteArray data) {
+  auto* session = fromHandle(handle);
+  const jsize len = env->GetArrayLength(data);
+  std::vector<char> input(static_cast<size_t>(len));
+  if (len > 0) {
+    env->GetByteArrayRegion(data, 0, len, reinterpret_cast<jbyte*>(input.data()));
+  }
+
+  GhosttyString mime{};
+  mime.ptr = reinterpret_cast<const uint8_t*>("text/plain");
+  mime.len = 10;
+  GhosttyPaste paste{};
+  paste.size = sizeof(paste);
+  paste.location = GHOSTTY_CLIPBOARD_LOCATION_STANDARD;
+  paste.source = GHOSTTY_PASTE_SOURCE_CLIPBOARD;
+  paste.mimes = &mime;
+  paste.mimes_len = 1;
+  paste.reader.read = &pasteTextRead;
+  paste.reader.userdata = &input;
+  paste.allow_unsafe = true;
+
+  session->ptyOut.clear();
+  bool written = false;
+  if (ghostty_terminal_paste(session->term, &paste, &written) != GHOSTTY_SUCCESS || !written ||
+      session->ptyOut.empty()) {
+    return nullptr;
+  }
+  return bytesToArray(env, reinterpret_cast<const char*>(session->ptyOut.data()),
+                      session->ptyOut.size());
+}
+
+JNIEXPORT jbyteArray JNICALL
+Java_io_github_sagernet_libghostty_GhosttyVt_nativeEncodeKey(
+    JNIEnv* env, jobject, jlong handle, jint keyCode, jint action, jint metaState,
+    jint unshiftedCodepoint, jboolean composing, jbyteArray utf8) {
+  auto* session = fromHandle(handle);
+
+  ghostty_key_encoder_set_from_terminal(session->encoder, session->term);
+
+  GhosttyKeyAction keyAction = GHOSTTY_KEY_ACTION_PRESS;
+  if (action == 0) keyAction = GHOSTTY_KEY_ACTION_RELEASE;
+  if (action == 2) keyAction = GHOSTTY_KEY_ACTION_REPEAT;
+
+  ghostty_key_event_set_action(session->keyEvent, keyAction);
+  ghostty_key_event_set_key(session->keyEvent, mapKey(keyCode));
+  ghostty_key_event_set_mods(session->keyEvent, mapMods(metaState));
+  ghostty_key_event_set_consumed_mods(session->keyEvent, 0);
+  ghostty_key_event_set_composing(session->keyEvent, composing != JNI_FALSE);
+  ghostty_key_event_set_unshifted_codepoint(session->keyEvent,
+                                            static_cast<uint32_t>(unshiftedCodepoint));
+
+  jbyte* utf8Bytes = nullptr;
+  jsize utf8Len = 0;
+  if (utf8 != nullptr) {
+    utf8Len = env->GetArrayLength(utf8);
+    if (utf8Len > 0) utf8Bytes = env->GetByteArrayElements(utf8, nullptr);
+  }
+  GhosttyString utf8String{
+      .ptr = reinterpret_cast<const uint8_t*>(utf8Bytes),
+      .len = static_cast<size_t>(utf8Bytes != nullptr ? utf8Len : 0),
+  };
+  ghostty_key_event_set_utf8(session->keyEvent, utf8String);
+
+  uint8_t stackBuf[128];
+  size_t written = 0;
+  GhosttyResult result = ghostty_key_encoder_encode(session->encoder, session->keyEvent,
+                                                    stackBuf, sizeof(stackBuf), &written);
+  std::vector<uint8_t> heapBuf;
+  const uint8_t* out = stackBuf;
+  if (result == GHOSTTY_OUT_OF_SPACE) {
+    heapBuf.resize(written);
+    result = ghostty_key_encoder_encode(session->encoder, session->keyEvent, heapBuf.data(),
+                                        heapBuf.size(), &written);
+    out = heapBuf.data();
+  }
+
+  ghostty_key_event_set_utf8(session->keyEvent, GhosttyString{nullptr, 0});
+  if (utf8Bytes != nullptr) env->ReleaseByteArrayElements(utf8, utf8Bytes, JNI_ABORT);
+
+  if (result != GHOSTTY_SUCCESS || written == 0) return nullptr;
+  return bytesToArray(env, reinterpret_cast<const char*>(out), written);
+}
+
+JNIEXPORT jbyteArray JNICALL
+Java_io_github_sagernet_libghostty_GhosttyVt_nativeEncodeMouse(
+    JNIEnv* env, jobject, jlong handle, jint action, jint button, jint col, jint row,
+    jint metaState) {
+  auto* session = fromHandle(handle);
+
+  ghostty_mouse_encoder_set_from_terminal(session->mouseEncoder, session->term);
+
+  GhosttyMouseEncoderSize size{};
+  size.size = sizeof(size);
+  size.screen_width = session->cols;
+  size.screen_height = session->rows;
+  size.cell_width = 1;
+  size.cell_height = 1;
+  ghostty_mouse_encoder_set(session->mouseEncoder, GHOSTTY_MOUSE_ENCODER_OPT_SIZE, &size);
+
+  const auto mouseAction = static_cast<GhosttyMouseAction>(action);
+  const auto mouseButton = static_cast<GhosttyMouseButton>(button);
+  if (mouseButton >= GHOSTTY_MOUSE_BUTTON_LEFT && mouseButton <= GHOSTTY_MOUSE_BUTTON_MIDDLE) {
+    if (mouseAction == GHOSTTY_MOUSE_ACTION_PRESS) session->mouseButtonDown = true;
+    if (mouseAction == GHOSTTY_MOUSE_ACTION_RELEASE) session->mouseButtonDown = false;
+  }
+  ghostty_mouse_encoder_set(session->mouseEncoder,
+                               GHOSTTY_MOUSE_ENCODER_OPT_ANY_BUTTON_PRESSED,
+                               &session->mouseButtonDown);
+
+  ghostty_mouse_event_set_action(session->mouseEvent, mouseAction);
+  if (mouseButton == GHOSTTY_MOUSE_BUTTON_UNKNOWN) {
+    ghostty_mouse_event_clear_button(session->mouseEvent);
+  } else {
+    ghostty_mouse_event_set_button(session->mouseEvent, mouseButton);
+  }
+  ghostty_mouse_event_set_mods(session->mouseEvent, mapMods(metaState));
+  GhosttyMousePosition position{static_cast<float>(col), static_cast<float>(row)};
+  ghostty_mouse_event_set_position(session->mouseEvent, position);
+
+  uint8_t buf[64];
+  size_t written = 0;
+  if (ghostty_mouse_encoder_encode(session->mouseEncoder, session->mouseEvent, buf,
+                                   sizeof(buf), &written) != GHOSTTY_SUCCESS ||
+      written == 0) {
+    return nullptr;
+  }
+  return bytesToArray(env, reinterpret_cast<const char*>(buf), written);
+}
+
+JNIEXPORT jbyteArray JNICALL
+Java_io_github_sagernet_libghostty_GhosttyVt_nativeGetPwd(
+    JNIEnv* env, jobject, jlong handle) {
+  auto* session = fromHandle(handle);
+  return stringData(env, session, GHOSTTY_TERMINAL_DATA_PWD);
+}
+
+JNIEXPORT jbyteArray JNICALL
+Java_io_github_sagernet_libghostty_GhosttyVt_nativeTakeNotification(
+    JNIEnv* env, jobject, jlong handle) {
+  auto* session = fromHandle(handle);
+  if (session->notifications.empty()) return nullptr;
+  const auto [title, body] = std::move(session->notifications.front());
+  session->notifications.pop_front();
+  std::string packed;
+  packed.reserve(4 + title.size() + body.size());
+  const auto titleLen = static_cast<uint32_t>(title.size());
+  packed.push_back(static_cast<char>(titleLen & 0xFF));
+  packed.push_back(static_cast<char>((titleLen >> 8) & 0xFF));
+  packed.push_back(static_cast<char>((titleLen >> 16) & 0xFF));
+  packed.push_back(static_cast<char>((titleLen >> 24) & 0xFF));
+  packed.append(title);
+  packed.append(body);
+  return bytesToArray(env, packed.data(), packed.size());
+}
+
+JNIEXPORT jintArray JNICALL
+Java_io_github_sagernet_libghostty_GhosttyVt_nativeGetProgress(
+    JNIEnv* env, jobject, jlong handle) {
+  auto* session = fromHandle(handle);
+  jintArray out = env->NewIntArray(2);
+  if (out == nullptr) return nullptr;
+  const jint values[2] = {session->progressState, session->progressPercent};
+  env->SetIntArrayRegion(out, 0, 2, values);
+  return out;
+}
+
+JNIEXPORT jbyteArray JNICALL
+Java_io_github_sagernet_libghostty_GhosttyVt_nativeSetColorScheme(
+    JNIEnv* env, jobject, jlong handle, jboolean dark) {
+  auto* session = fromHandle(handle);
+  const bool newDark = dark != JNI_FALSE;
+  const bool changed = session->colorSchemeDark != newDark;
+  session->colorSchemeDark = newDark;
+  if (!changed || !modeSet(session, GHOSTTY_MODE_REPORT_COLOR_SCHEME)) return nullptr;
+  uint8_t buf[16];
+  size_t written = 0;
+  if (ghostty_color_scheme_report_encode(
+          newDark ? GHOSTTY_COLOR_SCHEME_DARK : GHOSTTY_COLOR_SCHEME_LIGHT, buf,
+          sizeof(buf), &written) != GHOSTTY_SUCCESS ||
+      written == 0) {
+    return nullptr;
+  }
+  return bytesToArray(env, reinterpret_cast<const char*>(buf), written);
+}
+
+JNIEXPORT jbyteArray JNICALL
+Java_io_github_sagernet_libghostty_GhosttyVt_nativeHyperlinkAt(
+    JNIEnv* env, jobject, jlong handle, jint col, jint row) {
+  auto* session = fromHandle(handle);
+  if (col < 0 || row < 0) return nullptr;
+  GhosttyGridRef ref{};
+  if (!viewportGridRef(session, col, row, &ref)) return nullptr;
+  size_t len = 0;
+  if (ghostty_grid_ref_hyperlink_uri(&ref, nullptr, 0, &len) != GHOSTTY_OUT_OF_SPACE) {
+    return nullptr;
+  }
+  std::vector<uint8_t> uri(len);
+  if (ghostty_grid_ref_hyperlink_uri(&ref, uri.data(), uri.size(), &len) != GHOSTTY_SUCCESS) {
+    return nullptr;
+  }
+  return bytesToArray(env, reinterpret_cast<const char*>(uri.data()), len);
+}
+
+JNIEXPORT jbyteArray JNICALL
+Java_io_github_sagernet_libghostty_GhosttyVt_nativeEncodeFocus(
+    JNIEnv* env, jobject, jlong handle, jboolean gained) {
+  auto* session = fromHandle(handle);
+  if (!modeSet(session, GHOSTTY_MODE_FOCUS_EVENT)) return nullptr;
+  uint8_t buf[16];
+  size_t written = 0;
+  if (ghostty_focus_encode(gained != JNI_FALSE ? GHOSTTY_FOCUS_GAINED : GHOSTTY_FOCUS_LOST,
+                           buf, sizeof(buf), &written) != GHOSTTY_SUCCESS ||
+      written == 0) {
+    return nullptr;
+  }
+  return bytesToArray(env, reinterpret_cast<const char*>(buf), written);
+}
+
+JNIEXPORT jint JNICALL JNI_OnLoad(JavaVM* vm, void*) {
+  gJavaVm = vm;
+  JNIEnv* env = nullptr;
+  if (vm->GetEnv(reinterpret_cast<void**>(&env), JNI_VERSION_1_6) != JNI_OK) return JNI_ERR;
+  jclass factoryClass = env->FindClass("android/graphics/BitmapFactory");
+  jclass bitmapClass = env->FindClass("android/graphics/Bitmap");
+  if (factoryClass == nullptr || bitmapClass == nullptr) return JNI_ERR;
+  gBitmapFactoryClass = static_cast<jclass>(env->NewGlobalRef(factoryClass));
+  gBitmapClass = static_cast<jclass>(env->NewGlobalRef(bitmapClass));
+  gDecodeByteArray = env->GetStaticMethodID(gBitmapFactoryClass, "decodeByteArray",
+                                            "([BII)Landroid/graphics/Bitmap;");
+  gBitmapGetWidth = env->GetMethodID(gBitmapClass, "getWidth", "()I");
+  gBitmapGetHeight = env->GetMethodID(gBitmapClass, "getHeight", "()I");
+  gBitmapGetPixels = env->GetMethodID(gBitmapClass, "getPixels", "([IIIIIII)V");
+  gBitmapRecycle = env->GetMethodID(gBitmapClass, "recycle", "()V");
+  if (gDecodeByteArray == nullptr || gBitmapGetWidth == nullptr || gBitmapGetHeight == nullptr ||
+      gBitmapGetPixels == nullptr || gBitmapRecycle == nullptr) {
+    return JNI_ERR;
+  }
+  jclass sessionClass = env->FindClass("io/github/sagernet/libghostty/GhosttyTerminalSession");
+  if (sessionClass == nullptr) return JNI_ERR;
+  gSessionClass = static_cast<jclass>(env->NewGlobalRef(sessionClass));
+  gClipboardHasText = env->GetMethodID(gSessionClass, "clipboardHasText", "()Z");
+  gReadClipboardForProgram =
+      env->GetMethodID(gSessionClass, "readClipboardForProgram", "(Z)[B");
+  if (gClipboardHasText == nullptr || gReadClipboardForProgram == nullptr) return JNI_ERR;
+  ghostty_sys_set(GHOSTTY_SYS_OPT_DECODE_PNG,
+                  reinterpret_cast<const void*>(&decodePngCallback));
+  return JNI_VERSION_1_6;
+}
+
+}  // extern "C"

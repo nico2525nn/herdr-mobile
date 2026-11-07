@@ -1,0 +1,1969 @@
+package io.github.sagernet.libghostty
+
+import android.content.ActivityNotFoundException
+import android.content.ClipData
+import android.content.ClipboardManager
+import android.content.Context
+import android.content.Intent
+import android.graphics.Bitmap
+import android.graphics.Canvas
+import android.graphics.Paint
+import android.graphics.Path
+import android.graphics.Rect
+import android.graphics.RectF
+import android.graphics.Typeface
+import android.graphics.drawable.Drawable
+import android.net.Uri
+import android.os.Build
+import android.os.SystemClock
+import android.text.InputType
+import android.util.AttributeSet
+import android.util.DisplayMetrics
+import android.util.Log
+import android.util.LruCache
+import android.util.TypedValue
+import android.view.ActionMode
+import android.view.Choreographer
+import android.view.GestureDetector
+import android.view.HapticFeedbackConstants
+import android.view.InputDevice
+import android.view.KeyCharacterMap
+import android.view.KeyEvent
+import android.view.Menu
+import android.view.MenuItem
+import android.view.MotionEvent
+import android.view.ScaleGestureDetector
+import android.view.View
+import android.view.ViewConfiguration
+import android.view.WindowInsets
+import android.view.accessibility.AccessibilityManager
+import android.view.inputmethod.BaseInputConnection
+import android.view.inputmethod.EditorInfo
+import android.view.inputmethod.InputConnection
+import android.view.inputmethod.InputMethodManager
+import android.widget.Magnifier
+import android.widget.OverScroller
+import java.nio.ByteBuffer
+import java.nio.ByteOrder
+import kotlin.math.abs
+import kotlin.math.ceil
+import kotlin.math.floor
+import kotlin.math.hypot
+import kotlin.math.max
+import kotlin.math.roundToInt
+import android.provider.Settings as AndroidSettings
+
+public class GhosttyTerminalView @JvmOverloads constructor(
+    context: Context,
+    attrs: AttributeSet? = null,
+) : View(context, attrs) {
+
+    public interface Listener {
+        public fun onFontSizeChanged(view: GhosttyTerminalView, fontSizeSp: Float) {}
+
+        public fun onFinishedSessionKey(view: GhosttyTerminalView) {}
+    }
+
+    public var listener: Listener? = null
+
+    public var extraKeysState: GhosttyExtraKeysState? = null
+
+    public var uiHandler: GhosttyUiHandler = object : GhosttyUiHandler {}
+
+    public var bellHapticEnabled: Boolean = true
+
+    public var showImeOnTap: Boolean = true
+
+    // Samsung keyboards keep their composing state across a TYPE_NULL field
+    // (termux/termux-app#686); a char-based text class makes them reset it.
+    public var enforceCharBasedInput: Boolean = false
+        set(value) {
+            if (field == value) return
+            field = value
+            (context.getSystemService(Context.INPUT_METHOD_SERVICE) as InputMethodManager).restartInput(this)
+        }
+
+    private var imeRequestedUntil = 0L
+
+    /** Matches plain text as a URL, in addition to the hyperlinks the terminal reported. */
+    public var urlDetectionEnabled: Boolean = true
+
+    public var urlPattern: Regex = Regex("""https?://\S+""")
+
+    /**
+     * How vertical scroll gestures are interpreted.
+     *
+     * AUTO lets the engine decide from its own modes (mouse → wheel, alt screen
+     * → keys, otherwise local scrollback). The app overrides this when the
+     * daemon reports pane facts the local engine cannot know yet (attach
+     * replays text, not the app's DECSET history).
+     */
+    public enum class ScrollRouting { AUTO, LOCAL, REMOTE_WHEEL, REMOTE_PAGE, REMOTE_HOST }
+
+    public var scrollRouting: ScrollRouting = ScrollRouting.AUTO
+
+    /** REMOTE_HOST: send row deltas to the server, which owns full history. */
+    public var onRemoteScroll: ((rows: Int) -> Unit)? = null
+
+    public var session: GhosttyTerminalSession? = null
+        set(value) {
+            if (field === value) return
+            if (selectionActive || actionMode != null) {
+                clearSelection()
+            }
+            field?.detach(this)
+            composingText = null
+            passwordInput = false
+            field = value
+            value?.attach(this)
+            if (value != null) {
+                updateGridGeometry(force = true)
+            }
+            scheduleFrame()
+        }
+
+    public var typeface: Typeface = Typeface.MONOSPACE
+        set(value) {
+            if (field == value) return
+            field = value
+            rebuildPaints()
+            if (selectionActive || actionMode != null) clearSelection()
+            updateGridGeometry(force = true)
+        }
+
+    public var fontSizeRangeSp: ClosedFloatingPointRange<Float> = 8f..48f
+        set(value) {
+            field = value
+            fontSizeSp = fontSizeSp
+        }
+
+    public var fontSizeSp: Float = DEFAULT_FONT_SIZE_SP
+        set(value) {
+            val clamped = value.coerceIn(fontSizeRangeSp.start, fontSizeRangeSp.endInclusive)
+            if (clamped == field) return
+            field = clamped
+            rebuildPaints()
+            if (selectionActive || actionMode != null) clearSelection()
+            updateGridGeometry(force = true)
+        }
+
+    public val cellSize: GhosttyCellSize
+        get() = GhosttyCellSize(cellWidth, cellHeight)
+
+    private val textPaint = Paint(Paint.ANTI_ALIAS_FLAG)
+    private val boldPaint = Paint(Paint.ANTI_ALIAS_FLAG)
+    private val italicPaint = Paint(Paint.ANTI_ALIAS_FLAG)
+    private val boldItalicPaint = Paint(Paint.ANTI_ALIAS_FLAG)
+    private val fillPaint = Paint()
+    private val cursorPaint = Paint()
+    private var cellWidth = 1f
+    private var cellHeight = 1
+    private var baseline = 0f
+    private val underlineThickness = max(1f, resources.displayMetrics.density)
+
+    private var cols = 80
+    private var rows = 24
+    private var bitmap: Bitmap? = null
+    private var bitmapCanvas: Canvas? = null
+    private var gridWidthPx = 0
+    private var gridHeightPx = 0
+    private var bitmapGridOffsetY = 0
+    private var snapshotBuffer: ByteBuffer? = null
+
+    private var gridForeground = IntArray(0)
+    private var gridBackground = IntArray(0)
+    private var gridTextOffset = IntArray(0)
+    private var gridTextLength = IntArray(0)
+    private var gridFlags = IntArray(0)
+    private var gridRowChars = emptyArray<CharArray>()
+    private var rowSelectionStart = IntArray(0)
+    private var rowSelectionEnd = IntArray(0)
+    private var rowSelectionEndWide = BooleanArray(0)
+
+    private var selectionActive = false
+    private var actionMode: ActionMode? = null
+    private var draggingHandle = HANDLE_NONE
+    private var dragAnchorCol = 0
+    private var dragAnchorRow = 0
+    private var dragBiasRows = 0
+    private var dragPastSlop = false
+    private var longPressX = 0f
+    private var longPressY = 0f
+    private var lastPressCol = 0
+    private var lastPressRow = 0
+    private val touchSlop = ViewConfiguration.get(context).scaledTouchSlop
+    private val handleDrawableStart = resolveHandleDrawable(android.R.attr.textSelectHandleLeft)
+    private val handleDrawableEnd = resolveHandleDrawable(android.R.attr.textSelectHandleRight)
+    private val magnifier = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) Magnifier(this) else null
+
+    private fun dismissMagnifier() {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) magnifier?.dismiss()
+    }
+
+    private var defaultBackground = 0xFF000000.toInt()
+    private var defaultForeground = 0xFFFFFFFF.toInt()
+    private var cursorColor = 0
+    private var cursorX = -1
+    private var cursorY = -1
+    private var cursorStyle = CURSOR_STYLE_BLOCK
+    private var cursorVisible = false
+    private var cursorBlinks = false
+
+    private var combiningAccent = 0
+    private var secondaryMouseButton = 0
+
+    private val accessibilityManager = context.getSystemService(Context.ACCESSIBILITY_SERVICE) as AccessibilityManager
+    private var accessibilityTextPending = false
+    private val accessibilityTextRunnable = Runnable {
+        accessibilityTextPending = false
+        if (accessibilityManager.isEnabled) {
+            session?.withTerminal { handle ->
+                contentDescription = GhosttyVt.nativeViewportText(handle)?.toString(Charsets.UTF_8)
+            }
+        }
+    }
+
+    private var animatorDurationScale = 1f
+
+    private var blinkPhaseOn = true
+    private var blinkScheduled = false
+    private val blinkRunnable = object : Runnable {
+        override fun run() {
+            if (!blinkScheduled) return
+            blinkPhaseOn = !blinkPhaseOn
+            invalidate()
+            postDelayed(this, BLINK_INTERVAL_MS)
+        }
+    }
+
+    private var framePending = false
+    private val frameCallback = Choreographer.FrameCallback {
+        framePending = false
+        renderFrame()
+    }
+    private val syncRetryRunnable = Runnable { scheduleFrame() }
+
+    private var settledHeight = 0
+    private var settledMaxHeight = 0
+    private var settledMinHeight = 0
+    private var imeInsetPx = 0
+    private var transitionShiftPx = 0f
+    private var transitionStartHeight = 0
+    private var transitionTargetHeight = 0
+    private var transitionStartedAt = 0L
+    private var transitionTimeDriven = false
+    private var resizeSettleScheduled = false
+    private val resizeSettleRunnable = Runnable {
+        resizeSettleScheduled = false
+        if (transitionShiftPx != 0f && !transitionTimeDriven) {
+            transitionShiftPx = gridOffsetY
+            transitionTimeDriven = true
+            transitionStartedAt = SystemClock.uptimeMillis()
+        }
+        if (height > 0) {
+            settledHeight = height
+            if (imeInsetBottom() > 0) settledMinHeight = height else settledMaxHeight = height
+        }
+        updateGridGeometry(force = false)
+    }
+
+    private var passwordInput = false
+    private var composingText: String? = null
+
+    private var scrollAccumulator = 0f
+    private val scroller = OverScroller(context)
+    private var flingLastY = 0
+    private var gestureDownCol = 0
+    private var gestureDownRow = 0
+    private var scrollbarTotal = 0L
+    private var scrollbarOffset = 0L
+    private var scrollbarLen = 0L
+    private var lastScrollActivityAt = 0L
+    private val scrollbarPaint = Paint(Paint.ANTI_ALIAS_FLAG)
+    private val jumpChipPaint = Paint(Paint.ANTI_ALIAS_FLAG)
+    private val jumpChipArrow = Path()
+    private val underlinePath = Path()
+    private var jumpChipCenterX = 0f
+    private var jumpChipCenterY = 0f
+    private val flingRunnable = object : Runnable {
+        override fun run() {
+            if (!scroller.computeScrollOffset()) return
+            val y = scroller.currY
+            scrollAccumulator += (y - flingLastY).toFloat()
+            flingLastY = y
+            val deltaRows = (scrollAccumulator / cellHeight).toInt()
+            if (deltaRows != 0) {
+                scrollAccumulator -= deltaRows * cellHeight
+                session?.withTerminal {
+                    scrollContent(it, deltaRows, gestureDownCol, gestureDownRow)
+                } ?: return
+            }
+            postOnAnimation(this)
+        }
+    }
+
+    private val gestureDetector = GestureDetector(
+        context,
+        object : GestureDetector.SimpleOnGestureListener() {
+            override fun onDown(e: MotionEvent): Boolean {
+                pageSentThisGesture = false
+                return true
+            }
+
+            override fun onSingleTapUp(e: MotionEvent): Boolean {
+                val handled = session?.withTerminal { handle ->
+                    if (scrollbarTotal > 0 && scrollbarOffset + scrollbarLen < scrollbarTotal) {
+                        val slop = JUMP_CHIP_RADIUS_DP * JUMP_CHIP_TAP_SLOP_SCALE * resources.displayMetrics.density
+                        if (hypot(e.x - jumpChipCenterX, e.y - jumpChipCenterY) <= slop) {
+                            GhosttyVt.nativeScrollToBottom(handle)
+                            scheduleFrame()
+                            return@withTerminal true
+                        }
+                    }
+                    if (selectionActive || actionMode != null) {
+                        clearSelection()
+                        return@withTerminal true
+                    }
+                    false
+                } ?: false
+                if (handled) return true
+                requestFocus()
+                if (showImeOnTap) {
+                    (context.getSystemService(Context.INPUT_METHOD_SERVICE) as InputMethodManager)
+                        .showSoftInput(this@GhosttyTerminalView, 0)
+                }
+                session?.withTerminal { handle ->
+                    if (GhosttyVt.nativeViewportState(handle) and GhosttyVt.VIEWPORT_MOUSE_TRACKING != 0) {
+                        val col = (e.x / cellWidth).toInt().coerceIn(0, cols - 1)
+                        val row = rowAt(e.y)
+                        sendMouseReport(handle, GhosttyVt.MOUSE_ACTION_PRESS, GhosttyVt.MOUSE_BUTTON_LEFT, col, row)
+                        sendMouseReport(handle, GhosttyVt.MOUSE_ACTION_RELEASE, GhosttyVt.MOUSE_BUTTON_LEFT, col, row)
+                    }
+                }
+                return true
+            }
+
+            override fun onLongPress(e: MotionEvent) {
+                if (scaleDetector.isInProgress) return
+                session?.withTerminal { handle ->
+                    lastPressCol = (e.x / cellWidth).toInt().coerceIn(0, cols - 1)
+                    lastPressRow = rowAt(e.y)
+                    performHapticFeedback(HapticFeedbackConstants.LONG_PRESS)
+                    val link = GhosttyVt.nativeHyperlinkAt(handle, lastPressCol, lastPressRow)
+                        ?.toString(Charsets.UTF_8)
+                        ?: if (urlDetectionEnabled) detectUrlAt(lastPressRow, lastPressCol) else null
+                    if (link != null) {
+                        showLinkMenu(link)
+                        return@withTerminal
+                    }
+                    selectionActive = GhosttyVt.nativeSelectWord(handle, lastPressCol, lastPressRow)
+                    scheduleFrame()
+                    if (selectionActive) {
+                        draggingHandle = HANDLE_END
+                        dragAnchorCol = lastPressCol
+                        dragAnchorRow = lastPressRow
+                        dragBiasRows = 0
+                        dragPastSlop = false
+                        longPressX = e.x
+                        longPressY = e.y
+                    } else {
+                        startTerminalActionMode()
+                    }
+                }
+            }
+
+            override fun onScroll(
+                e1: MotionEvent?,
+                e2: MotionEvent,
+                distanceX: Float,
+                distanceY: Float,
+            ): Boolean {
+                if (scaleDetector.isInProgress) return false
+                return session?.withTerminal { handle ->
+                    if (e2.isFromSource(InputDevice.SOURCE_MOUSE) &&
+                        GhosttyVt.nativeViewportState(handle) and GhosttyVt.VIEWPORT_MOUSE_TRACKING != 0
+                    ) {
+                        val col = (e2.x / cellWidth).toInt().coerceIn(0, cols - 1)
+                        val row = rowAt(e2.y)
+                        sendMouseReport(handle, GhosttyVt.MOUSE_ACTION_MOTION, GhosttyVt.MOUSE_BUTTON_LEFT, col, row)
+                        return@withTerminal true
+                    }
+                    scrollAccumulator += distanceY
+                    val deltaRows = (scrollAccumulator / cellHeight).toInt()
+                    if (deltaRows != 0) {
+                        scrollAccumulator -= deltaRows * cellHeight
+                        scrollContent(handle, deltaRows, gestureDownCol, gestureDownRow)
+                    }
+                    true
+                } ?: false
+            }
+
+            override fun onFling(
+                e1: MotionEvent?,
+                e2: MotionEvent,
+                velocityX: Float,
+                velocityY: Float,
+            ): Boolean {
+                if (scaleDetector.isInProgress) return false
+                val state = session?.withTerminal { GhosttyVt.nativeViewportState(it) } ?: return false
+                flingLastY = 0
+                if (state and (GhosttyVt.VIEWPORT_ALTERNATE_SCREEN or GhosttyVt.VIEWPORT_MOUSE_TRACKING) != 0) {
+                    val range = rows / 2 * cellHeight
+                    scroller.fling(
+                        0,
+                        0,
+                        0,
+                        -(velocityY * FLING_TRACKING_VELOCITY_SCALE).toInt(),
+                        0,
+                        0,
+                        -range,
+                        range,
+                    )
+                } else {
+                    scroller.fling(0, 0, 0, -velocityY.toInt(), 0, 0, Int.MIN_VALUE, Int.MAX_VALUE)
+                }
+                postOnAnimation(flingRunnable)
+                return true
+            }
+        },
+    )
+
+    private var pinchScale = 1f
+    private var pinchLastScale = 1f
+    private val scaleDetector = ScaleGestureDetector(
+        context,
+        object : ScaleGestureDetector.SimpleOnScaleGestureListener() {
+            override fun onScaleBegin(detector: ScaleGestureDetector): Boolean {
+                pinchScale = 1f
+                pinchLastScale = 1f
+                return true
+            }
+
+            override fun onScale(detector: ScaleGestureDetector): Boolean {
+                pinchScale *= detector.scaleFactor
+                val steps = ((pinchScale - pinchLastScale) / PINCH_SCALE_STEP).toInt()
+                if (steps != 0) {
+                    pinchLastScale += steps * PINCH_SCALE_STEP
+                    fontSizeSp += steps
+                    listener?.onFontSizeChanged(this@GhosttyTerminalView, fontSizeSp)
+                }
+                return true
+            }
+        },
+    )
+
+    init {
+        isFocusable = true
+        isFocusableInTouchMode = true
+        scaleDetector.isQuickScaleEnabled = false
+        readAnimatorDurationScale()
+        rebuildPaints()
+    }
+
+    private fun resolveHandleDrawable(attr: Int): Drawable? {
+        val value = TypedValue()
+        if (!context.theme.resolveAttribute(attr, value, true)) return null
+        if (value.resourceId == 0) return null
+        return context.getDrawable(value.resourceId)
+    }
+
+    private fun rebuildPaints() {
+        textPaint.typeface = typeface
+        boldPaint.typeface = Typeface.create(typeface, Typeface.BOLD)
+        italicPaint.typeface = Typeface.create(typeface, Typeface.ITALIC)
+        boldItalicPaint.typeface = Typeface.create(typeface, Typeface.BOLD_ITALIC)
+        val sizePx = TypedValue.applyDimension(
+            TypedValue.COMPLEX_UNIT_SP,
+            fontSizeSp,
+            resources.displayMetrics,
+        )
+        for (paint in arrayOf(textPaint, boldPaint, italicPaint, boldItalicPaint)) {
+            paint.textSize = sizePx
+        }
+        val size = measureCellSize(textPaint)
+        cellWidth = size.widthPx
+        cellHeight = size.heightPx
+        baseline = -textPaint.fontMetrics.ascent
+    }
+
+    internal fun onSessionBell() {
+        if (bellHapticEnabled) performHapticFeedback(HapticFeedbackConstants.KEYBOARD_TAP)
+    }
+
+    private fun sendMouseReport(handle: Long, action: Int, button: Int, col: Int, row: Int) {
+        val bytes = GhosttyVt.nativeEncodeMouse(handle, action, button, col, row, 0) ?: return
+        session?.sendRawInput(bytes)
+    }
+
+    private fun scrollContent(handle: Long, deltaRows: Int, col: Int, row: Int) {
+        val state = GhosttyVt.nativeViewportState(handle)
+        when (scrollRouting) {
+            ScrollRouting.REMOTE_HOST -> {
+                onRemoteScroll?.invoke(deltaRows)
+                return
+            }
+            ScrollRouting.REMOTE_WHEEL -> {
+                sendRawWheel(deltaRows, col, row)
+                return
+            }
+            ScrollRouting.REMOTE_PAGE -> {
+                if (!pageSentThisGesture && deltaRows != 0) {
+                    pageSentThisGesture = true
+                    sendRawPage(deltaRows < 0)
+                }
+                return
+            }
+            ScrollRouting.LOCAL -> {
+                GhosttyVt.nativeScroll(handle, deltaRows)
+                lastScrollActivityAt = SystemClock.uptimeMillis()
+                scheduleFrame()
+                return
+            }
+            ScrollRouting.AUTO -> Unit
+        }
+        if (state and GhosttyVt.VIEWPORT_MOUSE_TRACKING != 0) {
+            val button = if (deltaRows > 0) GhosttyVt.MOUSE_BUTTON_WHEEL_DOWN else GhosttyVt.MOUSE_BUTTON_WHEEL_UP
+            repeat(abs(deltaRows)) {
+                sendMouseReport(handle, GhosttyVt.MOUSE_ACTION_PRESS, button, col, row)
+            }
+            return
+        }
+        if (state and GhosttyVt.VIEWPORT_ALTERNATE_SCREEN != 0) {
+            val keyCode = if (deltaRows > 0) KeyEvent.KEYCODE_DPAD_DOWN else KeyEvent.KEYCODE_DPAD_UP
+            repeat(abs(deltaRows)) {
+                val bytes = encodeKeyTap(handle, keyCode, 0, 0, null)
+                if (bytes != null && bytes.isNotEmpty()) session?.sendRawInput(bytes)
+            }
+            return
+        }
+        GhosttyVt.nativeScroll(handle, deltaRows)
+        lastScrollActivityAt = SystemClock.uptimeMillis()
+        scheduleFrame()
+    }
+
+    private var pageSentThisGesture = false
+
+    /** Raw SGR wheel report (xterm 1006), independent of the engine's modes. */
+    private fun sendRawWheel(deltaRows: Int, col: Int, row: Int) {
+        val button = if (deltaRows > 0) 65 else 64
+        val cx = col.coerceAtLeast(0) + 1
+        val cy = row.coerceAtLeast(0) + 1
+        val bytes = "\u001b[<$button;$cx;${cy}M".toByteArray(Charsets.UTF_8)
+        session?.sendRawInput(bytes)
+    }
+
+    /** xterm page keys; every audited TUI and pager understands them. */
+    private fun sendRawPage(up: Boolean) {
+        val bytes = (if (up) "\u001b[5~" else "\u001b[6~").toByteArray(Charsets.UTF_8)
+        session?.sendRawInput(bytes)
+    }
+
+    private fun sendToSession(bytes: ByteArray, send: GhosttyTerminalSession.(ByteArray) -> Unit) {
+        val activeSession = session ?: return
+        if (bytes.isEmpty()) return
+        if (activeSession.isFinished) {
+            listener?.onFinishedSessionKey(this)
+            return
+        }
+        if (selectionActive) clearSelection()
+        if (scrollbarOffset + scrollbarLen < scrollbarTotal) {
+            activeSession.withTerminal { handle ->
+                GhosttyVt.nativeScrollToBottom(handle)
+                scheduleFrame()
+            }
+        }
+        holdBlinkSolid()
+        activeSession.send(bytes)
+    }
+
+    public fun sendText(text: CharSequence) {
+        if (text.isEmpty()) return
+        val meta = extraKeysState?.currentMetaState() ?: 0
+        if (meta != 0 && text.length == 1) {
+            val char = text[0]
+            // ghostty's ctrlSeq (src/input/key_encode.zig) maps a one-byte
+            // utf8 argument to its C0 byte when the logical key has none.
+            val bytes = session?.withTerminal { handle ->
+                encodeKeyTap(
+                    handle,
+                    charToKeyCode(char),
+                    meta,
+                    char.lowercaseChar().code,
+                    char.toString().toByteArray(Charsets.UTF_8),
+                )
+            }
+            if (bytes != null && bytes.isNotEmpty()) {
+                extraKeysState?.consumeModifiers()
+                sendToSession(bytes, GhosttyTerminalSession::sendRawInput)
+                return
+            }
+        }
+        sendToSession(text.toString().toByteArray(Charsets.UTF_8), GhosttyTerminalSession::sendTypedInput)
+    }
+
+    public fun sendKey(keyCode: Int) {
+        val meta = extraKeysState?.currentMetaState() ?: 0
+        val bytes = session?.withTerminal { handle ->
+            encodeKeyTap(handle, keyCode, meta, 0, null)
+        } ?: return
+        if (bytes == null || bytes.isEmpty()) return
+        if (meta != 0) extraKeysState?.consumeModifiers()
+        sendToSession(bytes, GhosttyTerminalSession::sendRawInput)
+    }
+
+    private fun encodeKeyTap(
+        handle: Long,
+        keyCode: Int,
+        metaState: Int,
+        unshiftedCodepoint: Int,
+        utf8: ByteArray?,
+    ): ByteArray? {
+        val press = GhosttyVt.nativeEncodeKey(handle, keyCode, 1, metaState, unshiftedCodepoint, false, utf8)
+        if (press == null || press.isEmpty()) return press
+        val release = GhosttyVt.nativeEncodeKey(handle, keyCode, 0, metaState, unshiftedCodepoint, false, utf8)
+        if (release == null || release.isEmpty()) return press
+        return press + release
+    }
+
+    private fun charToKeyCode(char: Char): Int {
+        val lower = char.lowercaseChar()
+        return when (lower) {
+            in 'a'..'z' -> KeyEvent.KEYCODE_A + (lower - 'a')
+            in '0'..'9' -> KeyEvent.KEYCODE_0 + (lower - '0')
+            ' ' -> KeyEvent.KEYCODE_SPACE
+            '[' -> KeyEvent.KEYCODE_LEFT_BRACKET
+            ']' -> KeyEvent.KEYCODE_RIGHT_BRACKET
+            '-' -> KeyEvent.KEYCODE_MINUS
+            '=' -> KeyEvent.KEYCODE_EQUALS
+            '\\' -> KeyEvent.KEYCODE_BACKSLASH
+            '/' -> KeyEvent.KEYCODE_SLASH
+            '.' -> KeyEvent.KEYCODE_PERIOD
+            ',' -> KeyEvent.KEYCODE_COMMA
+            ';' -> KeyEvent.KEYCODE_SEMICOLON
+            '\'' -> KeyEvent.KEYCODE_APOSTROPHE
+            '`' -> KeyEvent.KEYCODE_GRAVE
+            else -> KeyEvent.KEYCODE_UNKNOWN
+        }
+    }
+
+    override fun onSizeChanged(w: Int, h: Int, oldw: Int, oldh: Int) {
+        super.onSizeChanged(w, h, oldw, oldh)
+        val density = resources.displayMetrics.density
+        jumpChipCenterX = w - JUMP_CHIP_CENTER_OFFSET_DP * density
+        jumpChipCenterY = h - JUMP_CHIP_CENTER_OFFSET_DP * density
+        if (h <= 0) return
+        if (bitmap == null || w != oldw) {
+            if (resizeSettleScheduled) {
+                resizeSettleScheduled = false
+                removeCallbacks(resizeSettleRunnable)
+            }
+            settledHeight = h
+            if (imeInsetBottom() > 0) {
+                settledMinHeight = h
+                settledMaxHeight = 0
+            } else {
+                settledMaxHeight = h
+                settledMinHeight = 0
+            }
+            updateGridGeometry(force = false)
+            transitionShiftPx = 0f
+            return
+        }
+        if (resizeSettleScheduled) removeCallbacks(resizeSettleRunnable)
+        resizeSettleScheduled = true
+        postDelayed(resizeSettleRunnable, RESIZE_SETTLE_MS)
+        val target = predictedHeight(h)
+        if (cellSize.rowsFor(target) != rows) updateGridGeometry(force = false, gridHeight = target)
+    }
+
+    private fun updateGridGeometry(force: Boolean, gridHeight: Int = height) {
+        val activeSession = session ?: return
+        if (width <= 0 || gridHeight <= 0 || !activeSession.terminalAlive) return
+        val size = cellSize
+        val newCols = size.columnsFor(width)
+        val newRows = size.rowsFor(gridHeight)
+        val changed = newCols != cols || newRows != rows
+        cols = newCols
+        rows = newRows
+        val settled = gridHeight == height
+        if (changed || force || bitmap == null) {
+            val viewportBefore = viewportOffset()
+            if (settled) {
+                activeSession.resize(cols, rows, cellWidth.roundToInt(), cellHeight)
+            } else {
+                activeSession.resizeTerminal(cols, rows, cellWidth.roundToInt(), cellHeight)
+            }
+            transitionShiftPx = (viewportOffset() - viewportBefore).toFloat() * cellHeight
+            transitionTimeDriven = gridHeight == height
+            transitionStartHeight = settledHeight
+            transitionTargetHeight = gridHeight
+            transitionStartedAt = SystemClock.uptimeMillis()
+            bitmapGridOffsetY = max(0f, transitionShiftPx).toInt()
+            allocateGridBuffers()
+            // Choreographer runs postFrameCallback callbacks in its ANIMATION
+            // phase, before layout; a callback posted from layout fires only in
+            // the next frame, after this frame's onDraw has already drawn the
+            // reallocated buffer.
+            renderFrame()
+        } else {
+            if (settled) activeSession.resize(cols, rows, cellWidth.roundToInt(), cellHeight)
+            scheduleFrame()
+        }
+    }
+
+    private fun imeInsetBottom(): Int {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.R) return 0
+        return rootWindowInsets?.getInsets(WindowInsets.Type.ime())?.bottom ?: 0
+    }
+
+    private fun predictedHeight(h: Int): Int {
+        val ime = imeInsetBottom()
+        if (ime > 0) imeInsetPx = ime
+        if (h > settledHeight) {
+            if (settledMaxHeight > h) return settledMaxHeight
+            val grown = settledHeight + imeInsetPx
+            return if (grown > h) grown else h
+        }
+        if (h < settledHeight) {
+            if (settledMinHeight in 1..<h) return settledMinHeight
+            val shrunk = settledHeight - ime
+            return if (shrunk in 1..<h) shrunk else h
+        }
+        return h
+    }
+
+    private fun viewportOffset(): Long =
+        session?.withTerminal { GhosttyVt.nativeScrollbar(it)?.get(1) } ?: 0L
+
+    private val gridOffsetY: Float
+        get() {
+            if (transitionShiftPx == 0f) return 0f
+            if (!transitionTimeDriven) {
+                val span = transitionTargetHeight - transitionStartHeight
+                if (span == 0) return 0f
+                val progress = ((height - transitionStartHeight).toFloat() / span).coerceIn(0f, 1f)
+                return transitionShiftPx * (1f - progress)
+            }
+            val duration = IME_TRANSITION_MS * animatorDurationScale
+            if (duration <= 0f) return 0f
+            val remaining = 1f - ((SystemClock.uptimeMillis() - transitionStartedAt) / duration).coerceIn(0f, 1f)
+            return transitionShiftPx * remaining * remaining
+        }
+
+    private fun rowAt(y: Float): Int = ((y - gridOffsetY) / cellHeight).toInt().coerceIn(0, rows - 1)
+
+    private fun allocateGridBuffers() {
+        gridWidthPx = max(1, ceil(cols * cellWidth).toInt())
+        gridHeightPx = max(1, rows * cellHeight)
+        val currentBitmap = bitmap
+        if (currentBitmap == null || currentBitmap.height < gridHeightPx + bitmapGridOffsetY) {
+            bitmapGridOffsetY = 0
+        }
+        if (currentBitmap == null || currentBitmap.width < gridWidthPx || currentBitmap.height < gridHeightPx) {
+            val widthPx = max(gridWidthPx, currentBitmap?.width ?: 0)
+            val heightPx = max(gridHeightPx, currentBitmap?.height ?: 0)
+            bitmap = Bitmap.createBitmap(widthPx, heightPx, Bitmap.Config.ARGB_8888).also {
+                bitmapCanvas = Canvas(it).apply {
+                    drawColor(defaultBackground)
+                    if (currentBitmap != null) drawBitmap(currentBitmap, 0f, 0f, null)
+                }
+            }
+        }
+        val capacity = HEADER_BYTES +
+            rows * (ROW_HEADER_BYTES + cols * CELL_RECORD_BYTES + cols * TEXT_UNITS_PER_CELL * 2 + 4)
+        if ((snapshotBuffer?.capacity() ?: 0) < capacity) {
+            snapshotBuffer = ByteBuffer.allocateDirect(capacity).order(ByteOrder.LITTLE_ENDIAN)
+        }
+        if (gridForeground.size != rows * cols) {
+            gridForeground = IntArray(rows * cols)
+            gridBackground = IntArray(rows * cols)
+            gridTextOffset = IntArray(rows * cols)
+            gridTextLength = IntArray(rows * cols)
+            gridFlags = IntArray(rows * cols)
+        }
+        if (gridRowChars.size != rows) {
+            gridRowChars = Array(rows) { CharArray(0) }
+        }
+        if (rowSelectionStart.size != rows) {
+            rowSelectionStart = IntArray(rows) { -1 }
+            rowSelectionEnd = IntArray(rows) { -1 }
+            rowSelectionEndWide = BooleanArray(rows)
+        }
+    }
+
+    internal fun scheduleFrame() {
+        if (framePending || !isAttachedToWindow) return
+        framePending = true
+        Choreographer.getInstance().postFrameCallback(frameCallback)
+    }
+
+    private fun renderFrame() {
+        val buffer = snapshotBuffer ?: return
+        val canvas = bitmapCanvas ?: return
+        session?.withTerminal { handle ->
+            val rowCount = GhosttyVt.nativeSnapshot(handle, buffer)
+            if (rowCount == SNAPSHOT_SYNC_DEFERRED) {
+                removeCallbacks(syncRetryRunnable)
+                postDelayed(syncRetryRunnable, SYNC_OUTPUT_RETRY_MS)
+                return
+            }
+            if (rowCount < 0) return
+            GhosttyVt.nativeScrollbar(handle)?.let { scrollbar ->
+                scrollbarTotal = scrollbar[0]
+                scrollbarOffset = scrollbar[1]
+                scrollbarLen = scrollbar[2]
+            }
+
+            buffer.position(0)
+            val version = buffer.int
+            if (version != SNAPSHOT_VERSION) {
+                Log.e(TAG, "snapshot version $version != $SNAPSHOT_VERSION; dropping frame")
+                return
+            }
+            val dirtyKind = buffer.int
+            val snapshotCols = buffer.int
+            buffer.int
+            defaultBackground = buffer.int
+            defaultForeground = buffer.int
+            cursorX = buffer.int
+            cursorY = buffer.int
+            cursorStyle = buffer.int
+            cursorVisible = buffer.int != 0
+            buffer.int
+            cursorBlinks = buffer.int != 0
+            cursorColor = buffer.int
+            val truncated = buffer.int != 0
+            passwordInput = buffer.int != 0
+            syncBlinkTimer()
+
+            val save = canvas.save()
+            canvas.translate(0f, bitmapGridOffsetY.toFloat())
+            canvas.clipRect(0, 0, gridWidthPx, gridHeightPx)
+            if (dirtyKind == DIRTY_FULL) canvas.drawColor(defaultBackground)
+            repeat(rowCount) { drawRowRecord(buffer, canvas, snapshotCols) }
+            canvas.restoreToCount(save)
+            if (selectionActive) {
+                if (selectionBounds() == null) clearSelection() else invalidateActionModeContentRect()
+            }
+            invalidate()
+
+            if (accessibilityManager.isEnabled && !accessibilityTextPending) {
+                accessibilityTextPending = true
+                postDelayed(accessibilityTextRunnable, ACCESSIBILITY_TEXT_DELAY_MS)
+            }
+
+            if (truncated) {
+                snapshotBuffer = ByteBuffer.allocateDirect(buffer.capacity() * 2)
+                    .order(ByteOrder.LITTLE_ENDIAN)
+                scheduleFrame()
+            }
+        }
+    }
+
+    private fun drawRowRecord(buffer: ByteBuffer, canvas: Canvas, snapshotCols: Int) {
+        val rowIndex = buffer.int
+        val selectionStart = buffer.int
+        val selectionEnd = buffer.int
+        val textUnits = buffer.int
+        val rowInGrid = rowIndex < rows
+        if (rowInGrid) {
+            rowSelectionStart[rowIndex] = selectionStart
+            rowSelectionEnd[rowIndex] = selectionEnd
+            rowSelectionEndWide[rowIndex] = false
+        }
+        val cellsPosition = buffer.position()
+        val textPosition = cellsPosition + snapshotCols * CELL_RECORD_BYTES
+
+        buffer.position(textPosition)
+        if (rowInGrid && gridRowChars[rowIndex].size < textUnits) {
+            gridRowChars[rowIndex] = CharArray(textUnits)
+        }
+        if (rowInGrid) {
+            val chars = gridRowChars[rowIndex]
+            for (i in 0 until textUnits) chars[i] = buffer.char
+        }
+        val nextRecord = textPosition + textUnits * 2 + if (textUnits % 2 != 0) 2 else 0
+
+        val selectionBackground = session?.selectionBackground
+        val selectionForeground = session?.selectionForeground
+
+        buffer.position(cellsPosition)
+        val colCount = if (rowInGrid) minOf(snapshotCols, cols) else 0
+        val gridBase = rowIndex * cols
+        for (col in 0 until snapshotCols) {
+            val foreground = buffer.int
+            val background = buffer.int
+            val textOffset = buffer.short.toInt() and 0xFFFF
+            val textLength = buffer.short.toInt() and 0xFFFF
+            val flags = buffer.short.toInt() and 0xFFFF
+            val underlineStyle = buffer.short.toInt() and 0x7
+            if (col >= colCount) continue
+            if (col == selectionEnd && flags and FLAG_WIDE != 0) {
+                rowSelectionEndWide[rowIndex] = true
+            }
+            var effectiveForeground = if (flags and FLAG_FG_DEFAULT != 0) defaultForeground else foreground
+            var effectiveBackground = if (flags and FLAG_BG_NONE != 0) defaultBackground else background
+            if (flags and FLAG_INVERSE != 0) {
+                val swap = effectiveForeground
+                effectiveForeground = effectiveBackground
+                effectiveBackground = swap
+            }
+            if (selectionStart >= 0 && col >= selectionStart && col <= selectionEnd) {
+                if (selectionBackground != null) {
+                    effectiveBackground = selectionBackground
+                    if (selectionForeground != null) effectiveForeground = selectionForeground
+                } else {
+                    val swap = effectiveForeground
+                    effectiveForeground = effectiveBackground
+                    effectiveBackground = swap
+                }
+            }
+            gridForeground[gridBase + col] = effectiveForeground
+            gridBackground[gridBase + col] = effectiveBackground
+            gridTextOffset[gridBase + col] = textOffset
+            gridTextLength[gridBase + col] = textLength
+            gridFlags[gridBase + col] = flags or (underlineStyle shl 16)
+        }
+        buffer.position(nextRecord)
+        if (!rowInGrid) return
+
+        val top = (rowIndex * cellHeight).toFloat()
+        val bottom = top + cellHeight
+
+        fillPaint.color = defaultBackground
+        canvas.drawRect(0f, top, canvas.width.toFloat(), bottom, fillPaint)
+        for (col in 0 until colCount) {
+            val background = gridBackground[gridBase + col]
+            if (background == defaultBackground) continue
+            val cellSpan = if (gridFlags[gridBase + col] and FLAG_WIDE != 0) cellWidth * 2 else cellWidth
+            val x = col * cellWidth
+            fillPaint.color = background
+            canvas.drawRect(x, top, x + cellSpan, bottom, fillPaint)
+        }
+
+        val rowChars = gridRowChars[rowIndex]
+        for (col in 0 until colCount) {
+            val flags = gridFlags[gridBase + col]
+            val textLength = gridTextLength[gridBase + col]
+            if (textLength == 0 || flags and FLAG_SPACER != 0 || flags and FLAG_INVISIBLE != 0) continue
+            val paint = stylePaint(flags)
+            paint.color = gridForeground[gridBase + col]
+            if (flags and FLAG_FAINT != 0) paint.alpha = FAINT_ALPHA
+            val x = col * cellWidth
+            canvas.drawText(rowChars, gridTextOffset[gridBase + col], textLength, x, top + baseline, paint)
+            val runWidth = if (flags and FLAG_WIDE != 0) cellWidth * 2 else cellWidth
+            if (flags and FLAG_UNDERLINE != 0) {
+                drawUnderline(canvas, x, bottom, runWidth, flags ushr 16, paint)
+            }
+            if (flags and FLAG_STRIKETHROUGH != 0) {
+                val middle = top + cellHeight / 2f
+                canvas.drawRect(
+                    x,
+                    middle - underlineThickness / 2,
+                    x + runWidth,
+                    middle + underlineThickness / 2,
+                    paint,
+                )
+            }
+        }
+    }
+
+    private fun stylePaint(flags: Int): Paint = when {
+        flags and FLAG_BOLD != 0 && flags and FLAG_ITALIC != 0 -> boldItalicPaint
+        flags and FLAG_BOLD != 0 -> boldPaint
+        flags and FLAG_ITALIC != 0 -> italicPaint
+        else -> textPaint
+    }
+
+    private fun drawUnderline(canvas: Canvas, x: Float, bottom: Float, runWidth: Float, style: Int, paint: Paint) {
+        val thickness = underlineThickness
+        when (style) {
+            UNDERLINE_DOUBLE -> {
+                canvas.drawRect(x, bottom - 3 * thickness, x + runWidth, bottom - 2 * thickness, paint)
+                canvas.drawRect(x, bottom - thickness, x + runWidth, bottom, paint)
+            }
+            UNDERLINE_CURLY -> {
+                val amplitude = max(2f, thickness * 1.5f)
+                val halfPeriod = max(2f, thickness * 2)
+                underlinePath.reset()
+                underlinePath.moveTo(x, bottom - thickness / 2)
+                var waveX = x
+                var crest = true
+                while (waveX < x + runWidth) {
+                    waveX = minOf(waveX + halfPeriod, x + runWidth)
+                    underlinePath.lineTo(waveX, bottom - thickness / 2 - if (crest) amplitude else 0f)
+                    crest = !crest
+                }
+                paint.style = Paint.Style.STROKE
+                paint.strokeWidth = thickness
+                canvas.drawPath(underlinePath, paint)
+                paint.style = Paint.Style.FILL
+            }
+            UNDERLINE_DOTTED -> {
+                val step = thickness * 3
+                var dotX = x
+                while (dotX < x + runWidth) {
+                    canvas.drawRect(dotX, bottom - thickness, minOf(dotX + thickness, x + runWidth), bottom, paint)
+                    dotX += step
+                }
+            }
+            UNDERLINE_DASHED -> {
+                val dash = runWidth / 4
+                var dashX = x
+                while (dashX < x + runWidth) {
+                    canvas.drawRect(dashX, bottom - thickness, minOf(dashX + dash, x + runWidth), bottom, paint)
+                    dashX += dash * 2
+                }
+            }
+            else -> canvas.drawRect(x, bottom - thickness, x + runWidth, bottom, paint)
+        }
+    }
+
+    private data class SelectionBounds(
+        val top: Int,
+        val topCol: Int,
+        val bottom: Int,
+        val bottomCol: Int,
+    )
+
+    private fun selectionBounds(): SelectionBounds? {
+        var top = -1
+        var bottom = -1
+        for (row in rowSelectionStart.indices) {
+            if (rowSelectionStart[row] >= 0) {
+                if (top < 0) top = row
+                bottom = row
+            }
+        }
+        if (top < 0) return null
+        return SelectionBounds(top, rowSelectionStart[top], bottom, rowSelectionEnd[bottom])
+    }
+
+    private fun selectionEndExtraCols(row: Int): Int = if (row < rowSelectionEndWide.size && rowSelectionEndWide[row]) 1 else 0
+
+    private fun clearSelection() {
+        session?.withTerminal { GhosttyVt.nativeClearSelection(it) }
+        selectionActive = false
+        draggingHandle = HANDLE_NONE
+        actionMode?.finish()
+        scheduleFrame()
+    }
+
+    private fun selectAllContent() {
+        val selected = session?.withTerminal { GhosttyVt.nativeSelectAll(it) } ?: return
+        if (selected) {
+            selectionActive = true
+            scheduleFrame()
+            actionMode?.invalidate()
+        }
+    }
+
+    private fun copySelection() {
+        val bytes = session?.withTerminal { GhosttyVt.nativeSelectionText(it) } ?: return
+        val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+        clipboard.setPrimaryClip(ClipData.newPlainText(null, String(bytes, Charsets.UTF_8)))
+        clearSelection()
+    }
+
+    public fun pasteFromClipboard() {
+        val activeSession = session ?: return
+        if (!activeSession.terminalAlive) return
+        val text = activeSession.readClipboardText()
+        if (text.isNullOrEmpty()) return
+        val bytes = text.toByteArray(Charsets.UTF_8)
+        if (GhosttyVt.nativeIsPasteSafe(bytes)) {
+            sendPaste(bytes)
+            return
+        }
+        uiHandler.confirmUnsafePaste(context) { sendPaste(bytes) }
+    }
+
+    private fun sendPaste(bytes: ByteArray) {
+        val encoded = session?.withTerminal { GhosttyVt.nativeEncodePaste(it, bytes) } ?: return
+        if (selectionActive) clearSelection() else actionMode?.finish()
+        sendToSession(encoded, GhosttyTerminalSession::sendRawInput)
+    }
+
+    private fun startTerminalActionMode() {
+        val current = actionMode
+        if (current != null) {
+            current.invalidate()
+            invalidateActionModeContentRect()
+            return
+        }
+        actionMode = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+            startActionMode(
+                object : ActionMode.Callback2() {
+                    override fun onCreateActionMode(mode: ActionMode, menu: Menu): Boolean =
+                        createTerminalActionMenu(menu)
+
+                    override fun onPrepareActionMode(mode: ActionMode, menu: Menu): Boolean =
+                        prepareTerminalActionMenu(menu)
+
+                    override fun onActionItemClicked(mode: ActionMode, item: MenuItem): Boolean =
+                        handleTerminalActionItem(item)
+
+                    override fun onDestroyActionMode(mode: ActionMode) {
+                        actionMode = null
+                    }
+
+                    override fun onGetContentRect(mode: ActionMode, view: View, outRect: Rect) {
+                        outRect.set(selectionContentRect())
+                    }
+                },
+                ActionMode.TYPE_FLOATING,
+            )
+        } else {
+            startActionMode(
+                object : ActionMode.Callback {
+                    override fun onCreateActionMode(mode: ActionMode, menu: Menu): Boolean =
+                        createTerminalActionMenu(menu)
+
+                    override fun onPrepareActionMode(mode: ActionMode, menu: Menu): Boolean =
+                        prepareTerminalActionMenu(menu)
+
+                    override fun onActionItemClicked(mode: ActionMode, item: MenuItem): Boolean =
+                        handleTerminalActionItem(item)
+
+                    override fun onDestroyActionMode(mode: ActionMode) {
+                        actionMode = null
+                    }
+                },
+            )
+        }
+    }
+
+    private fun createTerminalActionMenu(menu: Menu): Boolean {
+        menu.add(Menu.NONE, MENU_COPY, 0, android.R.string.copy)
+        menu.add(Menu.NONE, MENU_PASTE, 1, android.R.string.paste)
+        menu.add(Menu.NONE, MENU_SELECT_ALL, 2, android.R.string.selectAll)
+        return true
+    }
+
+    private fun prepareTerminalActionMenu(menu: Menu): Boolean {
+        menu.findItem(MENU_COPY)?.isVisible = selectionActive
+        return true
+    }
+
+    private fun handleTerminalActionItem(item: MenuItem): Boolean {
+        when (item.itemId) {
+            MENU_COPY -> copySelection()
+            MENU_PASTE -> pasteFromClipboard()
+            MENU_SELECT_ALL -> selectAllContent()
+            else -> return false
+        }
+        return true
+    }
+
+    private fun invalidateActionModeContentRect() {
+        val mode = actionMode ?: return
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) mode.invalidateContentRect()
+    }
+
+    private fun hideActionModeForDrag() {
+        val mode = actionMode ?: return
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) mode.hide(ACTION_MODE_DRAG_HIDE_MS)
+    }
+
+    private fun selectionContentRect(): Rect {
+        val bounds = selectionBounds()
+        return if (bounds != null) {
+            val singleRow = bounds.top == bounds.bottom
+            Rect(
+                if (singleRow) (bounds.topCol * cellWidth).toInt() else 0,
+                (bounds.top * cellHeight + gridOffsetY).toInt(),
+                if (singleRow) {
+                    ((bounds.bottomCol + 1 + selectionEndExtraCols(bounds.bottom)) * cellWidth).toInt()
+                } else {
+                    width
+                },
+                ((bounds.bottom + 1) * cellHeight + gridOffsetY).toInt(),
+            )
+        } else {
+            Rect(
+                (lastPressCol * cellWidth).toInt(),
+                (lastPressRow * cellHeight + gridOffsetY).toInt(),
+                ((lastPressCol + 1) * cellWidth).toInt(),
+                ((lastPressRow + 1) * cellHeight + gridOffsetY).toInt(),
+            )
+        }
+    }
+
+    private fun hitTestHandle(x: Float, y: Float): Int {
+        val bounds = selectionBounds() ?: return HANDLE_NONE
+        val slop = HANDLE_HIT_SLOP_DP * resources.displayMetrics.density
+        val handleHalfHeight = (handleDrawableEnd?.intrinsicHeight ?: 0) / 2f
+        val startX = bounds.topCol * cellWidth
+        val startY = (bounds.top + 1) * cellHeight + gridOffsetY + handleHalfHeight
+        val endX = (bounds.bottomCol + 1 + selectionEndExtraCols(bounds.bottom)) * cellWidth
+        val endY = (bounds.bottom + 1) * cellHeight + gridOffsetY + handleHalfHeight
+        val distanceToStart = hypot(x - startX, y - startY)
+        val distanceToEnd = hypot(x - endX, y - endY)
+        return when {
+            distanceToEnd <= slop && distanceToEnd <= distanceToStart -> {
+                dragAnchorCol = bounds.topCol
+                dragAnchorRow = bounds.top
+                dragBiasRows = 1
+                HANDLE_END
+            }
+            distanceToStart <= slop -> {
+                dragAnchorCol = bounds.bottomCol
+                dragAnchorRow = bounds.bottom
+                dragBiasRows = 1
+                HANDLE_START
+            }
+            else -> HANDLE_NONE
+        }
+    }
+
+    private fun dragSelection(x: Float, y: Float) {
+        session?.withTerminal { handle ->
+            val col = (x / cellWidth).toInt().coerceIn(0, cols - 1)
+            val row = (((y - gridOffsetY) / cellHeight).toInt() - dragBiasRows).coerceIn(0, rows - 1)
+            val edgeDelta = when {
+                row == 0 -> -1
+                row == rows - 1 -> 1
+                else -> 0
+            }
+            if (edgeDelta != 0) {
+                val before = GhosttyVt.nativeScrollbar(handle)?.get(1)
+                GhosttyVt.nativeScroll(handle, edgeDelta)
+                val after = GhosttyVt.nativeScrollbar(handle)?.get(1)
+                if (after != null && after != before) {
+                    dragAnchorRow = (dragAnchorRow - edgeDelta).coerceIn(0, rows - 1)
+                    lastScrollActivityAt = SystemClock.uptimeMillis()
+                }
+            }
+            GhosttyVt.nativeSetSelection(handle, dragAnchorCol, dragAnchorRow, col, row)
+        } ?: return
+        hideActionModeForDrag()
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) magnifier?.show(x, y)
+        scheduleFrame()
+    }
+
+    private fun drawSelectionHandles(canvas: Canvas) {
+        if (!selectionActive) return
+        val bounds = selectionBounds() ?: return
+        val startDrawable = handleDrawableStart
+        val endDrawable = handleDrawableEnd
+        if (startDrawable == null || endDrawable == null) return
+        val startX = bounds.topCol * cellWidth
+        val startTop = ((bounds.top + 1) * cellHeight + gridOffsetY).toInt()
+        // Platform handle hotspots: 3/4 of the width for the left handle,
+        // 1/4 for the right (frameworks/base Editor.HandleView).
+        val startLeft = (startX - startDrawable.intrinsicWidth * 3 / 4f).toInt()
+        startDrawable.setBounds(
+            startLeft,
+            startTop,
+            startLeft + startDrawable.intrinsicWidth,
+            startTop + startDrawable.intrinsicHeight,
+        )
+        startDrawable.draw(canvas)
+        val endX = (bounds.bottomCol + 1 + selectionEndExtraCols(bounds.bottom)) * cellWidth
+        val endTop = ((bounds.bottom + 1) * cellHeight + gridOffsetY).toInt()
+        val endLeft = (endX - endDrawable.intrinsicWidth / 4f).toInt()
+        endDrawable.setBounds(
+            endLeft,
+            endTop,
+            endLeft + endDrawable.intrinsicWidth,
+            endTop + endDrawable.intrinsicHeight,
+        )
+        endDrawable.draw(canvas)
+    }
+
+    private fun readAnimatorDurationScale() {
+        animatorDurationScale = AndroidSettings.Global.getFloat(
+            context.contentResolver,
+            AndroidSettings.Global.ANIMATOR_DURATION_SCALE,
+            1f,
+        )
+    }
+
+    private fun syncBlinkTimer() {
+        val wants = cursorBlinks && cursorVisible && isAttachedToWindow && hasWindowFocus() &&
+            animatorDurationScale != 0f
+        if (wants && !blinkScheduled) {
+            blinkScheduled = true
+            postDelayed(blinkRunnable, BLINK_INTERVAL_MS)
+        } else if (!wants && blinkScheduled) {
+            blinkScheduled = false
+            removeCallbacks(blinkRunnable)
+            if (!blinkPhaseOn) {
+                blinkPhaseOn = true
+                invalidate()
+            }
+        }
+    }
+
+    private fun holdBlinkSolid() {
+        if (!blinkPhaseOn) {
+            blinkPhaseOn = true
+            invalidate()
+        }
+        if (blinkScheduled) {
+            removeCallbacks(blinkRunnable)
+            postDelayed(blinkRunnable, BLINK_INTERVAL_MS)
+        }
+    }
+
+    override fun onWindowFocusChanged(hasWindowFocus: Boolean) {
+        super.onWindowFocusChanged(hasWindowFocus)
+        readAnimatorDurationScale()
+        syncBlinkTimer()
+        session?.sendFocus(hasWindowFocus)
+        applyImeRequest()
+    }
+
+    override fun onFocusChanged(gainFocus: Boolean, direction: Int, previouslyFocusedRect: Rect?) {
+        super.onFocusChanged(gainFocus, direction, previouslyFocusedRect)
+        if (gainFocus) applyImeRequest()
+    }
+
+    override fun onApplyWindowInsets(insets: WindowInsets): WindowInsets {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+            if (insets.isVisible(WindowInsets.Type.ime())) imeRequestedUntil = 0L else applyImeRequest()
+        }
+        return super.onApplyWindowInsets(insets)
+    }
+
+    // Focus moving off a screen that is being popped dispatches a hide, which
+    // cancels a show issued in the same frame.
+    public fun showIme() {
+        imeRequestedUntil = SystemClock.uptimeMillis() + IME_REQUEST_TIMEOUT_MS
+        requestFocus()
+        applyImeRequest()
+    }
+
+    private fun applyImeRequest() {
+        if (SystemClock.uptimeMillis() > imeRequestedUntil) return
+        if (!isAttachedToWindow || !isFocused || !hasWindowFocus()) return
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+            windowInsetsController?.show(WindowInsets.Type.ime())
+        } else {
+            (context.getSystemService(Context.INPUT_METHOD_SERVICE) as InputMethodManager)
+                .showSoftInput(this, 0)
+        }
+    }
+
+    override fun onAttachedToWindow() {
+        super.onAttachedToWindow()
+        syncBlinkTimer()
+        scheduleFrame()
+    }
+
+    override fun onDetachedFromWindow() {
+        super.onDetachedFromWindow()
+        syncBlinkTimer()
+        if (framePending) {
+            Choreographer.getInstance().removeFrameCallback(frameCallback)
+            framePending = false
+        }
+        if (resizeSettleScheduled) {
+            resizeSettleScheduled = false
+            removeCallbacks(resizeSettleRunnable)
+            updateGridGeometry(force = false)
+        }
+        scroller.abortAnimation()
+        removeCallbacks(flingRunnable)
+        removeCallbacks(syncRetryRunnable)
+        removeCallbacks(accessibilityTextRunnable)
+        accessibilityTextPending = false
+        dismissMagnifier()
+        actionMode?.finish()
+    }
+
+    override fun isOpaque(): Boolean = true
+
+    override fun onDraw(canvas: Canvas) {
+        canvas.drawColor(defaultBackground)
+        val bitmapSave = canvas.save()
+        canvas.translate(0f, gridOffsetY - bitmapGridOffsetY)
+        canvas.clipRect(0, 0, gridWidthPx, gridHeightPx + bitmapGridOffsetY)
+        bitmap?.let { canvas.drawBitmap(it, 0f, 0f, null) }
+        canvas.restoreToCount(bitmapSave)
+        val save = canvas.save()
+        canvas.translate(0f, gridOffsetY)
+        canvas.clipRect(0, 0, gridWidthPx, gridHeightPx)
+        drawCursor(canvas)
+        drawComposingText(canvas)
+        drawPasswordIndicator(canvas)
+        canvas.restoreToCount(save)
+        if (transitionShiftPx != 0f) {
+            if (abs(gridOffsetY) < 1f) {
+                transitionShiftPx = 0f
+            } else if (transitionTimeDriven) {
+                postInvalidateOnAnimation()
+            }
+        }
+        drawSelectionHandles(canvas)
+        drawScrollIndicator(canvas)
+        drawJumpToBottomChip(canvas)
+    }
+
+    private fun drawComposingText(canvas: Canvas) {
+        val composing = composingText
+        if (composing.isNullOrEmpty() || cursorX < 0 || cursorY < 0) return
+        val textWidth = textPaint.measureText(composing)
+        var left = cursorX * cellWidth
+        val viewRight = cols * cellWidth
+        if (left + textWidth > viewRight) left = max(0f, viewRight - textWidth)
+        val top = (cursorY * cellHeight).toFloat()
+        fillPaint.color = defaultForeground
+        canvas.drawRect(left, top, left + textWidth, top + cellHeight, fillPaint)
+        textPaint.color = defaultBackground
+        canvas.drawText(composing, left, top + baseline, textPaint)
+    }
+
+    private fun drawPasswordIndicator(canvas: Canvas) {
+        if (!passwordInput || cursorX < 0 || cursorY < 0) return
+        val size = cellHeight * 0.5f
+        var left = (cursorX + 1) * cellWidth + size * 0.25f
+        if (left + size > cols * cellWidth) left = max(0f, cursorX * cellWidth - size * 1.25f)
+        val top = cursorY * cellHeight + (cellHeight - size) / 2f
+        cursorPaint.color = if (cursorColor != 0) cursorColor else defaultForeground
+        cursorPaint.style = Paint.Style.STROKE
+        cursorPaint.strokeWidth = underlineThickness
+        val shackleRadius = size * 0.28f
+        canvas.drawArc(
+            left + size / 2 - shackleRadius,
+            top,
+            left + size / 2 + shackleRadius,
+            top + shackleRadius * 2,
+            180f,
+            180f,
+            false,
+            cursorPaint,
+        )
+        cursorPaint.style = Paint.Style.FILL
+        canvas.drawRoundRect(
+            left,
+            top + shackleRadius,
+            left + size,
+            top + size,
+            underlineThickness,
+            underlineThickness,
+            cursorPaint,
+        )
+    }
+
+    private fun drawScrollIndicator(canvas: Canvas) {
+        if (scrollbarTotal <= scrollbarLen) return
+        val elapsed = SystemClock.uptimeMillis() - lastScrollActivityAt
+        if (elapsed > SCROLLBAR_FADE_END_MS) return
+        val alpha = if (elapsed <= SCROLLBAR_FADE_START_MS) {
+            255
+        } else {
+            (255 * (SCROLLBAR_FADE_END_MS - elapsed) / (SCROLLBAR_FADE_END_MS - SCROLLBAR_FADE_START_MS)).toInt()
+        }
+        val density = resources.displayMetrics.density
+        val barWidth = 3 * density
+        val right = width - 2 * density
+        val trackHeight = height.toFloat()
+        val top = trackHeight * scrollbarOffset / scrollbarTotal
+        val thumbHeight = max(16 * density, trackHeight * scrollbarLen / scrollbarTotal)
+        scrollbarPaint.color = SCROLLBAR_COLOR
+        scrollbarPaint.alpha = alpha
+        canvas.drawRoundRect(
+            right - barWidth,
+            top,
+            right,
+            (top + thumbHeight).coerceAtMost(trackHeight),
+            barWidth / 2,
+            barWidth / 2,
+            scrollbarPaint,
+        )
+        if (elapsed > SCROLLBAR_FADE_START_MS) invalidate()
+    }
+
+    private fun drawJumpToBottomChip(canvas: Canvas) {
+        if (scrollbarTotal <= 0 || scrollbarOffset + scrollbarLen >= scrollbarTotal) return
+        val density = resources.displayMetrics.density
+        val radius = JUMP_CHIP_RADIUS_DP * density
+        jumpChipPaint.style = Paint.Style.FILL
+        jumpChipPaint.color = JUMP_CHIP_BACKGROUND
+        canvas.drawCircle(jumpChipCenterX, jumpChipCenterY, radius, jumpChipPaint)
+        val span = radius * JUMP_CHIP_ARROW_SPAN_SCALE
+        jumpChipArrow.reset()
+        jumpChipArrow.moveTo(jumpChipCenterX - span, jumpChipCenterY - span * 0.5f)
+        jumpChipArrow.lineTo(jumpChipCenterX, jumpChipCenterY + span * 0.5f)
+        jumpChipArrow.lineTo(jumpChipCenterX + span, jumpChipCenterY - span * 0.5f)
+        jumpChipPaint.style = Paint.Style.STROKE
+        jumpChipPaint.strokeWidth = JUMP_CHIP_STROKE_DP * density
+        jumpChipPaint.color = JUMP_CHIP_ARROW_COLOR
+        canvas.drawPath(jumpChipArrow, jumpChipPaint)
+    }
+
+    private fun drawCursor(canvas: Canvas) {
+        if (!cursorVisible || cursorX < 0 || cursorY < 0) return
+        if (cursorBlinks && blinkScheduled && !blinkPhaseOn) return
+        cursorPaint.color = if (cursorColor != 0) cursorColor else defaultForeground
+        when (cursorStyle) {
+            CURSOR_STYLE_BAR -> {
+                cursorPaint.style = Paint.Style.FILL
+                val x = cursorX * cellWidth
+                canvas.drawRect(x, (cursorY * cellHeight).toFloat(), x + cellWidth / 4, ((cursorY + 1) * cellHeight).toFloat(), cursorPaint)
+            }
+            CURSOR_STYLE_UNDERLINE -> {
+                cursorPaint.style = Paint.Style.FILL
+                val x = cursorX * cellWidth
+                val bottom = ((cursorY + 1) * cellHeight).toFloat()
+                canvas.drawRect(x, bottom - cellHeight / 4f, x + cellWidth, bottom, cursorPaint)
+            }
+            CURSOR_STYLE_BLOCK_HOLLOW -> {
+                cursorPaint.style = Paint.Style.STROKE
+                cursorPaint.strokeWidth = underlineThickness
+                val x = cursorX * cellWidth
+                canvas.drawRect(x, (cursorY * cellHeight).toFloat(), x + cellWidth, ((cursorY + 1) * cellHeight).toFloat(), cursorPaint)
+            }
+            else -> drawBlockCursor(canvas)
+        }
+    }
+
+    private fun drawBlockCursor(canvas: Canvas) {
+        cursorPaint.style = Paint.Style.FILL
+        if (cursorY >= rows || cursorX >= cols || gridForeground.size != rows * cols) {
+            val x = cursorX * cellWidth
+            canvas.drawRect(x, (cursorY * cellHeight).toFloat(), x + cellWidth, ((cursorY + 1) * cellHeight).toFloat(), cursorPaint)
+            return
+        }
+        val gridBase = cursorY * cols
+        var startCol = cursorX
+        if (gridFlags[gridBase + startCol] and FLAG_SPACER != 0 && startCol > 0 &&
+            gridFlags[gridBase + startCol - 1] and FLAG_WIDE != 0
+        ) {
+            startCol--
+        }
+        val flags = gridFlags[gridBase + startCol]
+        val span = if (flags and FLAG_WIDE != 0) 2 else 1
+        val x = startCol * cellWidth
+        val top = (cursorY * cellHeight).toFloat()
+        val bottom = top + cellHeight
+        canvas.drawRect(x, top, x + span * cellWidth, bottom, cursorPaint)
+        val textLength = gridTextLength[gridBase + startCol]
+        if (textLength == 0 || flags and FLAG_INVISIBLE != 0) return
+        val paint = stylePaint(flags)
+        paint.color = gridBackground[gridBase + startCol]
+        canvas.drawText(
+            gridRowChars[cursorY],
+            gridTextOffset[gridBase + startCol],
+            textLength,
+            x,
+            top + baseline,
+            paint,
+        )
+    }
+
+    override fun onGenericMotionEvent(event: MotionEvent): Boolean {
+        if (event.actionMasked == MotionEvent.ACTION_SCROLL) {
+            val vertical = event.getAxisValue(MotionEvent.AXIS_VSCROLL)
+            if (vertical != 0f) {
+                val handled = session?.withTerminal { handle ->
+                    val col = (event.x / cellWidth).toInt().coerceIn(0, cols - 1)
+                    val row = rowAt(event.y)
+                    scrollContent(handle, if (vertical > 0f) -WHEEL_SCROLL_ROWS else WHEEL_SCROLL_ROWS, col, row)
+                    true
+                } ?: false
+                if (handled) return true
+            }
+        }
+        return super.onGenericMotionEvent(event)
+    }
+
+    override fun onTouchEvent(event: MotionEvent): Boolean {
+        if (event.isFromSource(InputDevice.SOURCE_MOUSE) && handleSecondaryMouse(event)) return true
+        if (event.actionMasked == MotionEvent.ACTION_DOWN) {
+            scroller.abortAnimation()
+            gestureDownCol = (event.x / cellWidth).toInt().coerceIn(0, cols - 1)
+            gestureDownRow = rowAt(event.y)
+        }
+        scaleDetector.onTouchEvent(event)
+        if (scaleDetector.isInProgress) {
+            if (draggingHandle != HANDLE_NONE) {
+                draggingHandle = HANDLE_NONE
+                dismissMagnifier()
+                invalidateActionModeContentRect()
+            }
+            gestureDetector.onTouchEvent(event)
+            return true
+        }
+        if (selectionActive) {
+            when (event.actionMasked) {
+                MotionEvent.ACTION_DOWN -> {
+                    draggingHandle = hitTestHandle(event.x, event.y)
+                    if (draggingHandle != HANDLE_NONE) {
+                        dragPastSlop = true
+                        hideActionModeForDrag()
+                        return true
+                    }
+                }
+                MotionEvent.ACTION_POINTER_DOWN -> if (draggingHandle != HANDLE_NONE) {
+                    draggingHandle = HANDLE_NONE
+                    dismissMagnifier()
+                    invalidateActionModeContentRect()
+                }
+                MotionEvent.ACTION_MOVE -> if (draggingHandle != HANDLE_NONE) {
+                    if (!dragPastSlop) {
+                        if (hypot(event.x - longPressX, event.y - longPressY) < touchSlop) return true
+                        dragPastSlop = true
+                    }
+                    dragSelection(event.x, event.y)
+                    return true
+                }
+                MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL ->
+                    if (draggingHandle != HANDLE_NONE) {
+                        draggingHandle = HANDLE_NONE
+                        dismissMagnifier()
+                        if (actionMode != null) invalidateActionModeContentRect() else startTerminalActionMode()
+                        return true
+                    }
+            }
+        }
+        return gestureDetector.onTouchEvent(event) || super.onTouchEvent(event)
+    }
+
+    private fun handleSecondaryMouse(event: MotionEvent): Boolean {
+        when (event.actionMasked) {
+            MotionEvent.ACTION_DOWN -> {
+                val button = when {
+                    event.buttonState and MotionEvent.BUTTON_SECONDARY != 0 -> GhosttyVt.MOUSE_BUTTON_RIGHT
+                    event.buttonState and MotionEvent.BUTTON_TERTIARY != 0 -> GhosttyVt.MOUSE_BUTTON_MIDDLE
+                    else -> return false
+                }
+                val col = (event.x / cellWidth).toInt().coerceIn(0, cols - 1)
+                val row = rowAt(event.y)
+                val tracked = session?.withTerminal { handle ->
+                    if (GhosttyVt.nativeViewportState(handle) and GhosttyVt.VIEWPORT_MOUSE_TRACKING == 0) {
+                        return@withTerminal false
+                    }
+                    sendMouseReport(handle, GhosttyVt.MOUSE_ACTION_PRESS, button, col, row)
+                    true
+                } ?: false
+                if (tracked) {
+                    secondaryMouseButton = button
+                    return true
+                }
+                if (button == GhosttyVt.MOUSE_BUTTON_RIGHT) {
+                    lastPressCol = col
+                    lastPressRow = row
+                    startTerminalActionMode()
+                } else {
+                    pasteFromClipboard()
+                }
+                return true
+            }
+            MotionEvent.ACTION_MOVE -> {
+                if (secondaryMouseButton == 0) return false
+                session?.withTerminal { handle ->
+                    val col = (event.x / cellWidth).toInt().coerceIn(0, cols - 1)
+                    val row = rowAt(event.y)
+                    sendMouseReport(handle, GhosttyVt.MOUSE_ACTION_MOTION, secondaryMouseButton, col, row)
+                }
+                return true
+            }
+            MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
+                if (secondaryMouseButton == 0) return false
+                val releasedButton = secondaryMouseButton
+                secondaryMouseButton = 0
+                session?.withTerminal { handle ->
+                    val col = (event.x / cellWidth).toInt().coerceIn(0, cols - 1)
+                    val row = rowAt(event.y)
+                    sendMouseReport(handle, GhosttyVt.MOUSE_ACTION_RELEASE, releasedButton, col, row)
+                }
+                return true
+            }
+        }
+        return false
+    }
+
+    override fun onCheckIsTextEditor(): Boolean = true
+
+    override fun onCreateInputConnection(outAttrs: EditorInfo): InputConnection {
+        // Gboard treats a TYPE_NULL field as one it cannot read back: it sends
+        // Latin keystrokes and backspace as KeyEvents instead of replaying
+        // deleteSurroundingText + commitText against its own copy of the
+        // committed text, which drifts from the terminal after the first
+        // echo, autocorrect or auto-space.
+        outAttrs.inputType = if (enforceCharBasedInput) {
+            InputType.TYPE_TEXT_VARIATION_VISIBLE_PASSWORD or InputType.TYPE_TEXT_FLAG_NO_SUGGESTIONS
+        } else {
+            InputType.TYPE_NULL
+        }
+        outAttrs.imeOptions = EditorInfo.IME_ACTION_NONE or
+            EditorInfo.IME_FLAG_NO_FULLSCREEN or
+            EditorInfo.IME_FLAG_NO_EXTRACT_UI
+        return TerminalInputConnection()
+    }
+
+    override fun onKeyPreIme(keyCode: Int, event: KeyEvent): Boolean {
+        if (keyCode == KeyEvent.KEYCODE_BACK && (selectionActive || actionMode != null)) {
+            if (event.action == KeyEvent.ACTION_DOWN) clearSelection()
+            return true
+        }
+        return super.onKeyPreIme(keyCode, event)
+    }
+
+    override fun onKeyDown(keyCode: Int, event: KeyEvent): Boolean = handleKeyEvent(event) || super.onKeyDown(keyCode, event)
+
+    override fun onKeyUp(keyCode: Int, event: KeyEvent): Boolean = handleKeyEvent(event) || super.onKeyUp(keyCode, event)
+
+    private fun handleKeyEvent(event: KeyEvent): Boolean {
+        val activeSession = session ?: return false
+        if (!activeSession.terminalAlive) return false
+        if (activeSession.isFinished) {
+            if (event.isSystem) return false
+            if (event.action == KeyEvent.ACTION_DOWN) listener?.onFinishedSessionKey(this)
+            return true
+        }
+        @Suppress("DEPRECATION")
+        if (event.action == KeyEvent.ACTION_MULTIPLE && event.characters != null) {
+            sendText(event.characters)
+            return true
+        }
+        val action = when (event.action) {
+            KeyEvent.ACTION_DOWN -> if (event.repeatCount > 0) 2 else 1
+            KeyEvent.ACTION_UP -> 0
+            else -> return false
+        }
+        if (action != 0 && event.isShiftPressed &&
+            (event.keyCode == KeyEvent.KEYCODE_PAGE_UP || event.keyCode == KeyEvent.KEYCODE_PAGE_DOWN)
+        ) {
+            val deltaRows = if (event.keyCode == KeyEvent.KEYCODE_PAGE_UP) -rows else rows
+            activeSession.withTerminal { GhosttyVt.nativeScroll(it, deltaRows) }
+            lastScrollActivityAt = SystemClock.uptimeMillis()
+            scheduleFrame()
+            return true
+        }
+        val isModifierKey = when (event.keyCode) {
+            KeyEvent.KEYCODE_SHIFT_LEFT, KeyEvent.KEYCODE_SHIFT_RIGHT,
+            KeyEvent.KEYCODE_CTRL_LEFT, KeyEvent.KEYCODE_CTRL_RIGHT,
+            KeyEvent.KEYCODE_ALT_LEFT, KeyEvent.KEYCODE_ALT_RIGHT,
+            KeyEvent.KEYCODE_META_LEFT, KeyEvent.KEYCODE_META_RIGHT,
+            KeyEvent.KEYCODE_CAPS_LOCK,
+            -> true
+            else -> false
+        }
+        val stickyMeta = if (action == 1 && !isModifierKey) extraKeysState?.currentMetaState() ?: 0 else 0
+        val metaState = event.metaState or stickyMeta
+        var unicodeMask = KeyEvent.META_CTRL_MASK or KeyEvent.META_META_MASK
+        if (metaState and KeyEvent.META_ALT_RIGHT_ON == 0) {
+            unicodeMask = unicodeMask or KeyEvent.META_ALT_ON or KeyEvent.META_ALT_LEFT_ON
+        }
+        var unicode = event.getUnicodeChar(metaState and unicodeMask.inv())
+        var composing = false
+        if (unicode and KeyCharacterMap.COMBINING_ACCENT != 0) {
+            if (action == 1) combiningAccent = unicode and KeyCharacterMap.COMBINING_ACCENT_MASK
+            composing = true
+            unicode = 0
+        } else if (combiningAccent != 0 && action == 1 && unicode != 0) {
+            val combined = KeyCharacterMap.getDeadChar(combiningAccent, unicode)
+            if (combined > 0) unicode = combined
+            combiningAccent = 0
+        }
+        val utf8 = if (unicode != 0) String(Character.toChars(unicode)).toByteArray(Charsets.UTF_8) else null
+        val unshifted = event.getUnicodeChar(0)
+        val bytes = activeSession.withTerminal { handle ->
+            GhosttyVt.nativeEncodeKey(
+                handle,
+                event.keyCode,
+                action,
+                metaState,
+                unshifted,
+                composing,
+                utf8,
+            )
+        } ?: return false
+        if (bytes.isEmpty()) return false
+        if (stickyMeta != 0) extraKeysState?.consumeModifiers()
+        sendToSession(bytes, GhosttyTerminalSession::sendRawInput)
+        return true
+    }
+
+    private fun detectUrlAt(row: Int, col: Int): String? {
+        if (row >= rows || gridForeground.size != rows * cols || row >= gridRowChars.size) return null
+        val rowChars = gridRowChars[row]
+        val builder = StringBuilder(cols)
+        val columnStart = IntArray(cols)
+        val gridBase = row * cols
+        for (c in 0 until cols) {
+            columnStart[c] = builder.length
+            val flags = gridFlags[gridBase + c]
+            if (flags and FLAG_SPACER != 0) continue
+            val textLength = gridTextLength[gridBase + c]
+            val textOffset = gridTextOffset[gridBase + c]
+            if (textLength == 0 || textOffset + textLength > rowChars.size) {
+                builder.append(' ')
+            } else {
+                builder.append(rowChars, textOffset, textLength)
+            }
+        }
+        val pressIndex = columnStart[col.coerceIn(0, cols - 1)]
+        for (match in urlPattern.findAll(builder)) {
+            if (pressIndex >= match.range.first && pressIndex <= match.range.last) {
+                return match.value.trimEnd('.', ',', ';', ':', ')', ']', '>', '"', '\'')
+            }
+        }
+        return null
+    }
+
+    private fun showLinkMenu(url: String) {
+        uiHandler.showLinkMenu(
+            context,
+            url,
+            openLink = {
+                try {
+                    context.startActivity(
+                        Intent(Intent.ACTION_VIEW, Uri.parse(url))
+                            .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK),
+                    )
+                } catch (e: ActivityNotFoundException) {
+                    Log.w(TAG, "no activity for $url", e)
+                }
+            },
+            copyUrl = {
+                (context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager)
+                    .setPrimaryClip(ClipData.newPlainText(null, url))
+            },
+        )
+    }
+
+    private fun updateComposingText(text: String?) {
+        val newText = text?.takeIf { it.isNotEmpty() }
+        if (composingText == newText) return
+        composingText = newText
+        invalidate()
+    }
+
+    private inner class TerminalInputConnection : BaseInputConnection(this@GhosttyTerminalView, true) {
+        override fun commitText(text: CharSequence, newCursorPosition: Int): Boolean {
+            super.commitText(text, newCursorPosition)
+            flushEditable()
+            return true
+        }
+
+        override fun setComposingText(text: CharSequence, newCursorPosition: Int): Boolean {
+            super.setComposingText(text, newCursorPosition)
+            updateComposingText(editable?.toString())
+            return true
+        }
+
+        override fun finishComposingText(): Boolean {
+            super.finishComposingText()
+            flushEditable()
+            return true
+        }
+
+        override fun deleteSurroundingText(beforeLength: Int, afterLength: Int): Boolean {
+            repeat(beforeLength) {
+                sendKeyEvent(KeyEvent(KeyEvent.ACTION_DOWN, KeyEvent.KEYCODE_DEL))
+                sendKeyEvent(KeyEvent(KeyEvent.ACTION_UP, KeyEvent.KEYCODE_DEL))
+            }
+            return super.deleteSurroundingText(beforeLength, afterLength)
+        }
+
+        private fun flushEditable() {
+            updateComposingText(null)
+            val content = editable ?: return
+            if (content.isNotEmpty()) sendText(content.toString())
+            content.clear()
+        }
+
+        override fun performEditorAction(actionCode: Int): Boolean {
+            sendKeyEvent(KeyEvent(KeyEvent.ACTION_DOWN, KeyEvent.KEYCODE_ENTER))
+            sendKeyEvent(KeyEvent(KeyEvent.ACTION_UP, KeyEvent.KEYCODE_ENTER))
+            return true
+        }
+
+        override fun sendKeyEvent(event: KeyEvent): Boolean {
+            if (handleKeyEvent(event)) return true
+            return super.sendKeyEvent(event)
+        }
+    }
+
+    public companion object {
+        public const val DEFAULT_FONT_SIZE_SP: Float = 14f
+
+        public fun measureCellSize(
+            typeface: Typeface,
+            fontSizeSp: Float,
+            displayMetrics: DisplayMetrics,
+        ): GhosttyCellSize {
+            val paint = Paint(Paint.ANTI_ALIAS_FLAG)
+            paint.typeface = typeface
+            paint.textSize = TypedValue.applyDimension(
+                TypedValue.COMPLEX_UNIT_SP,
+                fontSizeSp,
+                displayMetrics,
+            )
+            return measureCellSize(paint)
+        }
+
+        private fun measureCellSize(paint: Paint): GhosttyCellSize = GhosttyCellSize(
+            paint.measureText("M"),
+            ceil(paint.fontMetrics.descent - paint.fontMetrics.ascent).toInt(),
+        )
+
+        private const val TAG = "GhosttyTerminalView"
+        private const val PINCH_SCALE_STEP = 0.1f
+        private const val BLINK_INTERVAL_MS = 600L
+        private const val FAINT_ALPHA = 160
+        private const val WHEEL_SCROLL_ROWS = 3
+        private const val FLING_TRACKING_VELOCITY_SCALE = 0.25f
+        private const val ACTION_MODE_DRAG_HIDE_MS = 300L
+        private const val ACCESSIBILITY_TEXT_DELAY_MS = 500L
+
+        private const val SNAPSHOT_VERSION = 2
+        private const val HEADER_BYTES = 60
+        private const val ROW_HEADER_BYTES = 16
+        private const val CELL_RECORD_BYTES = 16
+        private const val TEXT_UNITS_PER_CELL = 4
+        private const val DIRTY_FULL = 2
+        private const val SNAPSHOT_SYNC_DEFERRED = -2
+
+        private const val CURSOR_STYLE_BAR = 0
+        private const val CURSOR_STYLE_BLOCK = 1
+        private const val CURSOR_STYLE_UNDERLINE = 2
+        private const val CURSOR_STYLE_BLOCK_HOLLOW = 3
+
+        private const val FLAG_BOLD = 1 shl 0
+        private const val FLAG_ITALIC = 1 shl 1
+        private const val FLAG_FAINT = 1 shl 2
+        private const val FLAG_UNDERLINE = 1 shl 3
+        private const val FLAG_STRIKETHROUGH = 1 shl 4
+        private const val FLAG_INVERSE = 1 shl 5
+        private const val FLAG_INVISIBLE = 1 shl 6
+        private const val FLAG_WIDE = 1 shl 7
+        private const val FLAG_SPACER = 1 shl 8
+        private const val FLAG_FG_DEFAULT = 1 shl 9
+        private const val FLAG_BG_NONE = 1 shl 10
+
+        private const val UNDERLINE_DOUBLE = 2
+        private const val UNDERLINE_CURLY = 3
+        private const val UNDERLINE_DOTTED = 4
+        private const val UNDERLINE_DASHED = 5
+
+        private const val HANDLE_NONE = 0
+        private const val HANDLE_START = 1
+        private const val HANDLE_END = 2
+        private const val HANDLE_HIT_SLOP_DP = 24f
+
+        private const val MENU_COPY = 1
+        private const val MENU_PASTE = 2
+        private const val MENU_SELECT_ALL = 3
+
+        private const val SYNC_OUTPUT_RETRY_MS = 32L
+        private const val IME_REQUEST_TIMEOUT_MS = 1000L
+        private const val IME_TRANSITION_MS = 250f
+        private const val RESIZE_SETTLE_MS = 48L
+
+        private const val SCROLLBAR_FADE_START_MS = 800L
+        private const val SCROLLBAR_FADE_END_MS = 1400L
+        private const val SCROLLBAR_COLOR = 0xB3AAAAAA.toInt()
+        private const val JUMP_CHIP_RADIUS_DP = 18f
+        private const val JUMP_CHIP_CENTER_OFFSET_DP = 32f
+        private const val JUMP_CHIP_TAP_SLOP_SCALE = 1.5f
+        private const val JUMP_CHIP_ARROW_SPAN_SCALE = 0.45f
+        private const val JUMP_CHIP_STROKE_DP = 2f
+        private const val JUMP_CHIP_BACKGROUND = 0xCC2A2A2E.toInt()
+        private const val JUMP_CHIP_ARROW_COLOR = 0xFFE0E0E0.toInt()
+    }
+}

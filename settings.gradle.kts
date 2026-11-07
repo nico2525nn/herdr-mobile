@@ -17,19 +17,13 @@ dependencyResolutionManagement {
     repositories {
         google()
         mavenCentral()
-        // Termux terminal-view/terminal-emulator (JitPack is the only repo;
-        // not on Maven Central). Pinned, content-filtered to termux group.
-        maven("https://jitpack.io") {
-            content {
-                includeGroup("com.github.termux.termux-app")
-            }
-        }
     }
 }
 
 rootProject.name = "herdr-mobile"
 
 include(":app")
+include(":terminal-ghostty")
 include(":baselineprofile")
 include(":testing")
 include(":core-model")
@@ -38,8 +32,6 @@ include(":core-designsystem")
 include(":feature-home")
 include(":feature-terminal")
 include(":feature-settings")
-include(":terminal-emulator")
-include(":terminal-view")
 include(":connection-ssh")
 include(":connection-direct")
 include(":notifications")

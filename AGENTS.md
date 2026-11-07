@@ -5,9 +5,9 @@ remote host). Kotlin/Compose app + Rust daemon in `daemon/`.
 
 ## Read first
 
-- `docs/terminal-scroll.md` — scrolling contract, the audited per-agent behaviour,
-  and the seven traps that each shipped as a regression. Do not touch scroll code
-  without it.
+- `docs/terminal-engine.md` — libghostty 1.0 engine, attach/prelude limits,
+  scroll routing table, input/selection, upgrade drift. Read before touching the
+  terminal engine or scroll routing.
 - `CHANGELOG.md` — what was tried and what it broke.
 
 ## Non-negotiables
@@ -18,9 +18,9 @@ remote host). Kotlin/Compose app + Rust daemon in `daemon/`.
 - **Never touch the user's session.** No focusing, closing or scrolling their panes
   from tests. Create workspaces with `{"focus": false}`; close them afterwards.
 - **Never guess a protocol behaviour twice.** Measure it (logs, screenshots, the
-  daemon), then write the measurement into `docs/terminal-scroll.md`.
-- **No local scroll for a pane the host reported as full-screen.** It moves the
-  terminal buffer instead of the app's viewport.
+  daemon), then write the measurement into `docs/terminal-engine.md`.
+- **Scroll routing follows the pane report.** The attach prelude carries no
+  modes; choose host/wheel/page/local from the snapshot (`scrollRoutingFor`).
 - Release convention: bump `versionCode`/`versionName`, commit, annotated tag, push
   main + tag, `gh release create` with the signed APK.
 
@@ -28,8 +28,8 @@ remote host). Kotlin/Compose app + Rust daemon in `daemon/`.
 
 | Module | Responsibility |
 |---|---|
-| `terminal-emulator`, `terminal-view` | Termux fork; `TermuxTerminalHost` (gestures + routing), `ScrollProbe`/`WheelBurst`/`TermuxViewport`, `ScrollRoute`/`ScrollMath`, remote session pump |
-| `feature-terminal` | `TerminalScreen` (chrome) + `TerminalSurface` (view hosting) + `TerminalIme`, `PaneSessionController` → `TerminalAttach`/`TargetResolution`/`PendingInput`, `UiMessage` |
+| `terminal-ghostty` | Vendored libghostty-vt 1.0 engine + Android view/session (MIT, `LICENSE-sagernet`), JNI in `src/main/cpp` |
+| `feature-terminal` | `TerminalScreen` (chrome), `TerminalSurface` + `GhosttyTerminalController` (engine hosting), `PaneSessionController` → `TerminalAttach`/`TargetResolution`/`PendingInput`, `ScrollRoutingPolicy`, `UiMessage` |
 | `core-network` | `HerdrSession` contract, `TerminalControl` (record parsing), link lifecycle, snapshot sync, transport |
 | `testing` | Shared fakes for tests (`FakeHerdrSession`, `FakeTerminalConnection`); test-only, never imported by app code |
 | `baselineprofile` | Macrobenchmark module that generates `app/src/release/generated/baselineProfiles/baseline-prof.txt` |
@@ -54,14 +54,12 @@ Measured before/after, do not regress casually:
 
 - **Never read a per-keystroke counter in composition.** `inputTick` is a Flow
   consumed inside the terminal surface; as a parameter it recomposed the whole
-  screen and ran the `AndroidView` update (typeface, palette reset, lambdas) per key.
-- The `AndroidView.update` block must only apply work whose input changed
-  (`ViewStyle` ledger): `TermuxSchemes.apply` also resets the session palette,
-  which wipes OSC-colour changes.
-- View callbacks bind once; captured state goes through `rememberUpdatedState`.
-- The scroll probe reads the **visible window**, never the whole transcript.
+  screen per key.
+- Theme/font/cursor setters are idempotent; apply them from keyed effects, not
+  from the AndroidView update pass (which runs on every recomposition).
 - Releasing another pane's socket is background work; only a same-pane reattach
-  waits for the release (grid restore ordering).
+  waits for the release (grid restore order).
+- Host scroll deltas are coalesced (40 ms) before they reach the socket.
 
 ## Commands
 

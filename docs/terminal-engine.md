@@ -1,0 +1,75 @@
+# Terminal engine (libghostty-vt 1.0)
+
+The terminal is **libghostty-vt 1.0.0**, the same VT engine Herdr runs on the
+server. The Android view, session, theme and selection code is the vendored MIT
+library `SagerNet/libghostty-android`, ported to the 1.0 C API
+(`terminal-ghostty/`).
+
+## Why
+
+- One parser on both ends: no Termux fork, no reflection into private fields, no
+  scroll probe guessing DECSET state.
+- Modes are authoritative: alt screen, mouse tracking, keypad/cursor keys and
+  bracketed paste are queried through the C API, so scrolling, key encoding and
+  paste routing are decisions, not heuristics.
+- ABI-stable C library: vendored `libghostty-vt.a` per ABI (arm64-v8a,
+  x86_64) with headers; upgrades are a header/lib swap plus the drift fixes
+  documented below.
+
+## Attach model (important)
+
+The daemon's attach prelude is **text**, not the original byte stream: it
+replays history and the visible screen, but not the app's DECSET history. A
+fresh engine therefore starts on the primary screen with no mouse mode even when
+the pane is a running TUI. Two consequences:
+
+- Gesture routing comes from the **snapshot** (`Pane.scroll`, `hostScrollable`,
+  `agent`), not from the engine, until the app repaints. See
+  `scrollRoutingFor` in `feature-terminal`.
+- Rendering is correct immediately (prelude text paints the screen); modes
+  converge as soon as the app writes again (any key press or output).
+
+Routing policy (`ScrollMode.AUTO`):
+
+| Pane report | Route |
+|---|---|
+| `pane.scroll` present, `maxOffsetFromBottom > 0` | `REMOTE_HOST`: row deltas to `pane.scroll` (server owns full history), coalesced every 40 ms |
+| `pane.scroll` present, no scrollback | wheel agents (`AgentMatrix.useWheelScroll`) → raw SGR wheel reports; other full-screen apps → one PageUp/PageDown per gesture |
+| no `pane.scroll` (e.g. core backend) | `AUTO`: the engine decides from its own modes; otherwise local scrollback |
+
+Explicit settings (`Local`, `Mouse wheel`, `Page keys`) override the table.
+
+## Input
+
+- Hardware/IME keys: the engine's key encoder (`ghostty_key_encoder_*`), synced
+  from terminal state before every encode (DECCKM, keypad, Kitty flags).
+- Paste: `ghostty_paste_encode` (control-byte strip + bracketed-paste wrap from
+  the real mode).
+- Extra-keys panel: our own `TerminalKeyEncoder` tables (tested, app-specific);
+  bytes go over the same transport.
+- Selection: long-press selects a word, drag extends; the ActionMode copies
+  through the engine's formatter.
+
+## Vendor + upgrade notes
+
+- `terminal-ghostty/vendor/include` + `vendor/<abi>/libghostty-vt.a` are built
+  from the **release tarball** `libghostty-vt-1.0.0.tar.gz` with Zig 0.17:
+  `zig build -Doptimize=ReleaseFast -Dtarget=<abi>-linux-android`.
+  Android requires 16 KB page alignment; CMake passes
+  `-Wl,-z,max-page-size=16384`.
+- 1.0 drift that had to be fixed (a future bump will hit the same shape):
+  `*_setopt*` → `*_set*`; selection formatting moved to `GhosttyFormatter`;
+  `GhosttyStyle.size/bold/...` → `flags` + colors; `GraphemesBuf` takes a sized
+  `GhosttyCodepointBuffer`; `GridRef`/`Selection` lost `size`; row selection is
+  a **sized** struct (`GHOSTTY_INIT_SIZED`); Kitty graphics API was redesigned
+  (inline images are not supported by this client); mode names drift
+  (`SYNC_OUTPUT` → `SYNCHRONIZED_OUTPUT`, `COLOR_SCHEME_REPORT` →
+  `REPORT_COLOR_SCHEME`).
+
+## Verification
+
+- `tools/ci.sh` — isolated session smoke: drag scroll, IME summon/hide,
+  background/restore, live session untouched.
+- `terminal-ghostty` instrumented test: canned bytes → screen text → pixels →
+  key reaches the transport.
+- `feature-terminal` tests: routing policy, theme mapping, view-model behaviour.

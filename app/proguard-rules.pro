@@ -35,26 +35,3 @@
 # Test APK only (releaseAndroidTest shares this file): error-prone annotations
 # reference javax.lang.model, absent on Android.
 -dontwarn javax.lang.model.element.Modifier
-
-# Termux remote session: mEmulator is injected reflectively (no setter, final
-# class). Keep the field or release builds fail the startup assertion.
--keepclassmembers class com.termux.terminal.TerminalSession {
-    com.termux.terminal.TerminalEmulator mEmulator;
-}
-
-# Bracketed-paste gate reads mCurrentDecSetFlags reflectively (no accessor for
-# the 2004 bit). Keep it or release builds silently never bracket.
--keepclassmembers class com.termux.terminal.TerminalEmulator {
-    int mCurrentDecSetFlags;
-}
-
-# Box-drawing overlay reads the renderer's scroll offset / cell pitch and the
-# view's selection state reflectively (Termux exposes no getters). Keep the
-# names or release builds silently fall back to the font's dashed glyphs.
--keepclassmembers class com.termux.view.TerminalView {
-    int mTopRow;
-    int[] mDefaultSelectors;
-}
--keepclassmembers class com.termux.view.TerminalRenderer {
-    int mFontLineSpacingAndAscent;
-}

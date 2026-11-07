@@ -1,11 +1,8 @@
 package dev.herdr.mobile.feature.terminal
 
-import dev.herdr.mobile.core.model.BackendMode
 import dev.herdr.mobile.core.model.TerminalAttachmentState
 import dev.herdr.mobile.core.network.TerminalConnection
 import dev.herdr.mobile.core.network.TerminalInbound
-import dev.herdr.mobile.terminal.view.BackendState
-import dev.herdr.mobile.terminal.view.TerminalBackend
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.SharingStarted
@@ -15,21 +12,19 @@ import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.stateIn
 
 /**
- * Adapts the OkHttp-backed [TerminalConnection] to the view's [TerminalBackend].
+ * One live pane stream, with the attachment lifecycle the screen gates on.
  *
- * The view never sees network types; this adapter is the only place that knows both.
+ * The screen never sees network types; this adapter is the only place that
+ * knows both sides.
  */
 class ConnectionTerminalBackend(
     connection: TerminalConnection,
     scope: CoroutineScope,
-) : TerminalBackend {
+) {
 
     private val inner: TerminalConnection = connection
 
-    override val supportsBinaryPaste: Boolean
-        get() = inner.backendMode == BackendMode.CORE
-
-    override val state: StateFlow<BackendState> = connection.state
+    val state: StateFlow<BackendState> = connection.state
         .map { s ->
             when (s) {
                 is TerminalAttachmentState.Idle -> BackendState.Idle
@@ -47,23 +42,18 @@ class ConnectionTerminalBackend(
         }
         .stateIn(scope, SharingStarted.WhileSubscribed(5_000), BackendState.Idle)
 
-    override val bytes: Flow<ByteArray> =
+    val bytes: Flow<ByteArray> =
         inner.inbound.filterIsInstance<TerminalInbound.Bytes>().map { it.data }
 
-    override fun clearReplayCache() = inner.clearReplayCache()
+    fun clearReplayCache() = inner.clearReplayCache()
 
-    override suspend fun send(data: ByteArray) = inner.send(data)
+    suspend fun send(data: ByteArray) = inner.send(data)
 
-    override suspend fun sendText(text: String) = inner.sendText(text)
+    suspend fun sendText(text: String) = inner.sendText(text)
 
-    override suspend fun resize(cols: Int, rows: Int) = inner.resize(cols, rows)
-    override suspend fun scrollRemote(lines: Int, allowPageKey: Boolean, unit: String) =
-        inner.scrollRemote(lines, allowPageKey, unit)
+    suspend fun resize(cols: Int, rows: Int) = inner.resize(cols, rows)
 
-
-
-    override suspend fun mouse(action: String, button: String, column: Int, row: Int) =
-        inner.mouse(action, button, column, row)
-
-    override suspend fun release() = inner.release()
+    suspend fun scrollRemote(lines: Int, unit: String) =
+        inner.scrollRemote(lines, allowPageKey = false, unit = unit)
+    suspend fun release() = inner.release()
 }

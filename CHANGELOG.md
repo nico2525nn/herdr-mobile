@@ -1,5 +1,30 @@
 # Changelog
 
+## 2.0.0 — 2026-11-07
+
+The terminal engine is now **libghostty-vt 1.0**, the same VT engine Herdr runs
+server-side. The Termux fork, its reflection layer and the scroll probe are gone.
+
+- Engine: vendored MIT Android view/session library on libghostty-vt 1.0.0
+  (arm64-v8a + x86_64 static builds, 16 KB pages), JNI ported to the 1.0 ABI.
+  Covers parsing, render state, modes, key encoding (Kitty protocol), paste
+  encoding and selection.
+- Removed: `terminal-view`/`terminal-emulator` modules, `TermuxInternals`
+  reflection, `ScrollProbe`, `ScrollRoute`/`ScrollMath`, `ImePolicy`,
+  `WheelBurst`, `TermuxViewport`, box-drawing overlay, AgentMatrix scroll
+  probing, paste payload heuristics.
+- Scroll routing is explicit from the pane report: host rows (coalesced 40 ms),
+  wheel reports for mouse agents, one page per gesture for other full-screen
+  panes, local scrollback otherwise; the user's scroll-mode setting still wins.
+- Input/paste/selection: engine encoder and formatter; long-press selects a
+  word, drag extends, ActionMode copies. Bracketed paste follows the real mode.
+- Fixed during the port: 1.0 sized-struct queries (row selection was silently
+  empty until initialised with `GHOSTTY_INIT_SIZED`), style flags, grapheme
+  buffers, cursor style enum, formatter API.
+- Not supported: Kitty inline images (the 1.0 graphics API was redesigned and
+  this client does not render them — Termux did not either).
+- Verified: engine instrumented proof (bytes → pixels → keys), 11 terminal UI
+  tests, full isolated smoke (`CI OK`), typed input over the real keyboard path.
 ## 1.9.1 — 2026-11-06
 
 - JVM tests for the hardware-key path (`TermuxViewClient`): arrows, DEL, CTRL

@@ -212,16 +212,12 @@ fun TerminalScreen(
             } else {
                 TerminalSurface(
                     state = state,
-                    onSendBytes = { viewModel.sendBytes(it) },
-                    onSendText = { viewModel.sendText(it) },
-                    onSendPaste = { viewModel.sendPaste(it) },
+                    viewModel = viewModel,
                     onRetry = { viewModel.retryAttach() },
                     keyboardShowRequest = keyboardShowRequest,
                     keyboardShowHandled = keyboardShowHandled,
                     onKeyboardShowHandled = { keyboardShowHandled = it },
                     inputTick = viewModel.inputTick,
-                    onGridChanged = { cols, rows -> viewModel.setAttachGrid(cols, rows) },
-                    cjkFocus = cjkFocus,
                 )
             }
             // Floats over the terminal's top rows; sub-second drops never show.

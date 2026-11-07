@@ -26,7 +26,6 @@ import dev.herdr.mobile.core.model.Pane
 import dev.herdr.mobile.core.model.SessionSnapshot
 import dev.herdr.mobile.core.model.Tab
 import dev.herdr.mobile.core.model.Workspace
-import dev.herdr.mobile.terminal.view.TerminalKeyEncoder
 import org.junit.Assert.assertEquals
 import org.junit.Rule
 import org.junit.Test
