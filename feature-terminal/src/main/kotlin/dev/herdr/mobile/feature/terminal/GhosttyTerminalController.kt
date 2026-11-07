@@ -65,6 +65,24 @@ internal class GhosttyTerminalController(
         session.setTheme(scheme.toGhosttyTheme())
         session.setColorScheme(scheme.isDark())
         view.setBackgroundColor(scheme.background.toArgb())
+        view.uiHandler = object : io.github.sagernet.libghostty.GhosttyUiHandler {
+            override fun confirmUnsafePaste(context: Context, paste: () -> Unit) {
+                val night = (context.resources.configuration.uiMode and
+                    android.content.res.Configuration.UI_MODE_NIGHT_MASK) ==
+                    android.content.res.Configuration.UI_MODE_NIGHT_YES
+                val theme = if (night) {
+                    android.R.style.Theme_Material_Dialog_Alert
+                } else {
+                    android.R.style.Theme_Material_Light_Dialog_Alert
+                }
+                android.app.AlertDialog.Builder(context, theme)
+                    .setTitle("Paste control characters?")
+                    .setMessage("The clipboard contains characters that can drive the terminal. Paste anyway?")
+                    .setPositiveButton("Paste") { _, _ -> paste() }
+                    .setNegativeButton("Cancel", null)
+                    .show()
+            }
+        }
         view.session = session
     }
 
@@ -89,6 +107,7 @@ internal class GhosttyTerminalController(
     }
 
     fun showKeyboard() {
+        view.requestFocus()
         view.showIme()
     }
 

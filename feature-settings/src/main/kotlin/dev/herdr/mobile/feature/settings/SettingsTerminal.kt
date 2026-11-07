@@ -74,7 +74,7 @@ internal fun LazyListScope.settingsTerminalSection(
                 },
             )
             SettingsRow(
-                headline = "Scroll diagnostics",
+                headline = "Terminal diagnostics",
                 supporting = "Overlay scroll state (debug, no content)",
                 showDivider = false,
                 trailing = {

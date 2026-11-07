@@ -436,12 +436,12 @@ object TerminalKeyEncoder {
      * both accept-line); TUIs get the safer CR.
      */
     fun pasteNormalize(text: String): String =
-        stripEscapeInjection(text).replace(Regex("\r\n|\r|\n"), "\r")
+        stripEscapeInjection(text).replace(NEWLINES, "\r")
 
-    const val BRACKETED_PASTE_START = "\u001B[200~"
-    const val BRACKETED_PASTE_END = "\u001B[201~"
 
     /** Drops ESC and C1 controls (escape injection through the clipboard). */
     fun stripEscapeInjection(text: String): String =
         text.filter { c -> c != '\u001B' && (c.code < 0x80 || c.code > 0x9F) }
+
+    private val NEWLINES = Regex("\\r\\n|\\r|\\n")
 }

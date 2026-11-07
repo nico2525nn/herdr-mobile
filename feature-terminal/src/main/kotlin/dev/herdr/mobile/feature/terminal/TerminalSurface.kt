@@ -1,6 +1,9 @@
 package dev.herdr.mobile.feature.terminal
 
 import android.graphics.Typeface
+import androidx.compose.foundation.layout.ExperimentalLayoutApi
+import androidx.compose.foundation.layout.WindowInsets
+import androidx.compose.foundation.layout.isImeVisible
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
@@ -8,13 +11,20 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
+import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import dev.herdr.mobile.core.model.InputPanelPage
+import dev.herdr.mobile.core.model.ScrollMode
 import dev.herdr.mobile.feature.terminal.theme.TerminalColorScheme
+import io.github.sagernet.libghostty.GhosttyExtraKeysState
+import io.github.sagernet.libghostty.GhosttyTerminalView
+import io.github.sagernet.libghostty.GhosttyTerminalView.ScrollRouting
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.Flow
 
 /**
@@ -33,6 +43,7 @@ internal fun TerminalSurface(
     keyboardShowHandled: Int,
     onKeyboardShowHandled: (Int) -> Unit,
     inputTick: Flow<Int>,
+    cjkFocus: FocusRequester? = null,
     modifier: Modifier = Modifier,
 ) {
     val backend = state.backend ?: return
@@ -74,7 +85,7 @@ internal fun TerminalSurface(
     val bellEnabled = settings.bellVibration || settings.hapticFeedback
     var bellCount by remember { mutableIntStateOf(0) }
 
-    val controller = remember(backend, settings.scrollbackLimit) {
+    val controller = remember(backend) {
         GhosttyTerminalController(
             context = context,
             scrollbackLimit = settings.scrollbackLimit,
@@ -82,7 +93,7 @@ internal fun TerminalSurface(
             typeface = Typeface.create(settings.terminalFont.familyName, Typeface.NORMAL),
             fontSizeSp = settings.terminalFontSizeSp,
             scheme = scheme,
-            onInput = { bytes -> viewModel.sendBytes(bytes) },
+            onInput = { bytes -> viewModel.sendEngineBytes(bytes) },
             onResize = { cols, rows ->
                 viewModel.setAttachGrid(cols, rows)
                 viewModel.resizeBackend(cols, rows)
@@ -100,7 +111,11 @@ internal fun TerminalSurface(
         state.pane?.agent,
         state.pane?.hostScrollable,
     ) { scrollRoutingFor(settings.scrollMode, state.pane) }
-    LaunchedEffect(controller, routing) { controller.view.scrollRouting = routing }
+    LaunchedEffect(controller, routing) {
+        controller.view.scrollRouting = routing
+        controller.view.allowRawWheel =
+            dev.herdr.mobile.core.model.AgentMatrix.useWheelScroll(state.pane?.agent)
+    }
     LaunchedEffect(controller) {
         controller.view.onRemoteScroll = { rows -> viewModel.scrollRemote(rows) }
     }
@@ -121,13 +136,40 @@ internal fun TerminalSurface(
     // Bytes → engine → frame. The replay buffer exists only for the attach
     // race; once the pump is draining it, release it.
     LaunchedEffect(backend, controller) {
-        var first = true
-        backend.bytes.collect { data ->
-            if (first) {
-                first = false
-                runCatching { backend.clearReplayCache() }
+        backend.bytes.collect { data -> controller.feed(data) }
+    }
+    // The replay cache exists for the attach race; dropping it on the very
+    // first frame can discard the rest of a multi-frame prelude.
+    LaunchedEffect(backend) {
+        delay(2_000)
+        runCatching { backend.clearReplayCache() }
+    }
+
+    val extraKeys = remember { GhosttyExtraKeysState() }
+    LaunchedEffect(controller) {
+        controller.view.extraKeysState = extraKeys
+        controller.view.listener = object : GhosttyTerminalView.Listener {
+            override fun onFontSizeChanged(view: GhosttyTerminalView, fontSizeSp: Float) {
+                viewModel.onViewFontSizeChanged(fontSizeSp.toInt())
             }
-            controller.feed(data)
+        }
+    }
+    LaunchedEffect(controller, state.stickyModifiers) {
+        val ctrl = TerminalKeyEncoder.Modifier.CTRL in state.stickyModifiers
+        val alt = TerminalKeyEncoder.Modifier.ALT in state.stickyModifiers
+        syncSticky(extraKeys.ctrl.value, ctrl) { extraKeys.toggleCtrl() }
+        syncSticky(extraKeys.alt.value, alt) { extraKeys.toggleAlt() }
+    }
+    // Panel page switches retarget a visible IME: the CJK draft field and the
+    // terminal surface are distinct focus targets.
+    @OptIn(ExperimentalLayoutApi::class)
+    val imeVisible = WindowInsets.isImeVisible
+    LaunchedEffect(state.inputPage, imeVisible, controller) {
+        if (!imeVisible) return@LaunchedEffect
+        if (state.inputPage == InputPanelPage.CJK_INPUT) {
+            cjkFocus?.requestFocus()
+        } else {
+            controller.view.requestFocus()
         }
     }
 
@@ -168,4 +210,15 @@ internal fun TerminalSurface(
         backendState = backendState,
         visible = settings.showScrollDiagnostics,
     )
+}
+
+/** Force the engine latch to match the app's sticky state. */
+private fun syncSticky(
+    current: GhosttyExtraKeysState.StickyState,
+    armed: Boolean,
+    toggle: () -> Unit,
+) {
+    val isArmed = current != GhosttyExtraKeysState.StickyState.INACTIVE
+    if (isArmed == armed) return
+    toggle()
 }

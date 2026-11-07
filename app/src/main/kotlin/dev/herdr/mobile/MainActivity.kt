@@ -217,6 +217,7 @@ private fun AppNav(
                             route.tabId,
                             route.paneId,
                             container.settingsRepository.settings,
+                            container::persistFontSize,
                         )
                     },
                 )

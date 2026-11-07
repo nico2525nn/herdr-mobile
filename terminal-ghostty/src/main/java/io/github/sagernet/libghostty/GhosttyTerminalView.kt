@@ -86,7 +86,7 @@ public class GhosttyTerminalView @JvmOverloads constructor(
     private var imeRequestedUntil = 0L
 
     /** Matches plain text as a URL, in addition to the hyperlinks the terminal reported. */
-    public var urlDetectionEnabled: Boolean = true
+    public var urlDetectionEnabled: Boolean = false
 
     public var urlPattern: Regex = Regex("""https?://\S+""")
 
@@ -101,6 +101,13 @@ public class GhosttyTerminalView @JvmOverloads constructor(
     public enum class ScrollRouting { AUTO, LOCAL, REMOTE_WHEEL, REMOTE_PAGE, REMOTE_HOST }
 
     public var scrollRouting: ScrollRouting = ScrollRouting.AUTO
+
+    /**
+     * REMOTE_WHEEL may send raw SGR reports even when the engine has not seen
+     * mouse mode yet (attach replays text). Only agent panes may: on a shell
+     * those bytes would be echoed as literal text.
+     */
+    public var allowRawWheel: Boolean = false
 
     /** REMOTE_HOST: send row deltas to the server, which owns full history. */
     public var onRemoteScroll: ((rows: Int) -> Unit)? = null
@@ -308,7 +315,7 @@ public class GhosttyTerminalView @JvmOverloads constructor(
         context,
         object : GestureDetector.SimpleOnGestureListener() {
             override fun onDown(e: MotionEvent): Boolean {
-                pageSentThisGesture = false
+                pageAccumulator = 0
                 return true
             }
 
@@ -505,14 +512,17 @@ public class GhosttyTerminalView @JvmOverloads constructor(
                 return
             }
             ScrollRouting.REMOTE_WHEEL -> {
-                sendRawWheel(deltaRows, col, row)
+                if (state and GhosttyVt.VIEWPORT_MOUSE_TRACKING != 0 || allowRawWheel) {
+                    sendRawWheel(deltaRows, col, row)
+                } else {
+                    pageAccumulator += deltaRows
+                    flushPages(force = false)
+                }
                 return
             }
             ScrollRouting.REMOTE_PAGE -> {
-                if (!pageSentThisGesture && deltaRows != 0) {
-                    pageSentThisGesture = true
-                    sendRawPage(deltaRows < 0)
-                }
+                pageAccumulator += deltaRows
+                flushPages(force = false)
                 return
             }
             ScrollRouting.LOCAL -> {
@@ -543,7 +553,17 @@ public class GhosttyTerminalView @JvmOverloads constructor(
         scheduleFrame()
     }
 
-    private var pageSentThisGesture = false
+    private var pageAccumulator = 0
+
+    /** One gesture must not turn a 1-row drag into a whole screenful. */
+    private fun flushPages(force: Boolean) {
+        val threshold = max(1, rows / 2)
+        if (!force && abs(pageAccumulator) < threshold) return
+        if (pageAccumulator != 0) {
+            sendRawPage(pageAccumulator < 0)
+            pageAccumulator = 0
+        }
+    }
 
     /** Raw SGR wheel report (xterm 1006), independent of the engine's modes. */
     private fun sendRawWheel(deltaRows: Int, col: Int, row: Int) {
@@ -1599,6 +1619,12 @@ public class GhosttyTerminalView @JvmOverloads constructor(
     }
 
     override fun onTouchEvent(event: MotionEvent): Boolean {
+        if ((event.actionMasked == MotionEvent.ACTION_UP ||
+                event.actionMasked == MotionEvent.ACTION_CANCEL) &&
+            scrollRouting == ScrollRouting.REMOTE_PAGE
+        ) {
+            flushPages(force = true)
+        }
         if (event.isFromSource(InputDevice.SOURCE_MOUSE) && handleSecondaryMouse(event)) return true
         if (event.actionMasked == MotionEvent.ACTION_DOWN) {
             scroller.abortAnimation()

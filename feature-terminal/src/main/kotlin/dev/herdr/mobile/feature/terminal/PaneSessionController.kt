@@ -376,6 +376,13 @@ class PaneSessionController(
      */
     fun send(op: suspend (ConnectionTerminalBackend) -> Unit) {
         _inputTick.value += 1
+        dispatch(op)
+    }
+
+    /** Engine-originated input: same path, no input tick. */
+    fun sendRaw(op: suspend (ConnectionTerminalBackend) -> Unit) = dispatch(op)
+
+    private fun dispatch(op: suspend (ConnectionTerminalBackend) -> Unit) {
         val backend = backendFlow.value
         if (backend != null) {
             val generation = targetOwnerGeneration ?: return

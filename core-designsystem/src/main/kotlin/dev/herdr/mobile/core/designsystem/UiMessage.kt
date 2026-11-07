@@ -89,7 +89,7 @@ internal fun String?.orUnknown(): String {
     val cleaned = this
         ?.map { if (it.isISOControl()) ' ' else it }
         ?.joinToString("")
-        ?.replace(Regex("\\s+"), " ")
+        ?.replace(WHITESPACE, " ")
         ?.trim()
         ?.takeIf { it.isNotEmpty() }
         ?: return "unknown error"
@@ -101,6 +101,7 @@ internal fun String?.orUnknown(): String {
 }
 
 private const val MAX_DETAIL_CHARS = 160
+private val WHITESPACE = Regex("\\s+")
 
 private fun UiMessage.CommandFailed.Command.label(): String = when (this) {
     UiMessage.CommandFailed.Command.CREATE_TAB -> "Cannot create tab"

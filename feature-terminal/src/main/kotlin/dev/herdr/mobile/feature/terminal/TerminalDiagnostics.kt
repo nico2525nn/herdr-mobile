@@ -10,6 +10,11 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleEventObserver
+import androidx.lifecycle.compose.LocalLifecycleOwner
+import androidx.compose.runtime.DisposableEffect
+import androidx.compose.runtime.mutableStateOf
 
 /**
  * Debug overlay (settings toggle): the engine's viewport facts, never content.
@@ -23,7 +28,18 @@ internal fun TerminalDiagnostics(
 ) {
     if (!visible) return
     var tick by remember { mutableIntStateOf(0) }
-    LaunchedEffect(backendState) {
+    val lifecycleOwner = LocalLifecycleOwner.current
+    var resumed by remember { mutableStateOf(true) }
+    DisposableEffect(lifecycleOwner) {
+        val observer = LifecycleEventObserver { _, event ->
+            if (event == Lifecycle.Event.ON_RESUME) resumed = true
+            if (event == Lifecycle.Event.ON_STOP) resumed = false
+        }
+        lifecycleOwner.lifecycle.addObserver(observer)
+        onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
+    }
+    LaunchedEffect(backendState, resumed) {
+        if (!resumed) return@LaunchedEffect
         while (true) {
             kotlinx.coroutines.delay(250)
             tick++

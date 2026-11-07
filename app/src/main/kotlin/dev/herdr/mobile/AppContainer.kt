@@ -10,6 +10,7 @@ import dev.herdr.mobile.core.network.HerdrClient
 import dev.herdr.mobile.core.network.networkAvailable
 import dev.herdr.mobile.notifications.HerdrNotifications
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -53,6 +54,17 @@ class AppContainer(context: Context) {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
 
     val secrets = KeystoreSecrets(appContext)
+
+    private var fontPersistJob: Job? = null
+
+    /** Pinch zoom lands here; debounce so a gesture writes the setting once. */
+    fun persistFontSize(sizeSp: Int) {
+        fontPersistJob?.cancel()
+        fontPersistJob = scope.launch {
+            kotlinx.coroutines.delay(250)
+            settingsRepository.update { it.copy(terminalFontSizeSp = sizeSp.coerceIn(8, 24)) }
+        }
+    }
     val settingsRepository = SettingsRepositoryImpl(appContext, secrets, scope)
 
     private val providerFlow = MutableStateFlow<DaemonEndpointProvider?>(null)

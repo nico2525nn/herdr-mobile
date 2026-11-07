@@ -83,6 +83,7 @@ class TerminalViewModel(
     private val initialTabId: String?,
     private val initialPaneId: String? = null,
     private val settingsFlow: StateFlow<AppSettings>,
+    private val persistFontSize: (Int) -> Unit = {},
 ) : ViewModel() {
 
     private val pageFlow = MutableStateFlow(InputPanelPage.EXTRA_KEYS)
@@ -215,6 +216,24 @@ class TerminalViewModel(
 
     fun sendBytes(data: ByteArray) {
         panes.send({ backend -> backend.send(data) })
+    }
+
+    /**
+     * Engine-originated input (typed keys, IME): the engine already snapped its
+     * own viewport, so this must not count as a user action and trigger another
+     * scroll-to-bottom.
+     */
+    fun sendEngineBytes(data: ByteArray) {
+        panes.sendRaw { backend -> backend.send(data) }
+    }
+
+    /** Pinch-to-zoom: keep the setting in sync (debounced by the app). */
+    fun onViewFontSizeChanged(sizeSp: Int) {
+        persistFontSize(sizeSp)
+    }
+
+    fun clearStickyModifiers() {
+        stickyFlow.value = emptySet()
     }
 
     /**
@@ -386,10 +405,11 @@ class TerminalViewModel(
         private val tabId: String?,
         private val paneId: String? = null,
         private val settings: StateFlow<AppSettings>,
+        private val persistFontSize: (Int) -> Unit = {},
     ) : ViewModelProvider.Factory {
         @Suppress("UNCHECKED_CAST")
         override fun <T : ViewModel> create(modelClass: Class<T>): T =
-            TerminalViewModel(client, workspaceId, tabId, paneId, settings) as T
+            TerminalViewModel(client, workspaceId, tabId, paneId, settings, persistFontSize) as T
     }
 }
 

@@ -1,5 +1,30 @@
 # Changelog
 
+## 2.0.2 — 2026-11-07
+
+More terminal-engine correctness fixes from the 50-item audit.
+
+- Engine-originated input (typed keys, IME) no longer bumps the input counter, so
+  it cannot trigger a second scroll-to-bottom on every keystroke.
+- The inbound replay cache is released after 2 s instead of after the first
+  frame: a multi-frame prelude can no longer lose its tail.
+- Sticky CTRL/ALT in the extra-keys panel now also arm the engine's hardware-key
+  latch; page switches retarget a visible IME between the CJK field and the
+  terminal.
+- Pinch-to-zoom font size is persisted (debounced, clamped to 8..24) instead of
+  resetting on the next attach.
+- Scroll routing: an explicit "Mouse wheel" mode falls back to page keys when the
+  engine reports no mouse tracking (raw SGR bytes used to be typed into shells);
+  "Page keys" accumulates rows and sends at most half a screen per page, flushing
+  the remainder at gesture end.
+- URL auto-detection is off by default (long-press selects text again; OSC 8
+  links still open).
+- Unsafe-paste confirmation uses a night-aware dialog instead of the platform
+  default; the diagnostics overlay stops polling JNI while the app is stopped.
+- The terminal session survives a scrollback-limit change (history is no longer
+  dropped by a controller recreate); message sanitisation uses a precompiled
+  regex; dead paste helpers removed.
+
 ## 2.0.1 — 2026-11-07
 
 Regression fixes for 2.0.0, found by comparing against the 1.9.1 build on the
