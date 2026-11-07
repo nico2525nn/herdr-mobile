@@ -1,5 +1,15 @@
 # Changelog
 
+## 2.0.9 — 2026-11-08
+
+- Input panel: the KEYS/CJK control is gone; switching is swipe-only again.
+  Horizontal swipes now work when they start on a key button (the keys' touch
+  targets used to swallow the drag): the panel claims horizontal drags before
+  the buttons and animates to the next page on release. Taps still reach the
+  keys.
+- Rail chips: selected workspace and tab chips use the same 1 dp primary ring;
+  pixel measurement confirmed identical thickness/colour (no visual change).
+
 ## 2.0.8 — 2026-11-07
 
 Audit pass over terminal, UI, notifications, daemon and protocol seams.

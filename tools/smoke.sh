@@ -219,18 +219,19 @@ sleep 2
   || fail "back did not hide the IME ($(ime_shown))"
 
 # CJK page: the keyboard button must focus the field (typing lands there) or
-# fall back to the shortcut panel with the terminal IME raised. Use the
-# explicit page toggle (swiping over the key buttons is unreliable).
-CJK_BOUNDS="$(tab_bounds CJK)"
-if [[ -n "$CJK_BOUNDS" ]]; then
-  adb_ shell input tap $CJK_BOUNDS
+# fall back to the shortcut panel with the terminal IME raised. Swipe from the
+# middle of a key: the panel must claim horizontal drags over the buttons.
+HOME_BOUNDS="$(tab_bounds HOME)"
+if [[ -n "$HOME_BOUNDS" ]]; then
+  read -r HX HY <<< "$HOME_BOUNDS"
+  adb_ shell input swipe "$HX" "$HY" "$((HX - 380))" "$HY" 600
   sleep 1
   adb_ shell uiautomator dump /sdcard/cjk.xml >/dev/null 2>&1 || true
   adb_ shell cat /sdcard/cjk.xml 2>/dev/null | grep -q 'Type, convert, then send' \
-    && pass "the panel switch reaches the CJK field" \
-    || fail "CJK field not found after the panel switch"
+    && pass "a swipe over the keys reaches the CJK field" \
+    || fail "CJK field not found after swiping over the keys"
 else
-  fail "CJK page switch not found"
+  fail "HOME key not found for the panel swipe"
 fi
 adb_ shell input tap 860 255   # keyboard button
 sleep 2

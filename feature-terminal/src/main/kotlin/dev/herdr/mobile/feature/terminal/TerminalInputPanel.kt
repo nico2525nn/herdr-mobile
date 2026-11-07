@@ -1,30 +1,31 @@
 package dev.herdr.mobile.feature.terminal
 
-import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.gestures.awaitEachGesture
+import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.PaddingValues
-import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
-import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.pager.HorizontalPager
 import androidx.compose.foundation.pager.rememberPagerState
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
-import androidx.compose.material3.Text
-import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.input.pointer.PointerEventPass
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import dev.herdr.mobile.core.model.InputPanelPage
 import dev.herdr.mobile.core.model.SwipeBehavior
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.rememberCoroutineScope
+import kotlinx.coroutines.launch
+import kotlin.math.abs
 
 @Composable
 internal fun BottomInputPanel(
@@ -45,6 +46,7 @@ internal fun BottomInputPanel(
         Spacer(Modifier.height(8.dp))
         return
     }
+    val pagerScope = rememberCoroutineScope()
     val pagerState = rememberPagerState(
         initialPage = pages.indexOf(state.inputPage).coerceAtLeast(0),
         pageCount = { pages.size },
@@ -83,28 +85,6 @@ internal fun BottomInputPanel(
     ) {
         Column(modifier = Modifier.padding(horizontal = 12.dp, vertical = 10.dp)) {
             if (pages.size > 1) {
-                // Swiping over the key buttons does not reliably page (the
-                // buttons own the gesture), so give the panel an explicit
-                // switch. It also makes the second page discoverable.
-                val current = pages.getOrNull(pagerState.currentPage) ?: pages.first()
-                val other = pages.firstOrNull { it != current } ?: current
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.End,
-                ) {
-                    TextButton(
-                        onClick = { onPageChange(other) },
-                        contentPadding = PaddingValues(horizontal = 8.dp, vertical = 0.dp),
-                        modifier = Modifier.heightIn(min = 32.dp),
-                    ) {
-                        Text(
-                            text = if (other == InputPanelPage.CJK_INPUT) "CJK" else "KEYS",
-                            style = MaterialTheme.typography.labelSmall,
-                        )
-                    }
-                }
-            }
-            if (pages.size > 1) {
                 // Honor the swipe setting: only PAGE switches panels. NONE and
                 // SCROLLBACK must not hijack horizontal swipes (the explicit
                 // page button remains available).
@@ -113,6 +93,48 @@ internal fun BottomInputPanel(
                     modifier = Modifier.fillMaxWidth(),
                     userScrollEnabled = settings.swipeBehavior == SwipeBehavior.PAGE,
                 ) { index ->
+                    // The keys are Buttons: their touch targets swallow
+                    // horizontal drags, so a swipe that starts on a key never
+                    // reaches the pager. Claim horizontal drags in the Initial
+                    // pass (taps have no slop and still reach the buttons) and
+                    // drive the pager ourselves. This keeps panel switching
+                    // swipe-only, with no extra on-screen control.
+                    Column(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .pointerInput(pages.size) {
+                                awaitEachGesture {
+                                    val down = awaitFirstDown(
+                                        requireUnconsumed = false,
+                                        pass = PointerEventPass.Initial,
+                                    )
+                                    var totalX = 0f
+                                    var claimed = false
+                                    while (true) {
+                                        val event = awaitPointerEvent(PointerEventPass.Initial)
+                                        val change = event.changes
+                                            .firstOrNull { it.id == down.id } ?: break
+                                        if (!change.pressed) break
+                                        val dx = change.position.x - change.previousPosition.x
+                                        if (!claimed) {
+                                            totalX += dx
+                                            if (abs(totalX) > viewConfiguration.touchSlop) {
+                                                claimed = true
+                                            }
+                                        }
+                                        if (claimed) change.consume()
+                                    }
+                                    if (claimed) {
+                                        val target = (pagerState.currentPage +
+                                            if (totalX < 0) 1 else -1)
+                                            .coerceIn(0, pagerState.pageCount - 1)
+                                        pagerScope.launch {
+                                            pagerState.animateScrollToPage(target)
+                                        }
+                                    }
+                                }
+                            },
+                    ) {
                     when (pages[index]) {
                         InputPanelPage.EXTRA_KEYS -> ExtraKeysPanel(
                             onKey = onExtraKey,
@@ -134,6 +156,7 @@ internal fun BottomInputPanel(
                                 focusRequester = cjkFocus,
                             )
                         }
+                    }
                     }
                 }
             } else {
