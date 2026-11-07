@@ -1,5 +1,15 @@
 # Changelog
 
+## 2.0.5 — 2026-11-07
+
+- Kitty inline images are supported again (and now actually work): the 1.0
+  graphics API is bridged (placement iterator + decoded RGBA/RGB pixels), the
+  image storage limit is raised from 0, and the renderer draws placements above
+  the text with a generation-keyed bitmap cache. A 2×2 RGBA fixture is decoded
+  and placed in the engine test.
+- 32-bit x86 is vendored as well; debug builds ship arm64/armv7/x86/x86_64
+  (release stays arm64 + armv7 for size).
+
 ## 2.0.4 — 2026-11-07
 
 - The terminal font picker only offers the platform monospace family; the other

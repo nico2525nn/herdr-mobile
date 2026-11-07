@@ -15,7 +15,7 @@ android {
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         consumerProguardFiles("consumer-rules.pro")
         ndk {
-            abiFilters += listOf("arm64-v8a", "armeabi-v7a", "x86_64")
+            abiFilters += listOf("arm64-v8a", "armeabi-v7a", "x86", "x86_64")
         }
         externalNativeBuild {
             cmake {

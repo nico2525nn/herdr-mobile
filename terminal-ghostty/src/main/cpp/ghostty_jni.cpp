@@ -649,6 +649,10 @@ Java_io_github_sagernet_libghostty_GhosttyVt_nativeCreate(
   const size_t scrollbackLines = static_cast<size_t>(maxScrollbackLines);
   ghostty_terminal_set(session->term, GHOSTTY_TERMINAL_OPT_SCROLLBACK_MAX_LINES, &scrollbackLines);
 
+  // Kitty images are rejected silently while the storage limit is 0.
+  const uint64_t kittyLimit = 256ull * 1024 * 1024;
+  ghostty_terminal_set(session->term, GHOSTTY_TERMINAL_OPT_KITTY_IMAGE_STORAGE_LIMIT, &kittyLimit);
+
   GhosttyColorRgb bg{0x00, 0x00, 0x00};
   GhosttyColorRgb fg{0xFF, 0xFF, 0xFF};
   ghostty_terminal_set(session->term, GHOSTTY_TERMINAL_OPT_COLOR_BACKGROUND, &bg);
@@ -1546,6 +1550,119 @@ JNIEXPORT jint JNICALL JNI_OnLoad(JavaVM* vm, void*) {
   ghostty_sys_set(GHOSTTY_SYS_OPT_DECODE_PNG,
                   reinterpret_cast<const void*>(&decodePngCallback));
   return JNI_VERSION_1_6;
+}
+
+// Kitty graphics: placements currently visible in the viewport, 12 longs each:
+// [imageId, generation, viewportCol, viewportRow, pixelW, pixelH,
+//  sourceX, sourceY, sourceW, sourceH, z, reserved]
+JNIEXPORT jlongArray JNICALL
+Java_io_github_sagernet_libghostty_GhosttyVt_nativeKittyPlacements(
+    JNIEnv* env, jobject, jlong handle) {
+  auto* session = fromHandle(handle);
+  if (session == nullptr) return nullptr;
+  GhosttyKittyGraphics storage = nullptr;
+  if (ghostty_terminal_get(session->term, GHOSTTY_TERMINAL_DATA_KITTY_GRAPHICS, &storage) !=
+          GHOSTTY_SUCCESS ||
+      storage == nullptr) {
+    return nullptr;
+  }
+  GhosttyKittyGraphicsPlacementIterator it = nullptr;
+  if (ghostty_kitty_graphics_placement_iterator_new(nullptr, &it) != GHOSTTY_SUCCESS) {
+    return nullptr;
+  }
+  struct IteratorGuard {
+    GhosttyKittyGraphicsPlacementIterator i;
+    ~IteratorGuard() { if (i != nullptr) ghostty_kitty_graphics_placement_iterator_free(i); }
+  } guard{it};
+  if (ghostty_kitty_graphics_get(storage, GHOSTTY_KITTY_GRAPHICS_DATA_PLACEMENT_ITERATOR, &it) !=
+      GHOSTTY_SUCCESS) {
+    return nullptr;
+  }
+
+  std::vector<jlong> out;
+  while (ghostty_kitty_graphics_placement_next(it)) {
+    uint32_t imageId = 0;
+    if (ghostty_kitty_graphics_placement_get(it, GHOSTTY_KITTY_GRAPHICS_PLACEMENT_DATA_IMAGE_ID,
+                                              &imageId) != GHOSTTY_SUCCESS) {
+      continue;
+    }
+    int32_t z = 0;
+    ghostty_kitty_graphics_placement_get(it, GHOSTTY_KITTY_GRAPHICS_PLACEMENT_DATA_Z, &z);
+    GhosttyKittyGraphicsImage image = ghostty_kitty_graphics_image(storage, imageId);
+    if (image == nullptr) continue;
+    auto info = GHOSTTY_INIT_SIZED(GhosttyKittyGraphicsPlacementRenderInfo);
+    if (ghostty_kitty_graphics_placement_render_info(it, image, session->term, &info) !=
+            GHOSTTY_SUCCESS ||
+        !info.viewport_visible || info.pixel_width == 0 || info.pixel_height == 0) {
+      continue;
+    }
+    uint64_t generation = 0;
+    ghostty_kitty_graphics_image_get(image, GHOSTTY_KITTY_GRAPHICS_IMAGE_DATA_GENERATION,
+                                     &generation);
+    out.push_back(static_cast<jlong>(imageId));
+    out.push_back(static_cast<jlong>(generation));
+    out.push_back(info.viewport_col);
+    out.push_back(info.viewport_row);
+    out.push_back(info.pixel_width);
+    out.push_back(info.pixel_height);
+    out.push_back(info.source_x);
+    out.push_back(info.source_y);
+    out.push_back(info.source_width);
+    out.push_back(info.source_height);
+    out.push_back(z);
+    out.push_back(0);
+  }
+  if (out.empty()) return nullptr;
+  jlongArray result = env->NewLongArray(static_cast<jsize>(out.size()));
+  if (result == nullptr) return nullptr;
+  env->SetLongArrayRegion(result, 0, static_cast<jsize>(out.size()), out.data());
+  return result;
+}
+
+// Kitty image pixels: 16-byte little-endian header [width, height, format, 0]
+// followed by fully decoded pixels (RGBA/RGB). Null until pixels arrive.
+JNIEXPORT jbyteArray JNICALL
+Java_io_github_sagernet_libghostty_GhosttyVt_nativeKittyImage(
+    JNIEnv* env, jobject, jlong handle, jint imageId) {
+  auto* session = fromHandle(handle);
+  if (session == nullptr) return nullptr;
+  GhosttyKittyGraphics storage = nullptr;
+  if (ghostty_terminal_get(session->term, GHOSTTY_TERMINAL_DATA_KITTY_GRAPHICS, &storage) !=
+          GHOSTTY_SUCCESS ||
+      storage == nullptr) {
+    return nullptr;
+  }
+  GhosttyKittyGraphicsImage image =
+      ghostty_kitty_graphics_image(storage, static_cast<uint32_t>(imageId));
+  if (image == nullptr) return nullptr;
+  uint32_t width = 0, height = 0;
+  int32_t format = 0;
+  GhosttyString pixels{};
+  if (ghostty_kitty_graphics_image_get(image, GHOSTTY_KITTY_GRAPHICS_IMAGE_DATA_WIDTH, &width) !=
+          GHOSTTY_SUCCESS ||
+      ghostty_kitty_graphics_image_get(image, GHOSTTY_KITTY_GRAPHICS_IMAGE_DATA_HEIGHT, &height) !=
+          GHOSTTY_SUCCESS ||
+      ghostty_kitty_graphics_image_get(image, GHOSTTY_KITTY_GRAPHICS_IMAGE_DATA_FORMAT,
+                                       &format) != GHOSTTY_SUCCESS ||
+      ghostty_kitty_graphics_image_get(image, GHOSTTY_KITTY_GRAPHICS_IMAGE_DATA_PIXELS,
+                                       &pixels) != GHOSTTY_SUCCESS ||
+      pixels.ptr == nullptr || pixels.len == 0) {
+    return nullptr;
+  }
+  const size_t header = 16;
+  std::vector<uint8_t> out(header + pixels.len);
+  const uint32_t f = static_cast<uint32_t>(format);
+  memcpy(out.data(), &width, 4);
+  memcpy(out.data() + 4, &height, 4);
+  memcpy(out.data() + 8, &f, 4);
+  const uint32_t reserved = 0;
+  memcpy(out.data() + 12, &reserved, 4);
+  memcpy(out.data() + header, pixels.ptr, pixels.len);
+  jbyteArray result = env->NewByteArray(static_cast<jsize>(out.size()));
+  if (result == nullptr) return nullptr;
+  env->SetByteArrayRegion(result, 0, static_cast<jsize>(out.size()),
+                          reinterpret_cast<const jbyte*>(out.data()));
+  return result;
 }
 
 }  // extern "C"

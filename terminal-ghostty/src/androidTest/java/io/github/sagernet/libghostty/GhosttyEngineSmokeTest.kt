@@ -16,6 +16,55 @@ import org.junit.runner.RunWith
 class GhosttyEngineSmokeTest {
 
     @Test
+    fun kittyPlacementsExistNatively() {
+        val handle = GhosttyVt.nativeCreate(20, 6, 1000, "x", null, 1, true, null)
+        assertTrue(handle != 0L)
+        GhosttyVt.nativeResize(handle, 20, 6, 19, 38)
+        val kitty = byteArrayOf(0x1b) +
+            "_Ga=T,f=32,s=2,v=2,c=2,r=1,i=7;/wAA/wD/AP8AAP///////w==".toByteArray() +
+            byteArrayOf(0x1b, 0x5c)
+        GhosttyVt.nativeWrite(handle, kitty, 0, kitty.size)
+        val placements = GhosttyVt.nativeKittyPlacements(handle)
+        GhosttyVt.nativeFree(handle)
+        assertTrue("placements=${placements?.size ?: -1}", (placements?.size ?: 0) > 0)
+    }
+
+    @Test
+    fun kittyImagesAreDecodedAndPlaced() {
+        val instrumentation = InstrumentationRegistry.getInstrumentation()
+        val context = instrumentation.targetContext
+        lateinit var session: GhosttyTerminalSession
+        lateinit var view: GhosttyTerminalView
+        instrumentation.runOnMainSync {
+            session = GhosttyTerminalSession(
+                context,
+                GhosttyTerminalSession.Options(columns = 20, rows = 6),
+            )
+            view = GhosttyTerminalView(context)
+            view.session = session
+            view.measure(
+                View.MeasureSpec.makeMeasureSpec(600, View.MeasureSpec.EXACTLY),
+                View.MeasureSpec.makeMeasureSpec(300, View.MeasureSpec.EXACTLY),
+            )
+            view.layout(0, 0, 600, 300)
+            val kitty = byteArrayOf(0x1b) +
+                "_Ga=T,f=32,s=2,v=2,c=2,r=1,i=7;/wAA/wD/AP8AAP///////w==".toByteArray() +
+                byteArrayOf(0x1b, 0x5c)
+            session.feedOutput(kitty)
+        }
+        Thread.sleep(250)
+        instrumentation.waitForIdleSync()
+        instrumentation.runOnMainSync { view.refreshKittyForTest() }
+        val drawn = Bitmap.createBitmap(600, 300, Bitmap.Config.ARGB_8888)
+        instrumentation.runOnMainSync { view.draw(Canvas(drawn)) }
+        assertTrue(
+            "placement count=${view.kittyPlacementCount}",
+            view.kittyPlacementCount > 0,
+        )
+        session.close()
+    }
+
+    @Test
     fun viewNeverPaintsOutsideItsBounds() {
         val instrumentation = InstrumentationRegistry.getInstrumentation()
         val context = instrumentation.targetContext

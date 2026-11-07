@@ -119,6 +119,9 @@ public class GhosttyTerminalView @JvmOverloads constructor(
                 clearSelection()
             }
             field?.detach(this)
+            kittyImages = emptyList()
+            kittyPlacementCount = 0
+            kittyCache.evictAll()
             composingText = null
             passwordInput = false
             field = value
@@ -292,6 +295,22 @@ public class GhosttyTerminalView @JvmOverloads constructor(
     private val underlinePath = Path()
     private val boxStroke = Paint(Paint.ANTI_ALIAS_FLAG)
     private val boxArc = RectF()
+
+    /** Decoded kitty images currently visible, drawn above the text. */
+    private class KittyImage(val bitmap: Bitmap, val source: Rect, val dest: RectF)
+    private var kittyImages: List<KittyImage> = emptyList()
+    private val kittyPaint = Paint(Paint.FILTER_BITMAP_FLAG)
+    private val kittyCache = object : LruCache<Long, Bitmap>(64 * 1024 * 1024) {
+        override fun sizeOf(key: Long, value: Bitmap): Int = value.byteCount
+    }
+
+    /** Test/diagnostic hook: visible placements decoded for the last frame. */
+    internal var kittyPlacementCount: Int = 0
+        private set
+
+    internal fun refreshKittyForTest() {
+        session?.withTerminal { updateKittyImages(it) }
+    }
     private var jumpChipCenterX = 0f
     private var jumpChipCenterY = 0f
     private val flingRunnable = object : Runnable {
@@ -864,6 +883,7 @@ public class GhosttyTerminalView @JvmOverloads constructor(
             if (dirtyKind == DIRTY_FULL) canvas.drawColor(defaultBackground)
             repeat(rowCount) { drawRowRecord(buffer, canvas, snapshotCols) }
             canvas.restoreToCount(save)
+            updateKittyImages(handle)
             if (selectionActive) {
                 if (selectionBounds() == null) clearSelection() else invalidateActionModeContentRect()
             }
@@ -1429,6 +1449,7 @@ public class GhosttyTerminalView @JvmOverloads constructor(
         canvas.clipRect(0, 0, gridWidthPx, gridHeightPx + bitmapGridOffsetY)
         bitmap?.let { canvas.drawBitmap(it, 0f, 0f, null) }
         canvas.restoreToCount(bitmapSave)
+        drawKittyImages(canvas)
         val save = canvas.save()
         canvas.translate(0f, gridOffsetY)
         canvas.clipRect(0, 0, gridWidthPx, gridHeightPx)
@@ -1447,6 +1468,102 @@ public class GhosttyTerminalView @JvmOverloads constructor(
         drawScrollIndicator(canvas)
         drawJumpToBottomChip(canvas)
         canvas.restoreToCount(root)
+    }
+
+    private fun updateKittyImages(handle: Long) {
+        val placements = GhosttyVt.nativeKittyPlacements(handle)
+        if (placements == null || placements.isEmpty()) {
+            kittyImages = emptyList()
+            kittyPlacementCount = 0
+            return
+        }
+        val images = ArrayList<KittyImage>(placements.size / 12)
+        var i = 0
+        while (i + 12 <= placements.size) {
+            val imageId = placements[i].toInt()
+            val generation = placements[i + 1]
+            val col = placements[i + 2].toInt()
+            val row = placements[i + 3].toInt()
+            val pixelW = placements[i + 4].toInt()
+            val pixelH = placements[i + 5].toInt()
+            val sourceX = placements[i + 6].toInt()
+            val sourceY = placements[i + 7].toInt()
+            val sourceW = placements[i + 8].toInt()
+            val sourceH = placements[i + 9].toInt()
+            val bitmap = kittyBitmap(handle, imageId, generation)
+            if (bitmap != null && pixelW > 0 && pixelH > 0) {
+                val srcW = if (sourceW > 0) sourceW else bitmap.width
+                val srcH = if (sourceH > 0) sourceH else bitmap.height
+                val sx = sourceX.coerceIn(0, max(0, bitmap.width - 1))
+                val sy = sourceY.coerceIn(0, max(0, bitmap.height - 1))
+                val source = Rect(
+                    sx,
+                    sy,
+                    (sx + srcW).coerceAtMost(bitmap.width),
+                    (sy + srcH).coerceAtMost(bitmap.height),
+                )
+                val left = (col * cellWidth).toFloat()
+                val top = (row * cellHeight).toFloat()
+                images += KittyImage(
+                    bitmap,
+                    source,
+                    RectF(left, top, left + pixelW, top + pixelH),
+                )
+            }
+            i += 12
+        }
+        kittyImages = images
+        kittyPlacementCount = images.size
+    }
+
+    private fun kittyBitmap(handle: Long, imageId: Int, generation: Long): Bitmap? {
+        val key = (imageId.toLong() shl 32) xor (generation and 0xFFFFFFFFL)
+        kittyCache.get(key)?.let { return it }
+        val data = GhosttyVt.nativeKittyImage(handle, imageId) ?: return null
+        if (data.size < 16) return null
+        val buffer = ByteBuffer.wrap(data).order(ByteOrder.LITTLE_ENDIAN)
+        val width = buffer.int
+        val height = buffer.int
+        val format = buffer.int
+        buffer.int
+        if (width <= 0 || height <= 0) return null
+        val pixelCount = width * height
+        val channels = if (format == KITTY_FORMAT_RGB) 3 else 4
+        if (data.size < 16 + pixelCount * channels) return null
+        val argb = IntArray(pixelCount)
+        var offset = 16
+        if (channels == 4) {
+            for (index in 0 until pixelCount) {
+                val r = data[offset].toInt() and 0xFF
+                val g = data[offset + 1].toInt() and 0xFF
+                val b = data[offset + 2].toInt() and 0xFF
+                val a = data[offset + 3].toInt() and 0xFF
+                argb[index] = (a shl 24) or (r shl 16) or (g shl 8) or b
+                offset += 4
+            }
+        } else {
+            for (index in 0 until pixelCount) {
+                val r = data[offset].toInt() and 0xFF
+                val g = data[offset + 1].toInt() and 0xFF
+                val b = data[offset + 2].toInt() and 0xFF
+                argb[index] = (0xFF shl 24) or (r shl 16) or (g shl 8) or b
+                offset += 3
+            }
+        }
+        val bitmap = Bitmap.createBitmap(argb, width, height, Bitmap.Config.ARGB_8888)
+        kittyCache.put(key, bitmap)
+        return bitmap
+    }
+
+    private fun drawKittyImages(canvas: Canvas) {
+        if (kittyImages.isEmpty()) return
+        val save = canvas.save()
+        canvas.translate(0f, gridOffsetY)
+        canvas.clipRect(0f, 0f, gridWidthPx.toFloat(), gridHeightPx.toFloat())
+        for (image in kittyImages) {
+            canvas.drawBitmap(image.bitmap, image.source, image.dest, kittyPaint)
+        }
+        canvas.restoreToCount(save)
     }
 
     private fun drawComposingText(canvas: Canvas) {
@@ -1961,6 +2078,7 @@ public class GhosttyTerminalView @JvmOverloads constructor(
         private const val PINCH_SCALE_STEP = 0.1f
         private const val BLINK_INTERVAL_MS = 600L
         private const val FAINT_ALPHA = 160
+        private const val KITTY_FORMAT_RGB = 0
         private const val WHEEL_SCROLL_ROWS = 3
         private const val FLING_TRACKING_VELOCITY_SCALE = 0.25f
         private const val ACTION_MODE_DRAG_HIDE_MS = 300L

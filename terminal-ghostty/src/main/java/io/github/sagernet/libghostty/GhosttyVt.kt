@@ -86,6 +86,12 @@ internal object GhosttyVt {
 
     external fun nativeViewportState(handle: Long): Int
 
+    /** Visible kitty placements: 12 longs each (see ghostty_jni.cpp). */
+    external fun nativeKittyPlacements(handle: Long): LongArray?
+
+    /** Kitty image: 16-byte header [w,h,format,0] + decoded pixels. */
+    external fun nativeKittyImage(handle: Long, imageId: Int): ByteArray?
+
     /** Change the default cursor style for programs that do not set DECSCUSR. */
     external fun nativeSetDefaultCursorStyle(handle: Long, style: Int): Boolean
 
