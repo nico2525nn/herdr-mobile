@@ -91,7 +91,7 @@ class FakeHerdrSession(
         focusCalls += tabId
     }
 
-    override suspend fun createTab(workspaceId: String, label: String?): String {
+    override suspend fun createTab(workspaceId: String, label: String?, focus: Boolean): String {
         failIfScripted()
         return "new-tab"
     }

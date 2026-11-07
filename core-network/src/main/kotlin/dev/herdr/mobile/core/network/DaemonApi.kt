@@ -137,10 +137,11 @@ class DaemonApi(
         post("v1/agent/report", HerdrJson.encodeToString(AgentReport.serializer(), report))
     }
 
-    suspend fun createTab(workspaceId: String, label: String?): String {
+    suspend fun createTab(workspaceId: String, label: String?, focus: Boolean = true): String {
         val body = buildJsonObject {
             put("workspaceId", workspaceId)
             if (label != null) put("label", label)
+            put("focus", focus)
         }.toString()
         val obj = post("v1/tab", body)
         return obj["tabId"]?.jsonPrimitive?.contentOrNull

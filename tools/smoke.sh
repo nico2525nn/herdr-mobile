@@ -137,6 +137,42 @@ else
   fail "rails are not painted (terminal view clipped?)"
 fi
 
+# Tab switching must recreate the terminal view for the new backend. AndroidView
+# captures its factory, so a controller swap without a key left the old (closed)
+# session on screen. The tab is created without focus so the desktop's focus is
+# untouched (the daemon only focuses when the caller asks).
+TAB2=$(api -X POST "$BASE_URL/v1/tab" -H 'Content-Type: application/json' \
+  -d "{\"workspaceId\":\"$WS\",\"label\":\"two\",\"focus\":false}" 2>/dev/null |
+  python3 -c 'import sys,json;print(json.load(sys.stdin).get("tabId",""))' 2>/dev/null)
+sleep 2
+tab_bounds() {
+  adb_ shell uiautomator dump /sdcard/tabs.xml >/dev/null 2>&1 || true
+  adb_ shell cat /sdcard/tabs.xml 2>/dev/null |
+    python3 -c '
+import re,sys
+x=sys.stdin.read()
+m=re.search(r"text=\"" + sys.argv[1] + r"\"[^>]*bounds=\"\[(\d+),(\d+)\]\[(\d+),(\d+)\]\"", x)
+print("" if not m else f"{(int(m.group(1))+int(m.group(3)))//2} {(int(m.group(2))+int(m.group(4)))//2}")' "$1"
+}
+TWO_BOUNDS="$(tab_bounds two)"
+if [[ -n "$TWO_BOUNDS" && -n "$TAB2" ]]; then
+  shot "$WORKDIR/tab-one.png"
+  adb_ shell input tap $TWO_BOUNDS
+  sleep 3
+  shot "$WORKDIR/tab-two.png"
+  ONE_BOUNDS="$(tab_bounds 1)"
+  [[ -n "$ONE_BOUNDS" ]] && adb_ shell input tap $ONE_BOUNDS
+  sleep 3
+  TAB_DELTA=$(changed "$WORKDIR/tab-one.png" "$WORKDIR/tab-two.png")
+  if (( TAB_DELTA > 20000 )); then
+    pass "tab switch replaces the terminal view ($TAB_DELTA px)"
+  else
+    fail "tab switch did not change the screen ($TAB_DELTA px)"
+  fi
+else
+  fail "second tab chip not found"
+fi
+
 shot "$WORKDIR/scroll-before.png"
 adb_ shell input touchscreen swipe 540 1400 540 1000 700
 sleep 3

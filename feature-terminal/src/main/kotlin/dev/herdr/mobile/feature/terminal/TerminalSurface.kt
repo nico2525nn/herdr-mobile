@@ -2,12 +2,14 @@ package dev.herdr.mobile.feature.terminal
 
 import android.graphics.Typeface
 import androidx.compose.foundation.layout.ExperimentalLayoutApi
+import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.isImeVisible
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
@@ -158,22 +160,29 @@ internal fun TerminalSurface(
     val stickyNow = androidx.compose.runtime.rememberUpdatedState(state.stickyModifiers)
     LaunchedEffect(controller) {
         kotlinx.coroutines.coroutineScope {
+            var ctrlSeen = false
             launch {
                 extraKeys.ctrl.collect { latch ->
-                    if (latch == GhosttyExtraKeysState.StickyState.INACTIVE &&
+                    // Skip the StateFlow's initial value: a fresh controller
+                    // starts INACTIVE and must not clear a panel latch that was
+                    // armed before the tab switch.
+                    if (ctrlSeen && latch == GhosttyExtraKeysState.StickyState.INACTIVE &&
                         TerminalKeyEncoder.Modifier.CTRL in stickyNow.value
                     ) {
                         viewModel.clearStickyModifiers()
                     }
+                    ctrlSeen = true
                 }
             }
+            var altSeen = false
             launch {
                 extraKeys.alt.collect { latch ->
-                    if (latch == GhosttyExtraKeysState.StickyState.INACTIVE &&
+                    if (altSeen && latch == GhosttyExtraKeysState.StickyState.INACTIVE &&
                         TerminalKeyEncoder.Modifier.ALT in stickyNow.value
                     ) {
                         viewModel.clearStickyModifiers()
                     }
+                    altSeen = true
                 }
             }
         }
@@ -220,10 +229,15 @@ internal fun TerminalSurface(
         }
     }
 
-    AndroidView(
-        factory = { controller.view },
-        modifier = modifier,
-    )
+    // AndroidView captures `factory` on first composition; without this key a
+    // tab/workspace switch (new backend → new controller) kept the OLD view,
+    // still bound to the closed session, so the terminal looked dead.
+    key(controller) {
+        AndroidView(
+            factory = { controller.view },
+            modifier = modifier.fillMaxSize(),
+        )
+    }
 
     DisposableEffect(controller) {
         onDispose { controller.close() }
@@ -242,7 +256,15 @@ private fun syncSticky(
     armed: Boolean,
     toggle: () -> Unit,
 ) {
-    val isArmed = current != GhosttyExtraKeysState.StickyState.INACTIVE
-    if (isArmed == armed) return
-    toggle()
+    var state = current
+    var attempts = 0
+    while ((state != GhosttyExtraKeysState.StickyState.INACTIVE) != armed && attempts < 3) {
+        toggle()
+        state = when (state) {
+            GhosttyExtraKeysState.StickyState.INACTIVE -> GhosttyExtraKeysState.StickyState.ARMED
+            GhosttyExtraKeysState.StickyState.ARMED -> GhosttyExtraKeysState.StickyState.LOCKED
+            GhosttyExtraKeysState.StickyState.LOCKED -> GhosttyExtraKeysState.StickyState.INACTIVE
+        }
+        attempts++
+    }
 }

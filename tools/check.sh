@@ -41,10 +41,12 @@ run() {
   fi
 }
 
-gradle_tests() { ./gradlew test --offline --console=plain; }
+gradle_tests() { ./gradlew test :terminal-ghostty:assembleDebug --offline --console=plain; }
 cargo_tests()  { ( cd daemon && cargo test --release --offline ); }
 
-run "JVM unit tests (./gradlew test --offline)" gradle_tests
+run "JVM unit tests + native build" gradle_tests
+# Runs after the Gradle build so the native libraries exist.
+run "JNI symbols" ./tools/check-jni.sh
 
 if command -v cargo >/dev/null 2>&1; then
   run "daemon tests (cargo test --release --offline)" cargo_tests

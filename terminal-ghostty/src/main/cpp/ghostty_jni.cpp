@@ -1552,9 +1552,28 @@ JNIEXPORT jint JNICALL JNI_OnLoad(JavaVM* vm, void*) {
   return JNI_VERSION_1_6;
 }
 
-// Kitty graphics: placements currently visible in the viewport, 12 longs each:
+// Kitty graphics: placements currently visible in the viewport, 13 longs each:
 // [imageId, generation, viewportCol, viewportRow, pixelW, pixelH,
-//  sourceX, sourceY, sourceW, sourceH, z, reserved]
+//  sourceX, sourceY, sourceW, sourceH, z, xOffsetPx, yOffsetPx]
+JNIEXPORT jlong JNICALL
+Java_io_github_sagernet_libghostty_GhosttyVt_nativeKittyTick(
+    JNIEnv*, jobject, jlong handle, jlong nowMs) {
+  auto* session = fromHandle(handle);
+  if (session == nullptr) return 0;
+  GhosttyKittyGraphics storage = nullptr;
+  if (ghostty_terminal_get(session->term, GHOSTTY_TERMINAL_DATA_KITTY_GRAPHICS, &storage) !=
+          GHOSTTY_SUCCESS ||
+      storage == nullptr) {
+    return 0;
+  }
+  uint64_t next = 0;
+  if (ghostty_kitty_graphics_animation_tick(storage, static_cast<uint64_t>(nowMs), &next) !=
+      GHOSTTY_SUCCESS) {
+    return 0;
+  }
+  return static_cast<jlong>(next);
+}
+
 JNIEXPORT jlongArray JNICALL
 Java_io_github_sagernet_libghostty_GhosttyVt_nativeKittyPlacements(
     JNIEnv* env, jobject, jlong handle) {
@@ -1599,6 +1618,11 @@ Java_io_github_sagernet_libghostty_GhosttyVt_nativeKittyPlacements(
     uint64_t generation = 0;
     ghostty_kitty_graphics_image_get(image, GHOSTTY_KITTY_GRAPHICS_IMAGE_DATA_GENERATION,
                                      &generation);
+    uint32_t xOffset = 0, yOffset = 0;
+    ghostty_kitty_graphics_placement_get(it, GHOSTTY_KITTY_GRAPHICS_PLACEMENT_DATA_X_OFFSET,
+                                         &xOffset);
+    ghostty_kitty_graphics_placement_get(it, GHOSTTY_KITTY_GRAPHICS_PLACEMENT_DATA_Y_OFFSET,
+                                         &yOffset);
     out.push_back(static_cast<jlong>(imageId));
     out.push_back(static_cast<jlong>(generation));
     out.push_back(info.viewport_col);
@@ -1610,7 +1634,8 @@ Java_io_github_sagernet_libghostty_GhosttyVt_nativeKittyPlacements(
     out.push_back(info.source_width);
     out.push_back(info.source_height);
     out.push_back(z);
-    out.push_back(0);
+    out.push_back(xOffset);
+    out.push_back(yOffset);
   }
   if (out.empty()) return nullptr;
   jlongArray result = env->NewLongArray(static_cast<jsize>(out.size()));

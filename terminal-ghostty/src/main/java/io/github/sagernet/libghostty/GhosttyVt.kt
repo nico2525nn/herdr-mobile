@@ -86,7 +86,10 @@ internal object GhosttyVt {
 
     external fun nativeViewportState(handle: Long): Int
 
-    /** Visible kitty placements: 12 longs each (see ghostty_jni.cpp). */
+    /** Next animation frame time (same clock), or 0 when nothing is playing. */
+    external fun nativeKittyTick(handle: Long, nowMs: Long): Long
+
+    /** Visible kitty placements: 14 longs each (see ghostty_jni.cpp). */
     external fun nativeKittyPlacements(handle: Long): LongArray?
 
     /** Kitty image: 16-byte header [w,h,format,0] + decoded pixels. */

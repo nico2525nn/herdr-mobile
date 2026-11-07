@@ -267,13 +267,18 @@ impl HerdrClient {
         Ok(())
     }
 
-    pub async fn tab_create(&self, workspace_id: &str, label: Option<&str>) -> Result<String> {
+    pub async fn tab_create(
+        &self,
+        workspace_id: &str,
+        label: Option<&str>,
+        focus: bool,
+    ) -> Result<String> {
         let mut params = serde_json::Map::new();
         params.insert("workspace_id".into(), Value::String(workspace_id.to_string()));
         if let Some(label) = label {
             params.insert("label".into(), Value::String(label.to_string()));
         }
-        params.insert("focus".into(), Value::Bool(true));
+        params.insert("focus".into(), Value::Bool(focus));
         let result = self.request("tab.create", Value::Object(params)).await?;
         result
             .get("tab")

@@ -1,5 +1,33 @@
 # Changelog
 
+## 2.0.6 — 2026-11-07
+
+Tab/workspace switching and a batch of engine details.
+
+- **Tab switching was dead**: AndroidView captures its factory on first
+  composition, so a backend change created a new controller/session while the
+  old (closed) view stayed on screen. The view is now keyed on the controller.
+- **Daemon tab creation always stole host focus**: `/v1/tab` hardcoded
+  `focus: true`, so creating a tab from a phone moved the desktop's keyboard
+  focus (our own smoke caught it). Focus is now a request field, default false;
+  the app asks for focus explicitly.
+- The terminal view now fills its box (`fillMaxSize`).
+- High-throughput output enqueued one main-thread Runnable per socket chunk;
+  posts are coalesced per frame.
+- Kitty: per-placement x/y pixel offsets are applied, the bitmap cache key can
+  no longer collide (id+generation), GRAY/GRAY_ALPHA images decode, and animated
+  images schedule their next frame (the missing JNI symbol crashed the first
+  frame — now covered by `tools/check-jni.sh`, which verifies every `external
+  fun` against the built libraries for all ABIs).
+- Long-press selects text first; a link menu only opens when there is nothing
+  selectable.
+- Sticky CTRL/ALT: syncing handles LOCKED state and no longer clears a latch on
+  a fresh controller's initial emission (tab switches kept clearing it).
+- Switching tabs no longer closes the keyboard (IME hide keys on a missing
+  target, not the transient missing backend).
+- Smoke now creates a second tab without focus and asserts that tapping it
+  replaces the terminal view.
+
 ## 2.0.5 — 2026-11-07
 
 - Kitty inline images are supported again (and now actually work): the 1.0

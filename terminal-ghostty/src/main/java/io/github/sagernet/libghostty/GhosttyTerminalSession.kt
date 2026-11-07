@@ -145,6 +145,7 @@ public class GhosttyTerminalSession private constructor(
     private var cellHeightPixels = 0
 
     private var sentColumns = 0
+    private var framePostPending = false
     private var sentRows = 0
     private var sentCellWidthPixels = 0
     private var sentCellHeightPixels = 0
@@ -178,9 +179,15 @@ public class GhosttyTerminalSession private constructor(
             // arrive within a small time budget.
             sendRawInput(response)
         }
-        mainHandler.post {
-            withTerminal { drainEvents(it) }
-            attachedView?.scheduleFrame()
+        // One post per frame: high-throughput output used to enqueue a
+        // Runnable per socket chunk.
+        if (!framePostPending) {
+            framePostPending = true
+            mainHandler.post {
+                framePostPending = false
+                withTerminal { drainEvents(it) }
+                attachedView?.scheduleFrame()
+            }
         }
     }
 

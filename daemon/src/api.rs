@@ -453,13 +453,16 @@ async fn tab_create(
         return api_error(StatusCode::BAD_REQUEST, "bad_request", "missing workspaceId");
     };
     let label = body.get("label").and_then(|v| v.as_str());
+    // Never steal host focus unless the caller asks: another device creating a
+    // tab must not move the desktop's keyboard focus.
+    let focus = body.get("focus").and_then(|v| v.as_bool()).unwrap_or(false);
     if selected_backend(&state, &headers) == crate::config::Backend::Core {
         return match state.core.create_tab(workspace_id, label).await {
             Ok(tab_id) => (StatusCode::OK, Json(json!({"ok":true,"tabId":tab_id}))).into_response(),
             Err(error) => core_error(error),
         };
     }
-    match state.cache.herdr_client().tab_create(workspace_id, label).await {
+    match state.cache.herdr_client().tab_create(workspace_id, label, focus).await {
         Ok(tab_id) => (StatusCode::OK, Json(json!({"ok": true, "tabId": tab_id}))).into_response(),
         Err(e) => herdr_error(e),
     }

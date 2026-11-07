@@ -37,6 +37,7 @@ import android.view.View
 import android.view.ViewConfiguration
 import android.view.WindowInsets
 import android.view.accessibility.AccessibilityManager
+import android.view.accessibility.AccessibilityNodeInfo
 import android.view.inputmethod.BaseInputConnection
 import android.view.inputmethod.EditorInfo
 import android.view.inputmethod.InputConnection
@@ -300,8 +301,9 @@ public class GhosttyTerminalView @JvmOverloads constructor(
     private class KittyImage(val bitmap: Bitmap, val source: Rect, val dest: RectF)
     private var kittyImages: List<KittyImage> = emptyList()
     private val kittyPaint = Paint(Paint.FILTER_BITMAP_FLAG)
-    private val kittyCache = object : LruCache<Long, Bitmap>(64 * 1024 * 1024) {
-        override fun sizeOf(key: Long, value: Bitmap): Int = value.byteCount
+    private data class KittyKey(val imageId: Int, val generation: Long)
+    private val kittyCache = object : LruCache<KittyKey, Bitmap>(64 * 1024 * 1024) {
+        override fun sizeOf(key: KittyKey, value: Bitmap): Int = value.byteCount
     }
 
     /** Test/diagnostic hook: visible placements decoded for the last frame. */
@@ -380,12 +382,14 @@ public class GhosttyTerminalView @JvmOverloads constructor(
                     val link = GhosttyVt.nativeHyperlinkAt(handle, lastPressCol, lastPressRow)
                         ?.toString(Charsets.UTF_8)
                         ?: if (urlDetectionEnabled) detectUrlAt(lastPressRow, lastPressCol) else null
-                    if (link != null) {
+                    // Selecting text wins over opening a link; a link menu is
+                    // only the fallback when there is nothing to select.
+                    selectionActive = GhosttyVt.nativeSelectWord(handle, lastPressCol, lastPressRow)
+                    scheduleFrame()
+                    if (!selectionActive && link != null) {
                         showLinkMenu(link)
                         return@withTerminal
                     }
-                    selectionActive = GhosttyVt.nativeSelectWord(handle, lastPressCol, lastPressRow)
-                    scheduleFrame()
                     if (selectionActive) {
                         draggingHandle = HANDLE_END
                         dragAnchorCol = lastPressCol
@@ -884,6 +888,11 @@ public class GhosttyTerminalView @JvmOverloads constructor(
             repeat(rowCount) { drawRowRecord(buffer, canvas, snapshotCols) }
             canvas.restoreToCount(save)
             updateKittyImages(handle)
+            val now = SystemClock.uptimeMillis()
+            val nextFrame = GhosttyVt.nativeKittyTick(handle, now)
+            if (nextFrame > now) {
+                postInvalidateDelayed((nextFrame - now).coerceIn(16L, 1_000L))
+            }
             if (selectionActive) {
                 if (selectionBounds() == null) clearSelection() else invalidateActionModeContentRect()
             }
@@ -1433,6 +1442,12 @@ public class GhosttyTerminalView @JvmOverloads constructor(
         actionMode?.finish()
     }
 
+    override fun onInitializeAccessibilityNodeInfo(info: AccessibilityNodeInfo) {
+        super.onInitializeAccessibilityNodeInfo(info)
+        info.className = "android.widget.TextView"
+        contentDescription?.let { info.contentDescription = it }
+    }
+
     override fun isOpaque(): Boolean = true
 
     override fun onDraw(canvas: Canvas) {
@@ -1477,9 +1492,9 @@ public class GhosttyTerminalView @JvmOverloads constructor(
             kittyPlacementCount = 0
             return
         }
-        val images = ArrayList<KittyImage>(placements.size / 12)
+        val images = ArrayList<KittyImage>(placements.size / 13)
         var i = 0
-        while (i + 12 <= placements.size) {
+        while (i + 13 <= placements.size) {
             val imageId = placements[i].toInt()
             val generation = placements[i + 1]
             val col = placements[i + 2].toInt()
@@ -1490,6 +1505,8 @@ public class GhosttyTerminalView @JvmOverloads constructor(
             val sourceY = placements[i + 7].toInt()
             val sourceW = placements[i + 8].toInt()
             val sourceH = placements[i + 9].toInt()
+            val xOffset = placements[i + 11].toInt()
+            val yOffset = placements[i + 12].toInt()
             val bitmap = kittyBitmap(handle, imageId, generation)
             if (bitmap != null && pixelW > 0 && pixelH > 0) {
                 val srcW = if (sourceW > 0) sourceW else bitmap.width
@@ -1502,22 +1519,22 @@ public class GhosttyTerminalView @JvmOverloads constructor(
                     (sx + srcW).coerceAtMost(bitmap.width),
                     (sy + srcH).coerceAtMost(bitmap.height),
                 )
-                val left = (col * cellWidth).toFloat()
-                val top = (row * cellHeight).toFloat()
+                val left = col * cellWidth + xOffset.toFloat()
+                val top = row * cellHeight + yOffset.toFloat()
                 images += KittyImage(
                     bitmap,
                     source,
                     RectF(left, top, left + pixelW, top + pixelH),
                 )
             }
-            i += 12
+            i += 13
         }
         kittyImages = images
         kittyPlacementCount = images.size
     }
 
     private fun kittyBitmap(handle: Long, imageId: Int, generation: Long): Bitmap? {
-        val key = (imageId.toLong() shl 32) xor (generation and 0xFFFFFFFFL)
+        val key = KittyKey(imageId, generation)
         kittyCache.get(key)?.let { return it }
         val data = GhosttyVt.nativeKittyImage(handle, imageId) ?: return null
         if (data.size < 16) return null
@@ -1528,11 +1545,29 @@ public class GhosttyTerminalView @JvmOverloads constructor(
         buffer.int
         if (width <= 0 || height <= 0) return null
         val pixelCount = width * height
-        val channels = if (format == KITTY_FORMAT_RGB) 3 else 4
+        val channels = when (format) {
+            KITTY_FORMAT_RGB -> 3
+            KITTY_FORMAT_GRAY -> 1
+            KITTY_FORMAT_GRAY_ALPHA -> 2
+            else -> 4
+        }
         if (data.size < 16 + pixelCount * channels) return null
         val argb = IntArray(pixelCount)
         var offset = 16
-        if (channels == 4) {
+        if (format == KITTY_FORMAT_GRAY) {
+            for (index in 0 until pixelCount) {
+                val v = data[offset].toInt() and 0xFF
+                argb[index] = (0xFF shl 24) or (v shl 16) or (v shl 8) or v
+                offset += 1
+            }
+        } else if (format == KITTY_FORMAT_GRAY_ALPHA) {
+            for (index in 0 until pixelCount) {
+                val v = data[offset].toInt() and 0xFF
+                val a = data[offset + 1].toInt() and 0xFF
+                argb[index] = (a shl 24) or (v shl 16) or (v shl 8) or v
+                offset += 2
+            }
+        } else if (channels == 4) {
             for (index in 0 until pixelCount) {
                 val r = data[offset].toInt() and 0xFF
                 val g = data[offset + 1].toInt() and 0xFF
@@ -2079,6 +2114,8 @@ public class GhosttyTerminalView @JvmOverloads constructor(
         private const val BLINK_INTERVAL_MS = 600L
         private const val FAINT_ALPHA = 160
         private const val KITTY_FORMAT_RGB = 0
+        private const val KITTY_FORMAT_GRAY_ALPHA = 3
+        private const val KITTY_FORMAT_GRAY = 4
         private const val WHEEL_SCROLL_ROWS = 3
         private const val FLING_TRACKING_VELOCITY_SCALE = 0.25f
         private const val ACTION_MODE_DRAG_HIDE_MS = 300L

@@ -29,8 +29,8 @@ internal class SessionCommands(
             api().reportAgent(AgentReport(paneId = paneId, status = status, message = message, agent = agent))
         }
 
-    suspend fun createTab(workspaceId: String, label: String?): String =
-        withContext(Dispatchers.IO) { api().createTab(workspaceId, label) }
+    suspend fun createTab(workspaceId: String, label: String?, focus: Boolean): String =
+        withContext(Dispatchers.IO) { api().createTab(workspaceId, label, focus) }
 
     suspend fun closeTab(tabId: String) =
         withContext(Dispatchers.IO) { api().closeTab(tabId) }

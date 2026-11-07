@@ -38,7 +38,7 @@ interface HerdrSession {
 
     suspend fun focusTab(tabId: String)
 
-    suspend fun createTab(workspaceId: String, label: String?): String
+    suspend fun createTab(workspaceId: String, label: String?, focus: Boolean = true): String
 
     suspend fun closeTab(tabId: String)
 

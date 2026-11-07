@@ -118,8 +118,8 @@ class HerdrClient(
         agent: String? = null,
     ) = commands.reportAgent(paneId, status, message, agent)
 
-    override suspend fun createTab(workspaceId: String, label: String?): String =
-        commands.createTab(workspaceId, label)
+    override suspend fun createTab(workspaceId: String, label: String?, focus: Boolean): String =
+        commands.createTab(workspaceId, label, focus)
 
     override suspend fun closeTab(tabId: String) = commands.closeTab(tabId)
 

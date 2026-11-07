@@ -74,8 +74,10 @@ fun TerminalScreen(
             as? android.view.inputmethod.InputMethodManager ?: return
         imm.hideSoftInputFromWindow(rootView.windowToken, 0)
     }
-    LaunchedEffect(state.backend) {
-        if (state.backend == null) hideImeNow()
+    // A tab/pane switch momentarily has no backend; the keyboard belongs to
+    // the screen, not the old pane, so only a missing target closes it.
+    LaunchedEffect(state.target) {
+        if (state.target == null) hideImeNow()
     }
     DisposableEffect(rootView) {
         onDispose { hideImeNow() }
