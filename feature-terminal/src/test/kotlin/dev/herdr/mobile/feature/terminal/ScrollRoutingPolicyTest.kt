@@ -42,9 +42,11 @@ class ScrollRoutingPolicyTest {
     }
 
     @Test
-    fun `a full-screen unknown app pages`() {
+    fun `an unknown pane without host scrollback lets the server decide`() {
+        // Sending PgUp/PgDn here hits readline's history-search bindings on a
+        // shell; the daemon checks the foreground process before typing keys.
         assertEquals(
-            ScrollRouting.REMOTE_PAGE,
+            ScrollRouting.REMOTE_SERVER,
             scrollRoutingFor(ScrollMode.AUTO, pane(scroll = fullScreen())),
         )
     }
@@ -59,7 +61,12 @@ class ScrollRoutingPolicyTest {
     fun `the user's explicit mode wins`() {
         val sb = pane(agent = "codex", scroll = scrollback())
         assertEquals(ScrollRouting.LOCAL, scrollRoutingFor(ScrollMode.LOCAL, sb))
-        assertEquals(ScrollRouting.REMOTE_WHEEL, scrollRoutingFor(ScrollMode.WHEEL, sb))
-        assertEquals(ScrollRouting.REMOTE_PAGE, scrollRoutingFor(ScrollMode.PAGE, sb))
+        // Host scrollback wins over the manual key transport.
+        assertEquals(ScrollRouting.REMOTE_HOST, scrollRoutingFor(ScrollMode.WHEEL, sb))
+        assertEquals(ScrollRouting.REMOTE_HOST, scrollRoutingFor(ScrollMode.PAGE, sb))
+        // Without host scrollback the explicit transport still applies.
+        val full = pane(agent = "codex", scroll = fullScreen())
+        assertEquals(ScrollRouting.REMOTE_WHEEL, scrollRoutingFor(ScrollMode.WHEEL, full))
+        assertEquals(ScrollRouting.REMOTE_PAGE, scrollRoutingFor(ScrollMode.PAGE, full))
     }
 }

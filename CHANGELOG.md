@@ -1,5 +1,22 @@
 # Changelog
 
+## 2.0.10 — 2026-11-08
+
+- Scroll direction: finger **up** now scrolls toward older history on every
+  route (local engine, host rows, wheel, page). The old mapping sent a finger-up
+  drag toward live, so a pane sitting at the bottom (OMP) appeared frozen.
+- Plain shells never receive PgUp/PgDn: a pane with no agent and no host
+  scrollback is routed through the daemon, which checks the foreground process
+  (`pane.process_info`) and refuses to type page keys into bash/zsh/fish/etc.
+  (their inputrc bindings made page keys recall old commands). Full-screen apps
+  such as less still page normally.
+- Manual "Mouse wheel"/"Page keys" modes keep using the host's row-accurate
+  scroll when the pane reports host scrollback; the explicit key transports
+  only apply to panes without it. This makes OMP scroll under any mode.
+- Smoke waits for the IME before typing into the CJK field (flake).
+- Tests: unknown/no-agent routing is server-decided; host scroll wins over the
+  explicit key modes.
+
 ## 2.0.9 — 2026-11-08
 
 - Input panel: the KEYS/CJK control is gone; switching is swipe-only again.

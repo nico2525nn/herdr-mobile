@@ -225,6 +225,28 @@ impl HerdrClient {
         Ok(ScrollInfo::from(scroll))
     }
 
+    /// Foreground process name(s) for a pane (`pane.process_info`). Used to
+    /// keep PgUp/PgDn out of shells, where they hit readline history-search.
+    pub async fn pane_foreground_is_shell(&self, pane_id: &str) -> Result<bool> {
+        let result = self
+            .request("pane.process_info", json!({"pane_id": pane_id}))
+            .await?;
+        let processes = result
+            .get("process_info")
+            .and_then(|info| info.get("foreground_processes"))
+            .and_then(Value::as_array)
+            .cloned()
+            .unwrap_or_default();
+        let is_shell = processes.iter().any(|process| {
+            process
+                .get("name")
+                .and_then(Value::as_str)
+                .map(is_shell_name)
+                .unwrap_or(false)
+        });
+        Ok(is_shell)
+    }
+
     /// Set the pane's ABSOLUTE host-scroll offset, in rows from the live
     /// bottom. Unlike `terminal.scroll` this is not relative and never types
     /// PgUp/PgDn, so one row moves one row. Returns the updated scroll state,
@@ -447,4 +469,12 @@ impl HerdrEvent {
         let data = value.get("data").cloned().unwrap_or(Value::Null);
         Ok(HerdrEvent { name, data })
     }
+}
+
+fn is_shell_name(name: &str) -> bool {
+    matches!(
+        name,
+        "bash" | "zsh" | "fish" | "sh" | "dash" | "ksh" | "mksh" | "ash" | "yash" | "osh"
+            | "tcsh" | "csh" | "nu" | "elvish" | "xonsh" | "pwsh" | "powershell"
+    )
 }

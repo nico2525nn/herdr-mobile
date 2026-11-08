@@ -99,7 +99,7 @@ public class GhosttyTerminalView @JvmOverloads constructor(
      * daemon reports pane facts the local engine cannot know yet (attach
      * replays text, not the app's DECSET history).
      */
-    public enum class ScrollRouting { AUTO, LOCAL, REMOTE_WHEEL, REMOTE_PAGE, REMOTE_HOST }
+    public enum class ScrollRouting { AUTO, LOCAL, REMOTE_WHEEL, REMOTE_PAGE, REMOTE_HOST, REMOTE_SERVER }
 
     public var scrollRouting: ScrollRouting = ScrollRouting.AUTO
         set(value) {
@@ -343,7 +343,10 @@ public class GhosttyTerminalView @JvmOverloads constructor(
         override fun run() {
             if (!scroller.computeScrollOffset()) return
             val y = scroller.currY
-            scrollAccumulator += (y - flingLastY).toFloat()
+            // Finger up = older history (matches the drag path): negate the
+            // raw scroll distance so every route (host/wheel/page/local)
+            // shares one direction convention.
+            scrollAccumulator -= (y - flingLastY).toFloat()
             flingLastY = y
             val deltaRows = (scrollAccumulator / cellHeight).toInt()
             if (deltaRows != 0) {
@@ -452,7 +455,7 @@ public class GhosttyTerminalView @JvmOverloads constructor(
                         sendMouseReport(handle, GhosttyVt.MOUSE_ACTION_MOTION, GhosttyVt.MOUSE_BUTTON_LEFT, col, row)
                         return@withTerminal true
                     }
-                    scrollAccumulator += distanceY
+                    scrollAccumulator -= distanceY
                     val deltaRows = (scrollAccumulator / cellHeight).toInt()
                     if (deltaRows != 0) {
                         scrollAccumulator -= deltaRows * cellHeight
@@ -562,7 +565,10 @@ public class GhosttyTerminalView @JvmOverloads constructor(
     private fun scrollContent(handle: Long, deltaRows: Int, col: Int, row: Int) {
         val state = GhosttyVt.nativeViewportState(handle)
         when (scrollRouting) {
-            ScrollRouting.REMOTE_HOST -> {
+            ScrollRouting.REMOTE_HOST, ScrollRouting.REMOTE_SERVER -> {
+                // REMOTE_SERVER also sends rows: the daemon host-scrolls when
+                // it can, otherwise it checks the foreground process before
+                // typing page keys (shells must never see PgUp/PgDn).
                 onRemoteScroll?.invoke(deltaRows)
                 return
             }

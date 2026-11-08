@@ -179,7 +179,7 @@ else
 fi
 
 shot "$WORKDIR/scroll-before.png"
-adb_ shell input touchscreen swipe 540 1400 540 1000 700
+adb_ shell input touchscreen swipe 540 1000 540 1400 700
 sleep 3
 shot "$WORKDIR/scroll-after.png"
 DELTA=$(changed "$WORKDIR/scroll-before.png" "$WORKDIR/scroll-after.png")
@@ -191,7 +191,7 @@ fi
 
 # Repeatability: the same gesture must move a similar amount (the old bug was
 # wildly different distances per swipe).
-adb_ shell input touchscreen swipe 540 1400 540 1000 700
+adb_ shell input touchscreen swipe 540 1000 540 1400 700
 sleep 3
 shot "$WORKDIR/scroll-again.png"
 DELTA2=$(changed "$WORKDIR/scroll-after.png" "$WORKDIR/scroll-again.png")
@@ -237,8 +237,9 @@ adb_ shell input tap 860 255   # keyboard button
 sleep 2
 [[ "$(ime_shown)" == "mInputShown=true" ]] && pass "CJK keyboard button raises the IME" \
   || fail "CJK keyboard button did not raise the IME ($(ime_shown))"
-adb_ shell input text "zzz"
 sleep 1
+adb_ shell input text "zzz"
+sleep 2
 adb_ shell uiautomator dump /sdcard/cjk-typed.xml >/dev/null 2>&1 || true
 adb_ shell cat /sdcard/cjk-typed.xml 2>/dev/null | grep -q 'text="zzz"' \
   && pass "CJK keyboard button focuses its field" \

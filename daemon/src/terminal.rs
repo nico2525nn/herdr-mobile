@@ -418,6 +418,9 @@ async fn run_session(
     // Last host-scroll state observed for this pane, kept per session so a
     // gesture stream accumulates rows exactly (see `host_scroll`).
     let mut host_scroll: Option<HostScroll> = None;
+    // Process kind changes when a shell launches less/vim; a one-second cache
+    // avoids an RPC per scroll frame without pinning a stale classification.
+    let mut shell_probe: Option<(bool, tokio::time::Instant)> = None;
     let mut end_reason = String::from("detached");
     loop {
         tokio::select! {
@@ -456,7 +459,32 @@ async fn run_session(
                             // the host scrollback.
                             _ => false,
                         };
-                        if !host_handled && child.send_scroll(action).await.is_err() { break; }
+                        let mut block_page_keys = false;
+                        if !host_handled {
+                            if matches!(action, ScrollAction::PageKey { .. }) {
+                                let fresh = shell_probe
+                                    .filter(|(_, at)| at.elapsed() < std::time::Duration::from_secs(1));
+                                let is_shell = match fresh {
+                                    Some((is_shell, _)) => is_shell,
+                                    None => {
+                                        // Unknown (RPC error): stay safe and do
+                                        // not type PgUp/PgDn into a shell.
+                                        let is_shell = herdr
+                                            .pane_foreground_is_shell(&pane_id)
+                                            .await
+                                            .unwrap_or(true);
+                                        shell_probe = Some((is_shell, tokio::time::Instant::now()));
+                                        is_shell
+                                    }
+                                };
+                                block_page_keys = is_shell;
+                            }
+                        }
+                        if !host_handled && !block_page_keys
+                            && child.send_scroll(action).await.is_err()
+                        {
+                            break;
+                        }
                     }
                     SessionCommand::Mouse(action, button, column, row) => {
                         if child.send_mouse(&action, &button, column, row).await.is_err() { break; }

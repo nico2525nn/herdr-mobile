@@ -15,18 +15,35 @@ import io.github.sagernet.libghostty.GhosttyTerminalView.ScrollRouting
  * the engine's own viewport (the prelude banks client-side history).
  */
 internal fun scrollRoutingFor(mode: ScrollMode, pane: Pane?): ScrollRouting = when (mode) {
+    // The host's absolute row scroll is always more faithful than typing
+    // keys at a full-screen app, so the explicit wheel/page modes only choose
+    // the transport for panes without host scrollback.
     ScrollMode.LOCAL -> ScrollRouting.LOCAL
-    ScrollMode.WHEEL -> ScrollRouting.REMOTE_WHEEL
-    ScrollMode.PAGE -> ScrollRouting.REMOTE_PAGE
+    ScrollMode.WHEEL ->
+        if (pane?.hostScrollable == true) ScrollRouting.REMOTE_HOST else ScrollRouting.REMOTE_WHEEL
+    ScrollMode.PAGE ->
+        when {
+            pane?.hostScrollable == true -> ScrollRouting.REMOTE_HOST
+            pane != null && !AgentMatrix.isKnownApp(pane.agent) -> ScrollRouting.REMOTE_SERVER
+            else -> ScrollRouting.REMOTE_PAGE
+        }
     ScrollMode.AUTO -> when {
         pane == null -> ScrollRouting.AUTO
         pane.scroll != null && pane.hostScrollable -> ScrollRouting.REMOTE_HOST
-        pane.scroll != null ->
-            if (AgentMatrix.useWheelScroll(pane.agent)) {
-                ScrollRouting.REMOTE_WHEEL
-            } else {
-                ScrollRouting.REMOTE_PAGE
+        pane.scroll != null -> when {
+            AgentMatrix.isKnownApp(pane.agent) -> {
+                if (AgentMatrix.useWheelScroll(pane.agent)) {
+                    ScrollRouting.REMOTE_WHEEL
+                } else {
+                    ScrollRouting.REMOTE_PAGE
+                }
             }
+            // No agent and no host scrollback: could be a shell (PgUp/PgDn
+            // would hit readline history-search) or a full-screen app like
+            // less. The daemon checks the foreground process before typing
+            // keys, so send rows and let it decide.
+            else -> ScrollRouting.REMOTE_SERVER
+        }
         else -> ScrollRouting.AUTO
     }
 }
