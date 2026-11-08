@@ -16,6 +16,7 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.material.icons.filled.Home
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
@@ -32,6 +33,7 @@ import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import dev.herdr.mobile.core.designsystem.LocalUiCopy
+import dev.herdr.mobile.core.designsystem.UiMessage
 import dev.herdr.mobile.core.model.UiFocusState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.setValue
@@ -259,14 +261,24 @@ fun TerminalScreen(
             }
         }
         state.statusMessage?.let { message ->
-            Text(
-                text = message.let { LocalUiCopy.current.render(it) },
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.error,
-                modifier = Modifier
-                    .padding(horizontal = 16.dp, vertical = 4.dp)
-                    .semantics { liveRegion = LiveRegionMode.Polite },
-            )
+            Column {
+                Text(
+                    text = message.let { LocalUiCopy.current.render(it) },
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.error,
+                    modifier = Modifier
+                        .padding(horizontal = 16.dp, vertical = 4.dp)
+                        .semantics { liveRegion = LiveRegionMode.Polite },
+                )
+                if (message is UiMessage.TargetChanged) {
+                    // The screen can outlive its target (profile/host switch);
+                    // without this the user was stuck with a connection error
+                    // and no way back.
+                    TextButton(onClick = onNavigateHome) {
+                        Text("Choose a session")
+                    }
+                }
+            }
         }
         Box(modifier = Modifier.weight(1f).fillMaxWidth()) {
             val backend = state.backend

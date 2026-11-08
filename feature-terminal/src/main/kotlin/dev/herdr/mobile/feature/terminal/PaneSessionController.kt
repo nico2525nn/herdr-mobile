@@ -70,6 +70,7 @@ class PaneSessionController(
     private var pendingFlushJob: Job? = null
 
     private var attachJob: Job? = null
+    private var lastScrollRefreshAt = 0L
 
     /** Pane the live backend belongs to (release ordering needs it). */
     private var backendPaneId: String? = null
@@ -226,6 +227,18 @@ class PaneSessionController(
      */
     fun scrollRemote(rows: Int) {
         if (rows == 0) return
+        // Herdr does not push scroll-max changes with status events. If this
+        // agent pane started with max=0 (OMP landing) and has since gained
+        // host scrollback, refresh the facts; the next gesture routes to the
+        // host instead of typing keys the app ignores.
+        val now = System.currentTimeMillis()
+        if (now - lastScrollRefreshAt > 2_000) {
+            val pane = targetFlow.value?.let { session.state.value.snapshot?.pane(it.paneId) }
+            if (pane?.agent != null && pane.scroll != null && !pane.hostScrollable) {
+                lastScrollRefreshAt = now
+                session.refresh()
+            }
+        }
         pendingScrollRows += rows
         if (scrollFlushJob?.isActive == true) return
         val backend = backendFlow.value ?: return

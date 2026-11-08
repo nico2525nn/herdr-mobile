@@ -1,5 +1,15 @@
 # Changelog
 
+## 2.0.12 — 2026-11-09
+
+- Scroll facts are refreshed on demand: a known-agent pane that started with
+  `max_offset_from_bottom = 0` (OMP landing, fresh shell) and later gained host
+  scrollback no longer stays stuck on page/wheel routing. The first gesture
+  triggers a snapshot refresh (2 s debounce); the next one host-scrolls.
+- The "Connection target changed" state now offers a **Choose a session**
+  action instead of trapping the user in a terminal screen with no rails.
+- Retains 2.0.11's direction revert and the shell page-key fix.
+
 ## 2.0.11 — 2026-11-08
 
 - Reverted the 2.0.10 touch-direction change. Finger up scrolls toward live
