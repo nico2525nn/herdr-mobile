@@ -343,10 +343,7 @@ public class GhosttyTerminalView @JvmOverloads constructor(
         override fun run() {
             if (!scroller.computeScrollOffset()) return
             val y = scroller.currY
-            // Finger up = older history (matches the drag path): negate the
-            // raw scroll distance so every route (host/wheel/page/local)
-            // shares one direction convention.
-            scrollAccumulator -= (y - flingLastY).toFloat()
+            scrollAccumulator += (y - flingLastY).toFloat()
             flingLastY = y
             val deltaRows = (scrollAccumulator / cellHeight).toInt()
             if (deltaRows != 0) {
@@ -455,7 +452,7 @@ public class GhosttyTerminalView @JvmOverloads constructor(
                         sendMouseReport(handle, GhosttyVt.MOUSE_ACTION_MOTION, GhosttyVt.MOUSE_BUTTON_LEFT, col, row)
                         return@withTerminal true
                     }
-                    scrollAccumulator -= distanceY
+                    scrollAccumulator += distanceY
                     val deltaRows = (scrollAccumulator / cellHeight).toInt()
                     if (deltaRows != 0) {
                         scrollAccumulator -= deltaRows * cellHeight

@@ -179,7 +179,7 @@ else
 fi
 
 shot "$WORKDIR/scroll-before.png"
-adb_ shell input touchscreen swipe 540 1000 540 1400 700
+adb_ shell input touchscreen swipe 540 1400 540 1000 700
 sleep 3
 shot "$WORKDIR/scroll-after.png"
 DELTA=$(changed "$WORKDIR/scroll-before.png" "$WORKDIR/scroll-after.png")
@@ -191,7 +191,7 @@ fi
 
 # Repeatability: the same gesture must move a similar amount (the old bug was
 # wildly different distances per swipe).
-adb_ shell input touchscreen swipe 540 1000 540 1400 700
+adb_ shell input touchscreen swipe 540 1400 540 1000 700
 sleep 3
 shot "$WORKDIR/scroll-again.png"
 DELTA2=$(changed "$WORKDIR/scroll-after.png" "$WORKDIR/scroll-again.png")

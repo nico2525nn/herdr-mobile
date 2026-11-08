@@ -52,9 +52,24 @@ class ScrollRoutingPolicyTest {
     }
 
     @Test
-    fun `missing scroll state leaves routing to the engine`() {
+    fun `missing scroll state leaves routing to the engine for unknown panes`() {
         assertEquals(ScrollRouting.AUTO, scrollRoutingFor(ScrollMode.AUTO, pane()))
         assertEquals(ScrollRouting.AUTO, scrollRoutingFor(ScrollMode.AUTO, null))
+    }
+
+    @Test
+    fun `a known agent keeps its route without scroll state`() {
+        // Herdr may not have reported pane.scroll yet when the first gesture
+        // arrives; omp/codex must still get their own scroller instead of the
+        // engine's no-op AUTO.
+        assertEquals(
+            ScrollRouting.REMOTE_PAGE,
+            scrollRoutingFor(ScrollMode.AUTO, pane(agent = "omp")),
+        )
+        assertEquals(
+            ScrollRouting.REMOTE_WHEEL,
+            scrollRoutingFor(ScrollMode.AUTO, pane(agent = "codex")),
+        )
     }
 
     @Test

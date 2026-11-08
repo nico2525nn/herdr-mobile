@@ -1,5 +1,14 @@
 # Changelog
 
+## 2.0.11 — 2026-11-08
+
+- Reverted the 2.0.10 touch-direction change. Finger up scrolls toward live
+  again (natural touch scrolling); the inversion was not requested and made
+  the gesture feel wrong.
+- Kept the real scroll fixes: plain shells never receive PgUp/PgDn (daemon
+  foreground-process check), host row scroll wins over manual key modes, and
+  unknown/no-agent panes route through the daemon.
+
 ## 2.0.10 — 2026-11-08
 
 - Scroll direction: finger **up** now scrolls toward older history on every
