@@ -265,10 +265,24 @@ class PaneSessionController(
         gridFlow.value = cols to rows
         val backend = backendFlow.value ?: return
         val generation = targetOwnerGeneration ?: return
-        scope.launch {
-            if (isCurrent(backend, generation)) runCatching { backend.resize(cols, rows) }
+        // Opening a tab lays out the view several times (insets, IME, panel),
+        // and every frame resized the core PTY again. OMP reflows its whole
+        // transcript on resize, so the repeated sizes caused seconds of
+        // thrashing while the user scrolled. Send only the settled geometry.
+        pendingResize = cols to rows
+        resizeJob?.cancel()
+        resizeJob = scope.launch {
+            delay(RESIZE_SETTLE_MS)
+            val target = pendingResize ?: return@launch
+            pendingResize = null
+            if (isCurrent(backend, generation)) {
+                runCatching { backend.resize(target.first, target.second) }
+            }
         }
     }
+
+    private var pendingResize: Pair<Int, Int>? = null
+    private var resizeJob: Job? = null
 
     fun openTarget(target: TerminalTarget) {
         openTarget(target, preserveMessage = false)
@@ -487,6 +501,8 @@ class PaneSessionController(
 
     fun shutdown() {
         backgrounded = true
+        resizeJob?.cancel()
+        pendingResize = null
         retryJob?.cancel()
         attachJob?.cancel()
         pendingFlushJob?.cancel()
@@ -498,6 +514,9 @@ class PaneSessionController(
         backend?.let { releaseInBackground(it) }
     }
 }
+
+/** Coalesce layout churn before resizing the remote PTY. */
+private const val RESIZE_SETTLE_MS = 180L
 
 /** Reconnect settles (snapshot + stream) before the attach is retried. */
 private const val AUTO_REATTACH_DELAY_MS = 600L

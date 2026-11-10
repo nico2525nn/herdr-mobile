@@ -1,5 +1,16 @@
 # Changelog
 
+## 2.0.17 — 2026-11-11
+
+- Core PTY resizes are debounced (180 ms). Opening a tab emitted several
+  layout sizes (insets/IME/panel), and each one made OMP replay its whole
+  transcript, producing the seconds-long thrash while scrolling and the
+  sluggish Codex/OpenCode redraws after recent updates. Only the settled
+  geometry is sent now.
+- Verified: core OMP with a transcript scrolls and stays put (no movement
+  change after 4 s); a synthetic core `done` pane opened in the app becomes
+  `idle` (read acknowledgement) and the snapshot focus follows the attach.
+
 ## 2.0.16 — 2026-11-10
 
 - Core read acknowledgement: a focused core pane reporting `done` is presented
