@@ -289,7 +289,10 @@ impl CoreClient {
 
     pub async fn create_tab(&self, workspace_id: &str, label: Option<&str>) -> Result<String> {
         let core = self.snapshot().await?;
-        let snapshot = translate_snapshot(core.seq, &core.terminals, core.version, None);
+        let snapshot = translate_snapshot(
+            core.seq, &core.terminals, core.version, None,
+            &std::collections::HashSet::new(),
+        );
         let workspace = snapshot.workspaces.iter().find(|workspace| workspace.id == workspace_id)
             .ok_or_else(|| anyhow!("not_found: workspace {workspace_id}"))?;
         let workspace_label = workspace.label.clone();
@@ -647,6 +650,7 @@ pub fn translate_snapshot(
     terminals: &[Value],
     version: Option<String>,
     focus: Option<&CoreFocus>,
+    read_panes: &std::collections::HashSet<String>,
 ) -> crate::model::SessionSnapshot {
     use crate::model::{AgentStatus, Focus, HerdrInfo, HerdrUpdate, Pane, SessionSnapshot, Tab, Workspace};
     use std::collections::BTreeMap;
@@ -698,7 +702,13 @@ pub fn translate_snapshot(
             .or(where_tab)
             .unwrap_or_else(|| terminal.get("name").and_then(Value::as_str).unwrap_or(address).to_owned());
         let cwd = field_string(terminal, "cwd").map(str::to_owned);
-        let status_value = terminal.pointer("/status/state").map(status).unwrap_or(AgentStatus::Unknown);
+        let mut status_value = terminal.pointer("/status/state").map(status).unwrap_or(AgentStatus::Unknown);
+        // Core's `done` is an unseen completion (it has no focus/seen RPC).
+        // Once this daemon has focused the pane, present it as idle; a new
+        // status event clears the read mark.
+        if status_value == AgentStatus::Done && read_panes.contains(address) {
+            status_value = AgentStatus::Idle;
+        }
         // Core `Status.app` is the OSC 7501 app identity consumed by AgentMatrix.
         // `foreground.name` is any process (e.g. `sleep`), not an agent kind.
         let agent = terminal.pointer("/status/app").and_then(Value::as_str)
@@ -878,7 +888,7 @@ mod tests {
             "address":"t7", "cwd":"/work", "title":"Codex", "state":"live", "turn":3,
             "status":{"state":"working","app":"codex"},
             "labels":{"herdr.space":"space-1","herdr.tab":"tab-1","where":"Project / 2"}
-        })], Some("0.1.14".to_owned()), None);
+        })], Some("0.1.14".to_owned()), None, &std::collections::HashSet::new());
         assert_eq!(snapshot.seq, 17);
         assert_eq!(snapshot.workspaces[0].id, "space-1");
         assert_eq!(snapshot.workspaces[0].label, "Project");
@@ -896,7 +906,7 @@ mod tests {
         let snapshot = translate_snapshot(18, &[json!({
             "address":"t8", "cwd":"/work", "state":"live",
             "foreground":{"name":"sleep"}, "status":null
-        })], None, None);
+        })], None, None, &std::collections::HashSet::new());
         assert_eq!(snapshot.workspaces[0].tabs[0].panes[0].agent, None);
     }
 
@@ -933,13 +943,26 @@ mod tests {
             json!({"address":"t3","labels":{"herdr.space":"b","herdr.space_label":"B","herdr.tab":"b2","herdr.tab_label":"2","herdr.space_order":0,"herdr.tab_order":1}}),
             json!({"address":"t4","labels":{"herdr.space":"a","herdr.space_label":"A","herdr.tab":"a2","herdr.tab_label":"2","herdr.space_order":2,"herdr.tab_order":0}}),
         ];
-        let snapshot = translate_snapshot(1, &terminals, None, None);
+        let snapshot = translate_snapshot(1, &terminals, None, None, &std::collections::HashSet::new());
         let spaces: Vec<_> = snapshot.workspaces.iter().map(|w| w.label.as_str()).collect();
         assert_eq!(spaces, ["B", "A"]);
         let a_tabs: Vec<_> = snapshot.workspaces[1].tabs.iter().map(|t| t.id.as_str()).collect();
         assert_eq!(a_tabs, ["a2", "a1"]);
         let b_tabs: Vec<_> = snapshot.workspaces[0].tabs.iter().map(|t| t.id.as_str()).collect();
         assert_eq!(b_tabs, ["b1", "b2"]);
+    }
+
+    #[test]
+    fn focused_done_pane_is_presented_as_read() {
+        let terminals = vec![json!({
+            "address":"t1", "status":{"state":"done","app":"omp"},
+            "labels":{"herdr.space":"s1","herdr.tab":"tab1"}
+        })];
+        let read = std::collections::HashSet::from(["t1".to_owned()]);
+        let snapshot = translate_snapshot(1, &terminals, None, None, &read);
+        assert_eq!(snapshot.workspaces[0].tabs[0].panes[0].status, crate::model::AgentStatus::Idle);
+        let unread = translate_snapshot(1, &terminals, None, None, &std::collections::HashSet::new());
+        assert_eq!(unread.workspaces[0].tabs[0].panes[0].status, crate::model::AgentStatus::Done);
     }
 
     #[test]
@@ -952,7 +975,7 @@ mod tests {
             tab_id: "tab1".into(),
             pane_id: "t1".into(),
         };
-        let snapshot = translate_snapshot(1, &terminals, None, Some(&focus));
+        let snapshot = translate_snapshot(1, &terminals, None, Some(&focus), &std::collections::HashSet::new());
         assert!(snapshot.workspaces[0].focused);
         assert_eq!(snapshot.workspaces[0].active_tab_id.as_deref(), Some("tab1"));
         assert!(snapshot.workspaces[0].tabs[0].focused);

@@ -192,8 +192,9 @@ async fn snapshot(State(state): State<AppState>, headers: HeaderMap) -> Response
         return match state.core.snapshot().await {
             Ok(snapshot) => {
                 let focus = state.core_focus.lock().ok().and_then(|focus| focus.clone());
+                let read = state.core_read.lock().map(|read| read.clone()).unwrap_or_default();
                 Json(crate::herdrcore::translate_snapshot(
-                    snapshot.seq, &snapshot.terminals, snapshot.version, focus.as_ref(),
+                    snapshot.seq, &snapshot.terminals, snapshot.version, focus.as_ref(), &read,
                 )).into_response()
             }
             Err(error) => core_error(error),
@@ -217,8 +218,9 @@ async fn workspaces(State(state): State<AppState>, headers: HeaderMap) -> Respon
         return match state.core.snapshot().await {
             Ok(core) => {
                 let focus = state.core_focus.lock().ok().and_then(|focus| focus.clone());
+                let read = state.core_read.lock().map(|read| read.clone()).unwrap_or_default();
                 let snapshot = crate::herdrcore::translate_snapshot(
-                    core.seq, &core.terminals, core.version, focus.as_ref(),
+                    core.seq, &core.terminals, core.version, focus.as_ref(), &read,
                 );
                 Json(json!({"revision":snapshot.revision,"seq":snapshot.seq,"workspaces":snapshot.workspaces})).into_response()
             }
@@ -251,8 +253,9 @@ async fn panes(State(state): State<AppState>, headers: HeaderMap) -> Response {
         return match state.core.snapshot().await {
             Ok(core) => {
                 let focus = state.core_focus.lock().ok().and_then(|focus| focus.clone());
+                let read = state.core_read.lock().map(|read| read.clone()).unwrap_or_default();
                 let snapshot = crate::herdrcore::translate_snapshot(
-                    core.seq, &core.terminals, core.version, focus.as_ref(),
+                    core.seq, &core.terminals, core.version, focus.as_ref(), &read,
                 );
                 let panes: Vec<_> = snapshot.workspaces.iter().flat_map(|workspace| workspace.tabs.iter())
                     .flat_map(|tab| tab.panes.iter().cloned()).collect();
@@ -525,6 +528,9 @@ async fn tab_focus(
         let Some(focus) = focus else {
             return api_error(StatusCode::NOT_FOUND, "not_found", format!("tab {tab_id} not found"));
         };
+        if let Ok(mut read) = state.core_read.lock() {
+            read.insert(focus.pane_id.clone());
+        }
         if let Ok(mut current) = state.core_focus.lock() {
             *current = Some(focus);
         }
@@ -739,7 +745,8 @@ async fn events_ws(
         return e;
     }
     if selected_backend(&state, &headers) == crate::config::Backend::Core {
-        return ws.on_upgrade(move |socket| serve_core_events(socket, state.core.clone()));
+        let read = state.core_read.clone();
+        return ws.on_upgrade(move |socket| serve_core_events(socket, state.core.clone(), read));
     }
     ws.on_upgrade(move |socket| serve_events(socket, state.bus.clone(), state.cache.clone()))
 }
@@ -819,7 +826,11 @@ async fn serve_events(socket: WebSocket, bus: Arc<EventBus>, cache: Arc<SessionC
     info!("events subscriber disconnected");
 }
 
-async fn serve_core_events(socket: WebSocket, core: crate::herdrcore::CoreClient) {
+async fn serve_core_events(
+    socket: WebSocket,
+    core: crate::herdrcore::CoreClient,
+    read_panes: Arc<std::sync::Mutex<std::collections::HashSet<String>>>,
+) {
     let mut subscription = match core.subscribe().await {
         Ok(subscription) => subscription,
         Err(error) => {
@@ -859,6 +870,13 @@ async fn serve_core_events(socket: WebSocket, core: crate::herdrcore::CoreClient
                         if matches!(event_type, "created" | "removed" | "finished" | "lost" | "restarted" | "labels") {
                             if let Ok(snapshot) = core.snapshot().await {
                                 locations = crate::herdrcore::locations(&snapshot.terminals);
+                            }
+                        }
+                        if let Some(terminal) = notification.pointer("/params/terminal").and_then(Value::as_str) {
+                            if matches!(event_type, "status" | "removed" | "finished") {
+                                if let Ok(mut read) = read_panes.lock() {
+                                    read.remove(terminal);
+                                }
                             }
                         }
                         if let Some(event) = crate::herdrcore::translate_event(&notification, &locations) {
@@ -930,6 +948,9 @@ async fn terminal_ws(
                 })
                 .and_then(crate::herdrcore::CoreFocus::from_terminal)
             {
+                if let Ok(mut read) = state.core_read.lock() {
+                    read.insert(focus.pane_id.clone());
+                }
                 if let Ok(mut current) = state.core_focus.lock() {
                     *current = Some(focus);
                 }

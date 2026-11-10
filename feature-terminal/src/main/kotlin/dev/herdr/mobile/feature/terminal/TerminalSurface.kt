@@ -2,9 +2,13 @@ package dev.herdr.mobile.feature.terminal
 
 import android.graphics.Typeface
 import androidx.compose.foundation.layout.ExperimentalLayoutApi
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.isImeVisible
+import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
@@ -17,10 +21,12 @@ import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalHapticFeedback
+import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import dev.herdr.mobile.core.model.InputPanelPage
@@ -68,10 +74,11 @@ internal fun TerminalSurface(
             TerminalErrorBody("Attach failed (${bs.code}): ${bs.message}", onRetry)
             return
         }
-        is BackendState.Detached -> {
-            TerminalErrorBody("Detached (${bs.reason})", onRetry)
-            return
-        }
+        // A detach is usually transient (link flap, resync). Replacing the
+        // terminal with an error made a slow link flash between screen and
+        // error, and threw away the user's scroll position. Keep the last
+        // frame and show a reconnect overlay instead.
+        is BackendState.Detached -> Unit
         // Prelude live-screen fetch failed: the grid starts BLANK (no bytes
         // yet, possibly never on an idle pane). Without this branch the user
         // stares at an empty terminal with no explanation and no recourse.
@@ -306,5 +313,30 @@ private fun syncSticky(
             GhosttyExtraKeysState.StickyState.LOCKED -> GhosttyExtraKeysState.StickyState.INACTIVE
         }
         attempts++
+    }
+}
+
+@Composable
+private fun ReconnectOverlay(
+    reason: String,
+    onRetry: () -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    androidx.compose.material3.Surface(
+        modifier = modifier,
+        shape = androidx.compose.material3.MaterialTheme.shapes.large,
+        color = androidx.compose.material3.MaterialTheme.colorScheme.surfaceContainerHigh,
+    ) {
+        Row(
+            modifier = Modifier.padding(horizontal = 12.dp, vertical = 4.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
+            Text(
+                text = if (reason == "lagged_resync") "Resyncing…" else "Reconnecting…",
+                style = androidx.compose.material3.MaterialTheme.typography.labelMedium,
+            )
+            androidx.compose.material3.TextButton(onClick = onRetry) { Text("Retry") }
+        }
     }
 }

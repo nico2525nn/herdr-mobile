@@ -1,5 +1,20 @@
 # Changelog
 
+## 2.0.16 — 2026-11-10
+
+- Core read acknowledgement: a focused core pane reporting `done` is presented
+  as `idle` to this daemon (core has no seen/focus RPC); the mark clears on the
+  next status event. The app refreshes after the focus call so the notification
+  retracts and the status dot clears. Verified with a synthetic OSC 7501 done
+  pane and a live tab.focus.
+- Slow-link detach no longer replaces the terminal with an error screen: the
+  last frame and scroll position stay visible under a Reconnecting/Retry
+  overlay. This removes the screen/error flashing on flaky links.
+- Wheel/arrow input from a fling is capped per frame (remote wheel apps kept
+  scrolling long after the finger stopped; mouse-tracking panes now use a
+  3-row notch).
+- Core focus/ordering from 2.0.15 retained.
+
 ## 2.0.15 — 2026-11-10
 
 - Core focus is now a first-class daemon state: attaching a core terminal sets

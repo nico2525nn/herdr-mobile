@@ -107,6 +107,7 @@ public class GhosttyTerminalView @JvmOverloads constructor(
                 field = value
                 pageAccumulator = 0
                 wheelRowAccumulator = 0
+                mouseWheelAccumulator = 0
             }
         }
 
@@ -578,9 +579,16 @@ public class GhosttyTerminalView @JvmOverloads constructor(
                     wheelRowAccumulator += deltaRows
                     val notches = wheelRowAccumulator / stride
                     if (notches != 0) {
-                        wheelRowAccumulator -= notches * stride
-                        repeat(abs(notches)) {
-                            sendRawWheel(if (notches > 0) 1 else -1, col, row)
+                        // Keep the sub-notch remainder, but drop a fling's
+                        // excess instead of queuing a notch per row: flooded
+                        // agents kept scrolling long after the finger stopped.
+                        wheelRowAccumulator = 0
+                        val capped = notches.coerceIn(
+                            -MAX_WHEEL_NOTCHES_PER_EVENT,
+                            MAX_WHEEL_NOTCHES_PER_EVENT,
+                        )
+                        repeat(abs(capped)) {
+                            sendRawWheel(if (capped > 0) 1 else -1, col, row)
                         }
                     }
                 } else {
@@ -603,9 +611,18 @@ public class GhosttyTerminalView @JvmOverloads constructor(
             ScrollRouting.AUTO -> Unit
         }
         if (state and GhosttyVt.VIEWPORT_MOUSE_TRACKING != 0) {
-            val button = if (deltaRows > 0) GhosttyVt.MOUSE_BUTTON_WHEEL_DOWN else GhosttyVt.MOUSE_BUTTON_WHEEL_UP
-            repeat(abs(deltaRows)) {
-                sendMouseReport(handle, GhosttyVt.MOUSE_ACTION_PRESS, button, col, row)
+            mouseWheelAccumulator += deltaRows
+            val notches = mouseWheelAccumulator / MOUSE_WHEEL_ROWS_PER_NOTCH
+            if (notches != 0) {
+                mouseWheelAccumulator = 0
+                val button = if (notches > 0) {
+                    GhosttyVt.MOUSE_BUTTON_WHEEL_DOWN
+                } else {
+                    GhosttyVt.MOUSE_BUTTON_WHEEL_UP
+                }
+                repeat(kotlin.math.min(abs(notches), MAX_WHEEL_NOTCHES_PER_EVENT)) {
+                    sendMouseReport(handle, GhosttyVt.MOUSE_ACTION_PRESS, button, col, row)
+                }
             }
             return
         }
@@ -616,7 +633,7 @@ public class GhosttyTerminalView @JvmOverloads constructor(
             // the agent matrix still provide their own transports.
             if (state and GhosttyVt.VIEWPORT_ALTERNATE_SCROLL != 0) {
                 val keyCode = if (deltaRows > 0) KeyEvent.KEYCODE_DPAD_DOWN else KeyEvent.KEYCODE_DPAD_UP
-                repeat(abs(deltaRows)) {
+                repeat(kotlin.math.min(abs(deltaRows), MAX_WHEEL_NOTCHES_PER_EVENT)) {
                     val bytes = encodeKeyTap(handle, keyCode, 0, 0, null)
                     if (bytes != null && bytes.isNotEmpty()) session?.sendRawInput(bytes)
                 }
@@ -630,6 +647,9 @@ public class GhosttyTerminalView @JvmOverloads constructor(
 
     private var pageAccumulator = 0
     private var wheelRowAccumulator = 0
+    private var mouseWheelAccumulator = 0
+
+
 
     /** One gesture must not turn a 1-row drag into a whole screenful. */
     private fun flushPages(force: Boolean) {
@@ -1899,6 +1919,7 @@ public class GhosttyTerminalView @JvmOverloads constructor(
         if (event.actionMasked == MotionEvent.ACTION_DOWN) {
             scroller.abortAnimation()
             wheelRowAccumulator = 0
+            mouseWheelAccumulator = 0
             gestureDownCol = (event.x / cellWidth).toInt().coerceIn(0, cols - 1)
             gestureDownRow = rowAt(event.y)
         }
@@ -2269,6 +2290,12 @@ public class GhosttyTerminalView @JvmOverloads constructor(
     }
 
     public companion object {
+        /** xterm convention: one wheel notch advances about three rows. */
+        private const val MOUSE_WHEEL_ROWS_PER_NOTCH = 3
+        /** A fling can carry hundreds of rows; cap input per frame so the
+         *  remote app is not flooded (it kept scrolling after the finger). */
+        private const val MAX_WHEEL_NOTCHES_PER_EVENT = 4
+
         public const val DEFAULT_FONT_SIZE_SP: Float = 14f
 
         public fun measureCellSize(

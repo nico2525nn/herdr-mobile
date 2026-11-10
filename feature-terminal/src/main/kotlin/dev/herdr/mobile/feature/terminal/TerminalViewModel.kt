@@ -69,6 +69,10 @@ internal suspend fun focusTabForReadAck(
 ) {
     try {
         client.focusTab(tabId)
+        // Core has no server-side focus/seen transition; its snapshot maps a
+        // focused done pane to idle. Refetch so the relay retracts the alert
+        // and the status dot clears.
+        client.refresh()
     } catch (e: CancellationException) {
         throw e
     } catch (e: Exception) {
