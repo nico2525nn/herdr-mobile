@@ -1,5 +1,17 @@
 # Changelog
 
+## 2.0.15 — 2026-11-10
+
+- Core focus is now a first-class daemon state: attaching a core terminal sets
+  the focus, `POST /v1/tab/{id}/focus` resolves and stores it, and translated
+  snapshots mark the focused workspace/tab/pane plus `activeTabId` and the
+  top-level `focus` block. A closed pane no longer leaves a dangling focus.
+- Core workspace/tab ordering via `herdr.space_order` / `herdr.tab_order`
+  labels (from 2.0.14) is documented and covered by tests.
+- Core scroll remains engine-owned (`AUTO`): shells, OMP and pi were exercised
+  on real core terminals; codex/opencode were attached and focus/input checked
+  (their landing screens have no transcript to scroll).
+
 ## 2.0.14 — 2026-11-10
 
 - Core backend: workspace and tab reordering now works. Core has no ordering

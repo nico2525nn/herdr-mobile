@@ -190,7 +190,12 @@ async fn snapshot(State(state): State<AppState>, headers: HeaderMap) -> Response
     }
     if selected_backend(&state, &headers) == crate::config::Backend::Core {
         return match state.core.snapshot().await {
-            Ok(snapshot) => Json(crate::herdrcore::translate_snapshot(snapshot.seq, &snapshot.terminals, snapshot.version)).into_response(),
+            Ok(snapshot) => {
+                let focus = state.core_focus.lock().ok().and_then(|focus| focus.clone());
+                Json(crate::herdrcore::translate_snapshot(
+                    snapshot.seq, &snapshot.terminals, snapshot.version, focus.as_ref(),
+                )).into_response()
+            }
             Err(error) => core_error(error),
         };
     }
@@ -211,7 +216,10 @@ async fn workspaces(State(state): State<AppState>, headers: HeaderMap) -> Respon
     if selected_backend(&state, &headers) == crate::config::Backend::Core {
         return match state.core.snapshot().await {
             Ok(core) => {
-                let snapshot = crate::herdrcore::translate_snapshot(core.seq, &core.terminals, core.version);
+                let focus = state.core_focus.lock().ok().and_then(|focus| focus.clone());
+                let snapshot = crate::herdrcore::translate_snapshot(
+                    core.seq, &core.terminals, core.version, focus.as_ref(),
+                );
                 Json(json!({"revision":snapshot.revision,"seq":snapshot.seq,"workspaces":snapshot.workspaces})).into_response()
             }
             Err(error) => core_error(error),
@@ -242,7 +250,10 @@ async fn panes(State(state): State<AppState>, headers: HeaderMap) -> Response {
     if selected_backend(&state, &headers) == crate::config::Backend::Core {
         return match state.core.snapshot().await {
             Ok(core) => {
-                let snapshot = crate::herdrcore::translate_snapshot(core.seq, &core.terminals, core.version);
+                let focus = state.core_focus.lock().ok().and_then(|focus| focus.clone());
+                let snapshot = crate::herdrcore::translate_snapshot(
+                    core.seq, &core.terminals, core.version, focus.as_ref(),
+                );
                 let panes: Vec<_> = snapshot.workspaces.iter().flat_map(|workspace| workspace.tabs.iter())
                     .flat_map(|tab| tab.panes.iter().cloned()).collect();
                 Json(json!({"revision":snapshot.revision,"seq":snapshot.seq,"panes":panes})).into_response()
@@ -499,7 +510,25 @@ async fn tab_focus(
         return e;
     }
     if selected_backend(&state, &headers) == crate::config::Backend::Core {
-        return core_unavailable("tab.focus", "herdr-core has no focus or read-ack method");
+        // Core has no global focus. Keep the focused terminal in the daemon so
+        // snapshots carry workspace/tab/pane focus for this client.
+        let terminals = match state.core.list(false).await {
+            Ok(terminals) => terminals,
+            Err(error) => return core_error(error),
+        };
+        let focus = terminals
+            .iter()
+            .find(|terminal| {
+                terminal.pointer("/labels/herdr.tab").and_then(|v| v.as_str()) == Some(tab_id.as_str())
+            })
+            .and_then(crate::herdrcore::CoreFocus::from_terminal);
+        let Some(focus) = focus else {
+            return api_error(StatusCode::NOT_FOUND, "not_found", format!("tab {tab_id} not found"));
+        };
+        if let Ok(mut current) = state.core_focus.lock() {
+            *current = Some(focus);
+        }
+        return (StatusCode::OK, Json(json!({"ok":true}))).into_response();
     }
     match state.cache.herdr_client().tab_focus(&tab_id).await {
         Ok(()) => (StatusCode::OK, Json(json!({"ok": true}))).into_response(),
@@ -891,6 +920,21 @@ async fn terminal_ws(
         let rows = query.get("rows").and_then(|value| value.parse::<u32>().ok()).unwrap_or(30).clamp(5, 200);
         let core = state.core.clone();
         let address = pane_id.clone();
+        // Attaching the terminal is the app's focus signal on core: update the
+        // daemon focus so the next snapshot marks the right workspace/tab/pane.
+        if let Ok(terminals) = core.list(false).await {
+            if let Some(focus) = terminals
+                .iter()
+                .find(|terminal| {
+                    terminal.get("address").and_then(|v| v.as_str()) == Some(address.as_str())
+                })
+                .and_then(crate::herdrcore::CoreFocus::from_terminal)
+            {
+                if let Ok(mut current) = state.core_focus.lock() {
+                    *current = Some(focus);
+                }
+            }
+        }
         return ws.on_upgrade(move |socket| async move {
             if let Err(error) = crate::herdrcore::terminal::bridge(socket, core, address.clone(), cols, rows, 2000).await {
                 warn!("herdr-core terminal bridge for {address} ended: {error:#}");

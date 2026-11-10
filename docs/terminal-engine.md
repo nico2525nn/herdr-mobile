@@ -42,6 +42,11 @@ Routing policy (`ScrollMode.AUTO`):
 | no `pane.scroll`, agent unknown, no host scrollback | `REMOTE_SERVER`: rows go to the daemon, which checks `pane.process_info`; shells never get PgUp/PgDn, full-screen apps do |
 | no `pane.scroll` (core backend) | `AUTO`: raw bytes give the engine real modes and local scrollback; OMP and shells scroll locally, alt-screen apps use wheel/1007 |
 
+Core focus lives in the daemon: `terminal.attach` and `tab.focus` update a
+process-wide focused pane, and `translate_snapshot` fills workspace/tab/pane
+`focused`, `activeTabId` and the top-level focus block. It is not persisted and
+is shared by clients of the same daemon.
+
 Core snapshot ordering has no native RPC: workspaces/tabs are reordered by
 `herdr.space_order` / `herdr.tab_order` labels, written on every terminal in the
 group and sorted when translating the core snapshot.

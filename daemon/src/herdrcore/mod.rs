@@ -26,6 +26,23 @@ pub struct CoreClient {
     socket_path: PathBuf,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CoreFocus {
+    pub workspace_id: String,
+    pub tab_id: String,
+    pub pane_id: String,
+}
+
+impl CoreFocus {
+    pub fn from_terminal(terminal: &Value) -> Option<Self> {
+        Some(Self {
+            workspace_id: workspace_id_of(terminal)?,
+            tab_id: tab_id_of(terminal)?,
+            pane_id: field_string(terminal, "address")?.to_owned(),
+        })
+    }
+}
+
 #[derive(Clone, Debug)]
 pub struct CoreSnapshot {
     pub seq: i64,
@@ -272,7 +289,7 @@ impl CoreClient {
 
     pub async fn create_tab(&self, workspace_id: &str, label: Option<&str>) -> Result<String> {
         let core = self.snapshot().await?;
-        let snapshot = translate_snapshot(core.seq, &core.terminals, core.version);
+        let snapshot = translate_snapshot(core.seq, &core.terminals, core.version, None);
         let workspace = snapshot.workspaces.iter().find(|workspace| workspace.id == workspace_id)
             .ok_or_else(|| anyhow!("not_found: workspace {workspace_id}"))?;
         let workspace_label = workspace.label.clone();
@@ -625,7 +642,12 @@ fn ordered_ids(
     ids.into_iter().map(|(id, _)| id).collect()
 }
 
-pub fn translate_snapshot(seq: i64, terminals: &[Value], version: Option<String>) -> crate::model::SessionSnapshot {
+pub fn translate_snapshot(
+    seq: i64,
+    terminals: &[Value],
+    version: Option<String>,
+    focus: Option<&CoreFocus>,
+) -> crate::model::SessionSnapshot {
     use crate::model::{AgentStatus, Focus, HerdrInfo, HerdrUpdate, Pane, SessionSnapshot, Tab, Workspace};
     use std::collections::BTreeMap;
 
@@ -743,13 +765,37 @@ pub fn translate_snapshot(seq: i64, terminals: &[Value], version: Option<String>
         workspace.status = AgentStatus::roll_up([workspace.status, status_value]).unwrap_or(status_value);
     }
 
+    // A closed pane/tab must not leave a dangling focus in the snapshot.
+    let focus = focus.filter(|focus| {
+        terminals.iter().any(|terminal| {
+            terminal.get("address").and_then(Value::as_str) == Some(focus.pane_id.as_str())
+        })
+    });
+    if let Some(focus) = focus {
+        for workspace in &mut workspaces {
+            workspace.focused = workspace.id == focus.workspace_id;
+            if workspace.id == focus.workspace_id {
+                workspace.active_tab_id = Some(focus.tab_id.clone());
+            }
+            for tab in &mut workspace.tabs {
+                tab.focused = tab.id == focus.tab_id;
+                for pane in &mut tab.panes {
+                    pane.focused = pane.id == focus.pane_id;
+                }
+            }
+        }
+    }
     SessionSnapshot {
         revision: seq,
         seq,
         captured_at: Some(crate::cache::now_rfc3339()),
         herdr: HerdrInfo { version, protocol: Some(1), binary: Some("herdr-core".to_owned()) },
         update: HerdrUpdate::default(),
-        focus: Focus::default(),
+        focus: Focus {
+            workspace_id: focus.map(|f| f.workspace_id.clone()),
+            tab_id: focus.map(|f| f.tab_id.clone()),
+            pane_id: focus.map(|f| f.pane_id.clone()),
+        },
         workspaces,
     }
 }
@@ -832,7 +878,7 @@ mod tests {
             "address":"t7", "cwd":"/work", "title":"Codex", "state":"live", "turn":3,
             "status":{"state":"working","app":"codex"},
             "labels":{"herdr.space":"space-1","herdr.tab":"tab-1","where":"Project / 2"}
-        })], Some("0.1.14".to_owned()));
+        })], Some("0.1.14".to_owned()), None);
         assert_eq!(snapshot.seq, 17);
         assert_eq!(snapshot.workspaces[0].id, "space-1");
         assert_eq!(snapshot.workspaces[0].label, "Project");
@@ -850,7 +896,7 @@ mod tests {
         let snapshot = translate_snapshot(18, &[json!({
             "address":"t8", "cwd":"/work", "state":"live",
             "foreground":{"name":"sleep"}, "status":null
-        })], None);
+        })], None, None);
         assert_eq!(snapshot.workspaces[0].tabs[0].panes[0].agent, None);
     }
 
@@ -887,13 +933,33 @@ mod tests {
             json!({"address":"t3","labels":{"herdr.space":"b","herdr.space_label":"B","herdr.tab":"b2","herdr.tab_label":"2","herdr.space_order":0,"herdr.tab_order":1}}),
             json!({"address":"t4","labels":{"herdr.space":"a","herdr.space_label":"A","herdr.tab":"a2","herdr.tab_label":"2","herdr.space_order":2,"herdr.tab_order":0}}),
         ];
-        let snapshot = translate_snapshot(1, &terminals, None);
+        let snapshot = translate_snapshot(1, &terminals, None, None);
         let spaces: Vec<_> = snapshot.workspaces.iter().map(|w| w.label.as_str()).collect();
         assert_eq!(spaces, ["B", "A"]);
         let a_tabs: Vec<_> = snapshot.workspaces[1].tabs.iter().map(|t| t.id.as_str()).collect();
         assert_eq!(a_tabs, ["a2", "a1"]);
         let b_tabs: Vec<_> = snapshot.workspaces[0].tabs.iter().map(|t| t.id.as_str()).collect();
         assert_eq!(b_tabs, ["b1", "b2"]);
+    }
+
+    #[test]
+    fn snapshot_marks_core_focus_on_workspace_tab_and_pane() {
+        let terminals = vec![json!({
+            "address":"t1", "labels":{"herdr.space":"s1","herdr.tab":"tab1","herdr.space_label":"S","herdr.tab_label":"1"}
+        })];
+        let focus = CoreFocus {
+            workspace_id: "s1".into(),
+            tab_id: "tab1".into(),
+            pane_id: "t1".into(),
+        };
+        let snapshot = translate_snapshot(1, &terminals, None, Some(&focus));
+        assert!(snapshot.workspaces[0].focused);
+        assert_eq!(snapshot.workspaces[0].active_tab_id.as_deref(), Some("tab1"));
+        assert!(snapshot.workspaces[0].tabs[0].focused);
+        assert!(snapshot.workspaces[0].tabs[0].panes[0].focused);
+        assert_eq!(snapshot.focus.workspace_id.as_deref(), Some("s1"));
+        assert_eq!(snapshot.focus.tab_id.as_deref(), Some("tab1"));
+        assert_eq!(snapshot.focus.pane_id.as_deref(), Some("t1"));
     }
 
     #[test]
