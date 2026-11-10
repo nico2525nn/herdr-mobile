@@ -203,7 +203,12 @@ impl CoreClient {
             .and_then(|channel| u32::try_from(channel).ok())
             .ok_or_else(|| anyhow!("herdr-core attach response has no channel"))?;
         let terminal = response.get("terminal").cloned().unwrap_or(Value::Null);
-        Ok(CoreAttachment { stream, channel, terminal })
+        let history_rows = response
+            .get("historyRows")
+            .or_else(|| response.get("history"))
+            .and_then(Value::as_u64)
+            .unwrap_or(0) as u32;
+        Ok(CoreAttachment { stream, channel, terminal, history_rows })
     }
 
     pub async fn send_input(&self, address: &str, bytes: &[u8]) -> Result<()> {
@@ -405,6 +410,8 @@ pub struct CoreAttachment {
     stream: UnixStream,
     pub channel: u32,
     pub terminal: Value,
+    /// History rows the server says it painted before live data.
+    pub history_rows: u32,
 }
 
 impl CoreAttachment {

@@ -83,6 +83,7 @@ internal object GhosttyVt {
 
     const val VIEWPORT_ALTERNATE_SCREEN = 1
     const val VIEWPORT_MOUSE_TRACKING = 2
+    const val VIEWPORT_ALTERNATE_SCROLL = 4
 
     external fun nativeViewportState(handle: Long): Int
 

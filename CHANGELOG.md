@@ -1,5 +1,16 @@
 # Changelog
 
+## 2.0.13 — 2026-11-09
+
+- Alt screen scroll follows DEC 1007 (alternate scroll): arrow keys are sent
+  only when the program enabled it. Previously any alt-screen pane got
+  DPAD_UP/DOWN, which moved vim's cursor instead of scrolling.
+- Core backend reports the attach `historyRows` it actually received instead
+  of a hardcoded 0.
+- Documented the existing scroll seeding (recent ≤1000 rows) and the
+  server-decided routing for unknown panes; added tests for 1007 and the shell
+  process gate.
+
 ## 2.0.12 — 2026-11-09
 
 - Scroll facts are refreshed on demand: a known-agent pane that started with

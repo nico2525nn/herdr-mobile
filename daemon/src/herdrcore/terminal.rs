@@ -30,7 +30,7 @@ pub async fn bridge(mut socket: WebSocket, core: CoreClient, address: String, co
         "rows":rows,
         "encoding":"ansi",
         "resumed":false,
-        "historyRows":0,
+        "historyRows":attachment.history_rows,
         "historyTruncated":false,
         "historyError":null,
         "visibleOk":true,

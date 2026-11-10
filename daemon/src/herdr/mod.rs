@@ -478,3 +478,18 @@ fn is_shell_name(name: &str) -> bool {
             | "tcsh" | "csh" | "nu" | "elvish" | "xonsh" | "pwsh" | "powershell"
     )
 }
+
+#[cfg(test)]
+mod tests {
+    use super::is_shell_name;
+
+    #[test]
+    fn shells_are_recognized_for_page_key_gating() {
+        for name in ["bash", "zsh", "fish", "sh", "dash", "pwsh"] {
+            assert!(is_shell_name(name), "{name}");
+        }
+        for name in ["less", "vim", "omp", "codex", "htop"] {
+            assert!(!is_shell_name(name), "{name}");
+        }
+    }
+}

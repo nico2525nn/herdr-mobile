@@ -26,6 +26,10 @@ the pane is a running TUI. Two consequences:
 - Gesture routing comes from the **snapshot** (`Pane.scroll`, `hostScrollable`,
   `agent`), not from the engine, until the app repaints. See
   `scrollRoutingFor` in `feature-terminal`.
+- The prelude is not visible-only: the daemon fetches `pane.read recent` (up to
+  ~1000 rows, overlap-trimmed against the visible screen) and feeds it as text,
+  so the local VT has a shallow scrollback from the first frame. Deeper history
+  is the host's (`pane.scroll`).
 - Rendering is correct immediately (prelude text paints the screen); modes
   converge as soon as the app writes again (any key press or output).
 
@@ -35,9 +39,16 @@ Routing policy (`ScrollMode.AUTO`):
 |---|---|
 | `pane.scroll` present, `maxOffsetFromBottom > 0` | `REMOTE_HOST`: row deltas to `pane.scroll` (server owns full history), coalesced every 40 ms |
 | `pane.scroll` present, no scrollback | wheel agents (`AgentMatrix.useWheelScroll`) → raw SGR wheel reports; other full-screen apps → one PageUp/PageDown per gesture |
+| no `pane.scroll`, agent unknown, no host scrollback | `REMOTE_SERVER`: rows go to the daemon, which checks `pane.process_info`; shells never get PgUp/PgDn, full-screen apps do |
 | no `pane.scroll` (e.g. core backend) | `AUTO`: the engine decides from its own modes; otherwise local scrollback |
 
-Explicit settings (`Local`, `Mouse wheel`, `Page keys`) override the table.
+Explicit settings (`Local`, `Mouse wheel`, `Page keys`) override the table,
+except that a pane with host scrollback keeps the host's row-accurate scroll.
+
+In `AUTO`, alternate-screen wheel handling follows DEC mode **1007**
+(alternate scroll): arrows are sent only when the program enabled it, so vim
+does not get cursor keys from a scroll gesture. Core backend attaches request
+`history=2000` and report the server's `historyRows` in `ready`.
 
 ## Input
 

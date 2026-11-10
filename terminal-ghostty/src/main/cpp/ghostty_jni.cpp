@@ -895,6 +895,14 @@ Java_io_github_sagernet_libghostty_GhosttyVt_nativeViewportState(
       mouseTracking) {
     state |= 2;
   }
+  // DEC 1007: alternate scroll (wheel becomes arrow keys on the alt screen).
+  GhosttyTerminalModeConfig alternateScroll{};
+  alternateScroll.mode = GHOSTTY_MODE_MOUSE_ALTERNATE_SCROLL;
+  if (ghostty_terminal_get(session->term, GHOSTTY_TERMINAL_DATA_MODE, &alternateScroll) ==
+          GHOSTTY_SUCCESS &&
+      alternateScroll.value) {
+    state |= 4;
+  }
   return state;
 }
 

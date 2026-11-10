@@ -610,10 +610,16 @@ public class GhosttyTerminalView @JvmOverloads constructor(
             return
         }
         if (state and GhosttyVt.VIEWPORT_ALTERNATE_SCREEN != 0) {
-            val keyCode = if (deltaRows > 0) KeyEvent.KEYCODE_DPAD_DOWN else KeyEvent.KEYCODE_DPAD_UP
-            repeat(abs(deltaRows)) {
-                val bytes = encodeKeyTap(handle, keyCode, 0, 0, null)
-                if (bytes != null && bytes.isNotEmpty()) session?.sendRawInput(bytes)
+            // 1007 (alternate scroll) is what turns a wheel into arrow keys.
+            // Without it, sending arrows moves vim's cursor instead of
+            // scrolling, so do nothing here; explicit Page/Wheel modes and
+            // the agent matrix still provide their own transports.
+            if (state and GhosttyVt.VIEWPORT_ALTERNATE_SCROLL != 0) {
+                val keyCode = if (deltaRows > 0) KeyEvent.KEYCODE_DPAD_DOWN else KeyEvent.KEYCODE_DPAD_UP
+                repeat(abs(deltaRows)) {
+                    val bytes = encodeKeyTap(handle, keyCode, 0, 0, null)
+                    if (bytes != null && bytes.isNotEmpty()) session?.sendRawInput(bytes)
+                }
             }
             return
         }

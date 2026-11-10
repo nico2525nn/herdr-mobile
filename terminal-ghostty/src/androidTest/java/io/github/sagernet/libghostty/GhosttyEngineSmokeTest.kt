@@ -16,6 +16,22 @@ import org.junit.runner.RunWith
 class GhosttyEngineSmokeTest {
 
     @Test
+    fun alternateScrollModeIsReported() {
+        val handle = GhosttyVt.nativeCreate(20, 6, 1000, "x", null, 1, true, null)
+        assertTrue(handle != 0L)
+        val enterAlt = "\u001b[?1049h\u001b[?1007h".toByteArray()
+        GhosttyVt.nativeWrite(handle, enterAlt, 0, enterAlt.size)
+        val enabled = GhosttyVt.nativeViewportState(handle)
+        assertTrue("alt screen bit", enabled and GhosttyVt.VIEWPORT_ALTERNATE_SCREEN != 0)
+        assertTrue("alternate scroll bit", enabled and GhosttyVt.VIEWPORT_ALTERNATE_SCROLL != 0)
+        val disable = "\u001b[?1007l".toByteArray()
+        GhosttyVt.nativeWrite(handle, disable, 0, disable.size)
+        val disabled = GhosttyVt.nativeViewportState(handle)
+        assertTrue("alternate scroll off", disabled and GhosttyVt.VIEWPORT_ALTERNATE_SCROLL == 0)
+        GhosttyVt.nativeFree(handle)
+    }
+
+    @Test
     fun kittyPlacementsExistNatively() {
         val handle = GhosttyVt.nativeCreate(20, 6, 1000, "x", null, 1, true, null)
         assertTrue(handle != 0L)
