@@ -44,16 +44,10 @@ internal fun scrollRoutingFor(mode: ScrollMode, pane: Pane?): ScrollRouting = wh
             // keys, so send rows and let it decide.
             else -> ScrollRouting.REMOTE_SERVER
         }
-        // A known agent is evidence even when Herdr has not reported scroll
-        // state yet (attach race, core backend). Do not fall back to the
-        // engine's AUTO here: a full-screen agent then gets no scroll at all.
-        pane.agent != null && AgentMatrix.isKnownApp(pane.agent) -> {
-            if (AgentMatrix.useWheelScroll(pane.agent)) {
-                ScrollRouting.REMOTE_WHEEL
-            } else {
-                ScrollRouting.REMOTE_PAGE
-            }
-        }
+        // No host scroll state (core backend): the engine received the raw
+        // byte stream and therefore owns the real modes and local scrollback.
+        // AUTO is authoritative here; typing page keys at an append-only TUI
+        // (OMP) does nothing.
         else -> ScrollRouting.AUTO
     }
 }

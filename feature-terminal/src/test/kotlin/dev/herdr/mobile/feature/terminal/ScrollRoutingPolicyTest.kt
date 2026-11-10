@@ -58,18 +58,12 @@ class ScrollRoutingPolicyTest {
     }
 
     @Test
-    fun `a known agent keeps its route without scroll state`() {
-        // Herdr may not have reported pane.scroll yet when the first gesture
-        // arrives; omp/codex must still get their own scroller instead of the
-        // engine's no-op AUTO.
-        assertEquals(
-            ScrollRouting.REMOTE_PAGE,
-            scrollRoutingFor(ScrollMode.AUTO, pane(agent = "omp")),
-        )
-        assertEquals(
-            ScrollRouting.REMOTE_WHEEL,
-            scrollRoutingFor(ScrollMode.AUTO, pane(agent = "codex")),
-        )
+    fun `core panes leave routing to the engine`() {
+        // The core backend delivers raw bytes; the engine knows the real
+        // modes and local scrollback. PgUp/PgDn into an append-only TUI such
+        // as OMP does nothing.
+        assertEquals(ScrollRouting.AUTO, scrollRoutingFor(ScrollMode.AUTO, pane(agent = "omp")))
+        assertEquals(ScrollRouting.AUTO, scrollRoutingFor(ScrollMode.AUTO, pane(agent = "codex")))
     }
 
     @Test

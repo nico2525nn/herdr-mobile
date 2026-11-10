@@ -619,7 +619,10 @@ async fn tab_move(
         return api_error(StatusCode::BAD_REQUEST, "bad_request", "missing insertIndex");
     };
     if selected_backend(&state, &headers) == crate::config::Backend::Core {
-        return core_unavailable("tab.move", "herdr-core has no ordering method for terminals or labels");
+        return match state.core.move_tab(&tab_id, insert_index).await {
+            Ok(()) => (StatusCode::OK, Json(json!({"ok":true}))).into_response(),
+            Err(error) => core_error(error),
+        };
     }
     match state.cache.herdr_client().tab_move(&tab_id, insert_index).await {
         Ok(ordered) => {
@@ -643,7 +646,10 @@ async fn workspace_move(
         return api_error(StatusCode::BAD_REQUEST, "bad_request", "missing insertIndex");
     };
     if selected_backend(&state, &headers) == crate::config::Backend::Core {
-        return core_unavailable("workspace.move", "herdr-core has no ordering method for spaces or labels");
+        return match state.core.move_workspace(&workspace_id, insert_index).await {
+            Ok(()) => (StatusCode::OK, Json(json!({"ok":true}))).into_response(),
+            Err(error) => core_error(error),
+        };
     }
     match state.cache.herdr_client().workspace_move(&workspace_id, insert_index).await {
         Ok(ordered) => {
@@ -922,11 +928,11 @@ mod core_unavailable_tests {
     async fn core_unavailable_is_a_typed_501_response() {
         // Regression for bug class #8: unsupported core operations must reach
         // the app as an explicit unavailable error, never a fake success.
-        let response = core_unavailable("tab.move", "no ordering API");
+        let response = core_unavailable("herdr.update", "not managed by the TUI updater");
         assert_eq!(response.status(), StatusCode::NOT_IMPLEMENTED);
         let body = axum::body::to_bytes(response.into_body(), usize::MAX).await.unwrap();
         let value: Value = serde_json::from_slice(&body).unwrap();
         assert_eq!(value.pointer("/error/code").and_then(Value::as_str), Some("unavailable"));
-        assert!(value.pointer("/error/message").and_then(Value::as_str).unwrap().contains("tab.move"));
+        assert!(value.pointer("/error/message").and_then(Value::as_str).unwrap().contains("herdr.update"));
     }
 }

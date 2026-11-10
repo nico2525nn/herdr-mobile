@@ -283,7 +283,7 @@ override_settings() {
   adb_ shell run-as "$PKG" rm -f files/herdr-ci-state.json >/dev/null 2>&1 || true
 
   if [[ -n "$url" ]]; then
-    adb_ shell am start -W -n "$OVERRIDE_ACTIVITY" --es action "$action" --es url "$url" >/dev/null
+    adb_ shell am start -W -n "$OVERRIDE_ACTIVITY" --es action "$action" --es url "$url" --es backend tui >/dev/null
   else
     adb_ shell am start -W -n "$OVERRIDE_ACTIVITY" --es action "$action" >/dev/null
   fi

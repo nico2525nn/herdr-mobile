@@ -1,5 +1,21 @@
 # Changelog
 
+## 2.0.14 — 2026-11-10
+
+- Core backend: workspace and tab reordering now works. Core has no ordering
+  RPC, so the daemon writes `herdr.space_order` / `herdr.tab_order` labels and
+  `translate_snapshot` sorts spaces/tabs by them (labels persist across core
+  restarts). Verified against a live herdr-core session.
+- Core scroll: panes without `Pane.scroll` (all core panes) are now routed to
+  the engine's AUTO instead of agent page/wheel keys. The core stream carries
+  raw bytes, so libghostty owns the real modes and 2000 rows of local
+  scrollback; OMP's append-only transcript scrolls again.
+- Debug builds can select the backend in the CI/daemon override activity
+  (`--es backend core|tui`); the smoke forces TUI so the developer's core
+  setting is never mutated by a test run.
+- Core labels must be strings: order values are written as strings (core
+  rejects integer label values).
+
 ## 2.0.13 — 2026-11-09
 
 - Alt screen scroll follows DEC 1007 (alternate scroll): arrow keys are sent

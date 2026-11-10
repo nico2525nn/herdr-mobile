@@ -4,6 +4,7 @@ import android.os.Bundle
 import android.util.Log
 import androidx.activity.ComponentActivity
 import androidx.lifecycle.lifecycleScope
+import dev.herdr.mobile.core.model.BackendMode
 import dev.herdr.mobile.core.model.TransportMode
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
@@ -36,6 +37,7 @@ class DebugDaemonUrlActivity : ComponentActivity() {
         super.onCreate(savedInstanceState)
         val action = intent.getStringExtra("action") ?: "apply"
         val url = intent.getStringExtra("url")
+        val backend = intent.getStringExtra("backend")?.let(BackendMode::fromWire)
         val repository = (application as HerdrApp).container.settingsRepository
         val backup = getSharedPreferences(BACKUP_PREFS, MODE_PRIVATE)
 
@@ -46,6 +48,7 @@ class DebugDaemonUrlActivity : ComponentActivity() {
                     withContext(Dispatchers.IO) {
                         val savedTransport = backup.getString(KEY_TRANSPORT, null)
                         val savedUrl = backup.getString(KEY_URL, null)
+                        val savedBackend = backup.getString(KEY_BACKEND, null)
                         if (savedTransport != null && savedUrl != null) {
                             // A previous run was killed before its restore step:
                             // put the developer's values back before anything else.
@@ -53,6 +56,8 @@ class DebugDaemonUrlActivity : ComponentActivity() {
                                 current.copy(
                                     transportMode = TransportMode.fromWire(savedTransport),
                                     directUrl = savedUrl,
+                                    directBackendMode = savedBackend?.let(BackendMode::fromWire)
+                                        ?: current.directBackendMode,
                                 )
                             }
                             backup.edit().clear().commit()
@@ -69,7 +74,11 @@ class DebugDaemonUrlActivity : ComponentActivity() {
                                         .commit(),
                                 ) { "cannot write the settings backup" }
                                 repository.update { settings ->
-                                    settings.copy(transportMode = TransportMode.DIRECT, directUrl = url)
+                                    settings.copy(
+                                        transportMode = TransportMode.DIRECT,
+                                        directUrl = url,
+                                        directBackendMode = backend ?: settings.directBackendMode,
+                                    )
                                 }
                             }
 
@@ -78,6 +87,8 @@ class DebugDaemonUrlActivity : ComponentActivity() {
                                     current.copy(
                                         transportMode = TransportMode.fromWire(savedTransport),
                                         directUrl = savedUrl,
+                                        directBackendMode = savedBackend?.let(BackendMode::fromWire)
+                                            ?: current.directBackendMode,
                                     )
                                 } else {
                                     current
@@ -93,6 +104,7 @@ class DebugDaemonUrlActivity : ComponentActivity() {
                                 .put("action", action)
                                 .put("ok", true)
                                 .put("transportMode", effective.transportMode.wire)
+                .put("directBackendMode", effective.directBackendMode.wire)
                                 .put("directUrl", effective.directUrl)
                                 .put("backupPresent", backup.contains(KEY_URL)),
                         )
@@ -127,5 +139,6 @@ class DebugDaemonUrlActivity : ComponentActivity() {
         private const val BACKUP_PREFS = "herdr_ci_backup"
         private const val KEY_TRANSPORT = "transport"
         private const val KEY_URL = "url"
+        private const val KEY_BACKEND = "backend"
     }
 }

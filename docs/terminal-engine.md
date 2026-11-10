@@ -40,7 +40,11 @@ Routing policy (`ScrollMode.AUTO`):
 | `pane.scroll` present, `maxOffsetFromBottom > 0` | `REMOTE_HOST`: row deltas to `pane.scroll` (server owns full history), coalesced every 40 ms |
 | `pane.scroll` present, no scrollback | wheel agents (`AgentMatrix.useWheelScroll`) → raw SGR wheel reports; other full-screen apps → one PageUp/PageDown per gesture |
 | no `pane.scroll`, agent unknown, no host scrollback | `REMOTE_SERVER`: rows go to the daemon, which checks `pane.process_info`; shells never get PgUp/PgDn, full-screen apps do |
-| no `pane.scroll` (e.g. core backend) | `AUTO`: the engine decides from its own modes; otherwise local scrollback |
+| no `pane.scroll` (core backend) | `AUTO`: raw bytes give the engine real modes and local scrollback; OMP and shells scroll locally, alt-screen apps use wheel/1007 |
+
+Core snapshot ordering has no native RPC: workspaces/tabs are reordered by
+`herdr.space_order` / `herdr.tab_order` labels, written on every terminal in the
+group and sorted when translating the core snapshot.
 
 Explicit settings (`Local`, `Mouse wheel`, `Page keys`) override the table,
 except that a pane with host scrollback keeps the host's row-accurate scroll.

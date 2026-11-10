@@ -18,6 +18,8 @@ const FRAME_FOCUS: u8 = 4;
 const FRAME_CLOSE: u8 = 5;
 const FRAME_HEADER_LEN: usize = 9;
 const MAX_FRAME_LEN: usize = 16 * 1024 * 1024;
+const SPACE_ORDER_LABEL: &str = "herdr.space_order";
+const TAB_ORDER_LABEL: &str = "herdr.tab_order";
 
 #[derive(Clone, Debug)]
 pub struct CoreClient {
@@ -290,6 +292,57 @@ impl CoreClient {
         Ok(tab_id)
     }
 
+    /// Reorder spaces by writing an order label on every terminal in each
+    /// space. Core has no native ordering method; labels are the durable,
+    /// restart-safe source `translate_snapshot` sorts by.
+    pub async fn move_workspace(&self, workspace_id: &str, insert_index: i64) -> Result<()> {
+        let terminals = self.list(false).await?;
+        let mut order = ordered_ids(&terminals, workspace_id_of, SPACE_ORDER_LABEL);
+        let Some(from) = order.iter().position(|id| id == workspace_id) else {
+            bail!("not_found: workspace {workspace_id}");
+        };
+        let item = order.remove(from);
+        let to = insert_index.clamp(0, order.len() as i64) as usize;
+        order.insert(to, item);
+        for (index, id) in order.iter().enumerate() {
+            for terminal in terminals.iter().filter(|t| workspace_id_of(t).as_deref() == Some(id)) {
+                let Some(address) = field_string(terminal, "address") else { continue };
+                self.label(address, json!({ SPACE_ORDER_LABEL: index.to_string() })).await?;
+            }
+        }
+        Ok(())
+    }
+
+    /// Reorder tabs inside one workspace using the same label mechanism.
+    pub async fn move_tab(&self, tab_id: &str, insert_index: i64) -> Result<()> {
+        let terminals = self.list(false).await?;
+        let workspace = terminals
+            .iter()
+            .find(|t| tab_id_of(t).as_deref() == Some(tab_id))
+            .map(|t| workspace_id_of(t))
+            .flatten()
+            .context("tab has no workspace label")?;
+        let scoped: Vec<Value> = terminals
+            .iter()
+            .filter(|t| workspace_id_of(t).as_deref() == Some(workspace.as_str()))
+            .cloned()
+            .collect();
+        let mut order = ordered_ids(&scoped, tab_id_of, TAB_ORDER_LABEL);
+        let Some(from) = order.iter().position(|id| id == tab_id) else {
+            bail!("not_found: tab {tab_id}");
+        };
+        let item = order.remove(from);
+        let to = insert_index.clamp(0, order.len() as i64) as usize;
+        order.insert(to, item);
+        for (index, id) in order.iter().enumerate() {
+            for terminal in scoped.iter().filter(|t| tab_id_of(t).as_deref() == Some(id)) {
+                let Some(address) = field_string(terminal, "address") else { continue };
+                self.label(address, json!({ TAB_ORDER_LABEL: index.to_string() })).await?;
+            }
+        }
+        Ok(())
+    }
+
     pub async fn close_tab(&self, tab_id: &str) -> Result<()> {
         let terminals = self.list(true).await?;
         let selected = terminals.into_iter().filter(|terminal| {
@@ -533,6 +586,45 @@ fn split_where(value: Option<&str>) -> (Option<String>, Option<String>) {
     }
 }
 
+fn workspace_id_of(terminal: &Value) -> Option<String> {
+    let labels = terminal.get("labels").unwrap_or(&Value::Null);
+    field_string(labels, "herdr.space")
+        .map(str::to_owned)
+        .or_else(|| field_string(terminal, "address").map(|address| format!("core:{address}")))
+}
+
+fn tab_id_of(terminal: &Value) -> Option<String> {
+    let labels = terminal.get("labels").unwrap_or(&Value::Null);
+    field_string(labels, "herdr.tab")
+        .map(str::to_owned)
+        .or_else(|| field_string(terminal, "address").map(str::to_owned))
+}
+
+fn order_label(labels: &Value, key: &str) -> i64 {
+    labels.get(key)
+        .and_then(|value| value.as_i64().or_else(|| value.as_str()?.parse().ok()))
+        .unwrap_or(i64::MAX)
+}
+
+fn ordered_ids(
+    terminals: &[Value],
+    id_of: impl Fn(&Value) -> Option<String>,
+    order_key: &str,
+) -> Vec<String> {
+    let mut seen: HashMap<String, (usize, i64)> = HashMap::new();
+    for (index, terminal) in terminals.iter().enumerate() {
+        let Some(id) = id_of(terminal) else { continue };
+        let labels = terminal.get("labels").unwrap_or(&Value::Null);
+        let order = order_label(labels, order_key);
+        seen.entry(id)
+            .and_modify(|entry| entry.1 = entry.1.min(order))
+            .or_insert((index, order));
+    }
+    let mut ids: Vec<(String, (usize, i64))> = seen.into_iter().collect();
+    ids.sort_by_key(|(_, (index, order))| (*order, *index));
+    ids.into_iter().map(|(id, _)| id).collect()
+}
+
 pub fn translate_snapshot(seq: i64, terminals: &[Value], version: Option<String>) -> crate::model::SessionSnapshot {
     use crate::model::{AgentStatus, Focus, HerdrInfo, HerdrUpdate, Pane, SessionSnapshot, Tab, Workspace};
     use std::collections::BTreeMap;
@@ -541,7 +633,33 @@ pub fn translate_snapshot(seq: i64, terminals: &[Value], version: Option<String>
     let mut workspace_indices = HashMap::<String, usize>::new();
     let mut tab_indices = HashMap::<(String, String), usize>::new();
 
+    // Order labels live on terminals, but a space/tab may gain a terminal
+    // after the move (no label on the newcomer). Aggregate at the group level
+    // so the whole space/tab keeps its position.
+    let mut space_orders: HashMap<String, i64> = HashMap::new();
+    let mut tab_orders: HashMap<String, i64> = HashMap::new();
     for terminal in terminals {
+        let labels = terminal.get("labels").unwrap_or(&Value::Null);
+        if let Some(id) = workspace_id_of(terminal) {
+            let order = order_label(labels, SPACE_ORDER_LABEL);
+            space_orders.entry(id).and_modify(|value| *value = (*value).min(order)).or_insert(order);
+        }
+        if let Some(id) = tab_id_of(terminal) {
+            let order = order_label(labels, TAB_ORDER_LABEL);
+            tab_orders.entry(id).and_modify(|value| *value = (*value).min(order)).or_insert(order);
+        }
+    }
+    let mut ordered: Vec<(usize, &Value)> = terminals.iter().enumerate().collect();
+    ordered.sort_by_key(|(index, terminal)| {
+        let space = workspace_id_of(terminal)
+            .and_then(|id| space_orders.get(&id).copied())
+            .unwrap_or(i64::MAX);
+        let tab = tab_id_of(terminal)
+            .and_then(|id| tab_orders.get(&id).copied())
+            .unwrap_or(i64::MAX);
+        (space, tab, *index)
+    });
+    for (_, terminal) in ordered {
         let Some(address) = field_string(terminal, "address") else { continue };
         let labels = terminal.get("labels").unwrap_or(&Value::Null);
         let (where_space, where_tab) = split_where(field_string(labels, "where"));
@@ -759,6 +877,23 @@ mod tests {
         assert_eq!(FRAME_FACTS, 2);
         assert_eq!(FRAME_FOCUS, 4);
         assert_eq!(FRAME_CLOSE, 5);
+    }
+
+    #[test]
+    fn snapshot_sorts_spaces_and_tabs_by_order_labels() {
+        let terminals = vec![
+            json!({"address":"t1","labels":{"herdr.space":"a","herdr.space_label":"A","herdr.tab":"a1","herdr.tab_label":"1","herdr.space_order":2,"herdr.tab_order":2}}),
+            json!({"address":"t2","labels":{"herdr.space":"b","herdr.space_label":"B","herdr.tab":"b1","herdr.tab_label":"1","herdr.space_order":0,"herdr.tab_order":0}}),
+            json!({"address":"t3","labels":{"herdr.space":"b","herdr.space_label":"B","herdr.tab":"b2","herdr.tab_label":"2","herdr.space_order":0,"herdr.tab_order":1}}),
+            json!({"address":"t4","labels":{"herdr.space":"a","herdr.space_label":"A","herdr.tab":"a2","herdr.tab_label":"2","herdr.space_order":2,"herdr.tab_order":0}}),
+        ];
+        let snapshot = translate_snapshot(1, &terminals, None);
+        let spaces: Vec<_> = snapshot.workspaces.iter().map(|w| w.label.as_str()).collect();
+        assert_eq!(spaces, ["B", "A"]);
+        let a_tabs: Vec<_> = snapshot.workspaces[1].tabs.iter().map(|t| t.id.as_str()).collect();
+        assert_eq!(a_tabs, ["a2", "a1"]);
+        let b_tabs: Vec<_> = snapshot.workspaces[0].tabs.iter().map(|t| t.id.as_str()).collect();
+        assert_eq!(b_tabs, ["b1", "b2"]);
     }
 
     #[test]
