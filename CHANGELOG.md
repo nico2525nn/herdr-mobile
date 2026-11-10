@@ -1,5 +1,15 @@
 # Changelog
 
+## 2.0.18 — 2026-11-11
+
+- Core attach already applies the requested geometry; the Android view then
+  sent the same size after its first layout. That redundant SIGWINCH made OMP
+  replay its transcript a second time (black screen, then visible, then a
+  second replay). The daemon now skips a resize identical to the attach size.
+  Verified OMP reopen: 14 half-second captures, no layout/black/thrash.
+- The 180 ms resize debounce from 2.0.17 remains; core read-ack/focus and
+  ordering from 2.0.16/15 are unchanged.
+
 ## 2.0.17 — 2026-11-11
 
 - Core PTY resizes are debounced (180 ms). Opening a tab emitted several

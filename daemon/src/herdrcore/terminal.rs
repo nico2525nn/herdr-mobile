@@ -42,6 +42,21 @@ pub async fn bridge(mut socket: WebSocket, core: CoreClient, address: String, co
     // Current attachment geometry. The scroll path needs the row count to turn
     // a ROW delta into whole pages (one page = one screen).
     let mut viewport_rows = rows.max(1);
+    // Core's attach itself sets the terminal geometry. The Android view often
+    // sends the same size again after its first layout; a redundant SIGWINCH
+    // makes OMP replay its entire transcript a second time.
+    let mut last_size = (
+        attachment
+            .terminal
+            .get("cols")
+            .and_then(Value::as_u64)
+            .unwrap_or(rows as u64) as u32,
+        attachment
+            .terminal
+            .get("rows")
+            .and_then(Value::as_u64)
+            .unwrap_or(rows as u64) as u32,
+    );
     loop {
         tokio::select! {
             frame = attachment.next_frame() => {
@@ -80,7 +95,12 @@ pub async fn bridge(mut socket: WebSocket, core: CoreClient, address: String, co
                 match message {
                     Some(Ok(Message::Binary(bytes))) => attachment.send_data(&bytes).await?,
                     Some(Ok(Message::Text(text))) => {
-                        if handle_control(&mut attachment, text.as_str(), &mut viewport_rows).await? {
+                        if handle_control(
+                            &mut attachment,
+                            text.as_str(),
+                            &mut viewport_rows,
+                            &mut last_size,
+                        ).await? {
                             break;
                         }
                     }
@@ -127,6 +147,7 @@ async fn handle_control(
     attachment: &mut CoreAttachment,
     text: &str,
     viewport_rows: &mut u32,
+    last_size: &mut (u32, u32),
 ) -> Result<bool> {
     let Ok(value) = serde_json::from_str::<Value>(text) else { return Ok(false) };
     if let Some(bytes) = input_payload(&value)? {
@@ -140,7 +161,10 @@ async fn handle_control(
             let cols = value.get("cols").and_then(Value::as_u64).unwrap_or(0).min(u16::MAX as u64) as u16;
             let rows = value.get("rows").and_then(Value::as_u64).unwrap_or(0).min(u16::MAX as u64) as u16;
             if cols > 0 && rows > 0 {
-                attachment.resize(cols, rows).await?;
+                if (u32::from(cols), u32::from(rows)) != *last_size {
+                    attachment.resize(cols, rows).await?;
+                    *last_size = (u32::from(cols), u32::from(rows));
+                }
                 *viewport_rows = u32::from(rows);
             }
         }
