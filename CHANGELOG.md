@@ -1,5 +1,12 @@
 # Changelog
 
+## 2.0.19 — 2026-11-12
+
+- Updated the vendored engine to **libghostty-vt 1.0.1** (from 1.0.0) for all
+  four ABIs. The 1.0.1 headers differ only in `version.h`, so the C ABI and the
+  JNI bridge are unchanged; rebuilt engine, JNI symbol checks and smoke verify
+  the new static libraries.
+
 ## 2.0.18 — 2026-11-11
 
 - Core attach already applies the requested geometry; the Android view then

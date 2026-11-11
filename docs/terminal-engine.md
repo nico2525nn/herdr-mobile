@@ -1,6 +1,6 @@
 # Terminal engine (libghostty-vt 1.0)
 
-The terminal is **libghostty-vt 1.0.0**, the same VT engine Herdr runs on the
+The terminal is **libghostty-vt 1.0.1**, the same VT engine Herdr runs on the
 server. The Android view, session, theme and selection code is the vendored MIT
 library `SagerNet/libghostty-android`, ported to the 1.0 C API
 (`terminal-ghostty/`).
@@ -73,7 +73,7 @@ does not get cursor keys from a scroll gesture. Core backend attaches request
 ## Vendor + upgrade notes
 
 - `terminal-ghostty/vendor/include` + `vendor/<abi>/libghostty-vt.a` are built
-  from the **release tarball** `libghostty-vt-1.0.0.tar.gz` with Zig 0.17:
+  from the **release tarball** `libghostty-vt-1.0.1.tar.gz` with Zig 0.17:
   `zig build -Doptimize=ReleaseFast -Dtarget=<abi>-linux-android`.
   Android requires 16 KB page alignment; CMake passes
   `-Wl,-z,max-page-size=16384`.
