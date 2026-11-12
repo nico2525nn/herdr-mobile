@@ -1,5 +1,15 @@
 # Changelog
 
+## 2.0.20 — 2026-11-12
+
+- Core terminals without `herdr.space`/`herdr.tab` labels now group by their
+  `where` label instead of each becoming its own workspace. This removes the
+  duplicate "herdr-mobile" cards and makes close/rename/focus/ordering work for
+  hc-created terminals.
+- App launch with no explicit target opens the focused workspace/tab/pane
+  (core focus or TUI focus) instead of the first workspace.
+- Rust test for where-only grouping; TargetResolution test for focused start.
+
 ## 2.0.19 — 2026-11-12
 
 - Updated the vendored engine to **libghostty-vt 1.0.1** (from 1.0.0) for all

@@ -366,8 +366,7 @@ impl CoreClient {
     pub async fn close_tab(&self, tab_id: &str) -> Result<()> {
         let terminals = self.list(true).await?;
         let selected = terminals.into_iter().filter(|terminal| {
-            field_string(terminal.get("labels").unwrap_or(&Value::Null), "herdr.tab")
-                .unwrap_or_else(|| field_string(terminal, "address").unwrap_or_default()) == tab_id
+            tab_id_of(terminal).as_deref() == Some(tab_id)
         }).collect::<Vec<_>>();
         // Idempotent: a second tap after a concurrent tab.closed is a success,
         // not a 404 the app surfaces as a failure.
@@ -378,9 +377,7 @@ impl CoreClient {
         let terminals = self.list(true).await?;
         let locations = locations(&terminals);
         let selected = terminals.iter().filter(|terminal| {
-            field_string(terminal, "address")
-                .and_then(|address| locations.get(address))
-                .is_some_and(|(space, _)| space == workspace_id)
+            workspace_id_of(terminal).as_deref() == Some(workspace_id)
         }).cloned().collect::<Vec<_>>();
         // Idempotent like close_tab: a concurrent/duplicate close is success.
         self.close_selected(selected.into_iter()).await
@@ -425,8 +422,7 @@ impl CoreClient {
     pub async fn rename_tab(&self, tab_id: &str, label: &str) -> Result<()> {
         let terminals = self.list(false).await?;
         let matched: Vec<_> = terminals.into_iter().filter(|terminal| {
-            field_string(terminal.get("labels").unwrap_or(&Value::Null), "herdr.tab")
-                .unwrap_or_else(|| field_string(terminal, "address").unwrap_or_default()) == tab_id
+            tab_id_of(terminal).as_deref() == Some(tab_id)
         }).collect();
         if matched.is_empty() { bail!("not_found: tab {tab_id}"); }
         for terminal in matched {
@@ -444,9 +440,7 @@ impl CoreClient {
         let terminals = self.list(false).await?;
         let locations = locations(&terminals);
         let matched: Vec<_> = terminals.into_iter().filter(|terminal| {
-            field_string(terminal, "address")
-                .and_then(|address| locations.get(address))
-                .is_some_and(|(space, _)| space == workspace_id)
+            workspace_id_of(terminal).as_deref() == Some(workspace_id)
         }).collect();
         if matched.is_empty() { bail!("not_found: workspace {workspace_id}"); }
         for terminal in matched {
@@ -606,10 +600,16 @@ fn split_where(value: Option<&str>) -> (Option<String>, Option<String>) {
     }
 }
 
+fn where_space(terminal: &Value) -> Option<String> {
+    let labels = terminal.get("labels").unwrap_or(&Value::Null);
+    split_where(field_string(labels, "where")).0
+}
+
 fn workspace_id_of(terminal: &Value) -> Option<String> {
     let labels = terminal.get("labels").unwrap_or(&Value::Null);
     field_string(labels, "herdr.space")
         .map(str::to_owned)
+        .or_else(|| where_space(terminal).map(|space| format!("where:{space}")))
         .or_else(|| field_string(terminal, "address").map(|address| format!("core:{address}")))
 }
 
@@ -617,6 +617,10 @@ fn tab_id_of(terminal: &Value) -> Option<String> {
     let labels = terminal.get("labels").unwrap_or(&Value::Null);
     field_string(labels, "herdr.tab")
         .map(str::to_owned)
+        .or_else(|| {
+            field_string(labels, "where")
+                .map(|value| format!("where:{value}"))
+        })
         .or_else(|| field_string(terminal, "address").map(str::to_owned))
 }
 
@@ -689,14 +693,12 @@ pub fn translate_snapshot(
         let Some(address) = field_string(terminal, "address") else { continue };
         let labels = terminal.get("labels").unwrap_or(&Value::Null);
         let (where_space, where_tab) = split_where(field_string(labels, "where"));
-        let workspace_id = field_string(labels, "herdr.space")
-            .map(str::to_owned)
-            .unwrap_or_else(|| format!("core:{address}"));
+        let workspace_id = workspace_id_of(terminal).unwrap_or_else(|| format!("core:{address}"));
         let workspace_label = field_string(labels, "herdr.space_label")
             .map(str::to_owned)
             .or(where_space)
             .unwrap_or_else(|| terminal.get("name").and_then(Value::as_str).unwrap_or(address).to_owned());
-        let tab_id = field_string(labels, "herdr.tab").unwrap_or(address).to_owned();
+        let tab_id = tab_id_of(terminal).unwrap_or_else(|| address.to_owned());
         let tab_label = field_string(labels, "herdr.tab_label")
             .map(str::to_owned)
             .or(where_tab)
@@ -814,8 +816,8 @@ pub fn locations(terminals: &[Value]) -> HashMap<String, (String, String)> {
     terminals.iter().filter_map(|terminal| {
         let address = field_string(terminal, "address")?;
         let labels = terminal.get("labels").unwrap_or(&Value::Null);
-        let workspace = field_string(labels, "herdr.space").map(str::to_owned).unwrap_or_else(|| format!("core:{address}"));
-        let tab = field_string(labels, "herdr.tab").unwrap_or(address).to_owned();
+        let workspace = workspace_id_of(terminal).unwrap_or_else(|| format!("core:{address}"));
+        let tab = tab_id_of(terminal).unwrap_or_else(|| address.to_owned());
         Some((address.to_owned(), (workspace, tab)))
     }).collect()
 }
@@ -950,6 +952,21 @@ mod tests {
         assert_eq!(a_tabs, ["a2", "a1"]);
         let b_tabs: Vec<_> = snapshot.workspaces[0].tabs.iter().map(|t| t.id.as_str()).collect();
         assert_eq!(b_tabs, ["b1", "b2"]);
+    }
+
+    #[test]
+    fn where_only_terminals_group_into_one_workspace() {
+        let terminals = vec![
+            json!({"address":"t1","labels":{"where":"Project / 1"}}),
+            json!({"address":"t2","labels":{"where":"Project / 1"}}),
+            json!({"address":"t3","labels":{"where":"Project / 2"}}),
+        ];
+        let snapshot = translate_snapshot(1, &terminals, None, None, &std::collections::HashSet::new());
+        assert_eq!(snapshot.workspaces.len(), 1);
+        assert_eq!(snapshot.workspaces[0].id, "where:Project");
+        assert_eq!(snapshot.workspaces[0].tabs.len(), 2);
+        assert_eq!(snapshot.workspaces[0].tabs[0].panes.len(), 2);
+        assert_eq!(snapshot.workspaces[0].tabs[1].panes.len(), 1);
     }
 
     #[test]

@@ -18,6 +18,7 @@ internal fun resolveTarget(
     paneId: String?,
 ): TerminalTarget? {
     val workspace = snapshot.workspace(workspaceId)
+        ?: snapshot.workspaces.firstOrNull { it.focused }
         ?: snapshot.workspaces.firstOrNull()
         ?: return null
     // A deep link carries the pane id captured when the notification was
@@ -30,10 +31,14 @@ internal fun resolveTarget(
     val requestedPane = paneTab?.panes?.firstOrNull { it.id == paneId }
     val tab = paneTab
         ?: snapshot.tab(tabId?.takeIf { snapshot.tab(it)?.workspaceId == workspace.id })
+        ?: workspace.tabs.firstOrNull { it.focused }
         ?: workspace.tabs.firstOrNull { it.id == workspace.activeTabId }
         ?: workspace.tabs.firstOrNull()
         ?: return null
-    val pane = requestedPane ?: tab.activePane ?: return null
+    val pane = requestedPane
+        ?: tab.panes.firstOrNull { it.focused }
+        ?: tab.activePane
+        ?: return null
     return TerminalTarget(workspace.id, tab.id, pane.id)
 }
 

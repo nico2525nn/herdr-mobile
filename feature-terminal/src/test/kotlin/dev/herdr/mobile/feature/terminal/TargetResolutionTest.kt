@@ -39,6 +39,16 @@ class TargetResolutionTest {
     }
 
     @Test
+    fun `no ids prefer the focused workspace and pane`() {
+        val focused = snapshot(
+            workspace("w1", listOf(tab("t1", "w1", listOf(p1)))),
+            workspace("w2", listOf(tab("t2", "w2", listOf(pane("w2:p1", "t2", "w2")))))
+                .copy(focused = true),
+        )
+        assertEquals(TerminalTarget("w2", "t2", "w2:p1"), resolveTarget(focused, null, null, null))
+    }
+
+    @Test
     fun `a missing workspace opens the first one`() {
         assertEquals(TerminalTarget("w1", "t1", "w1:p1"), resolveTarget(snap, "gone", null, null))
     }
