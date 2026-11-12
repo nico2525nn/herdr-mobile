@@ -54,10 +54,11 @@ object AgentMatrix {
         // OMP, can1357/oh-my-pi@403931b9, docs/tui-runtime-internals.md
         // (terminal lifecycle/stdin normalization); scroll/paste measured.
         "omp" to Entry(ScrollRoute.PAGE_KEY, PasteRoute.EMULATOR_BIT),
-        // OpenCode, anomalyco/opencode@51e310c9,
-        // packages/opencode/src/config/keybinds.ts; scroll/paste measured
-        // (full-page PgUp, one-row wheel, bracketed payload honored).
-        "opencode" to Entry(ScrollRoute.WHEEL, PasteRoute.ALWAYS_BRACKET),
+        // OpenCode, anomalyco/opencode dev, packages/tui/src/util/scroll.ts:
+        // CustomSpeedScroll defaults to 3 rows per wheel tick (the user can
+        // override scroll.speed in config). One notch per row ran the drag at
+        // 3x; bracketed payload honored.
+        "opencode" to Entry(ScrollRoute.WHEEL, PasteRoute.ALWAYS_BRACKET, wheelRowsPerEvent = 3),
         // Claude Code: code.claude.com/docs/en/terminal-config, “Enter
         // multiline prompts” (Ctrl+J / Shift+Enter only; no scroll/paste spec).
         // Routes remain conservative defaults; low-confidence for omitted modes.

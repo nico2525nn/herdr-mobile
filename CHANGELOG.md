@@ -1,5 +1,20 @@
 # Changelog
 
+## Unreleased
+
+- OpenCode TUI scrolled 3x too fast: its `packages/tui/src/util/scroll.ts`
+  defaults to `CustomSpeedScroll(3)`, so one SGR notch moves three dialog rows.
+  The wheel stride is now 3 (was 1) for both the client raw-wheel path and the
+  daemon fallback. A user `scroll.speed` override cannot be detected; Settings
+  → Scroll mode remains the escape hatch.
+- CI: tool scripts are executable in git and the smoke uses `bash tools/ci.sh`;
+  a fresh emulator gets POST_NOTIFICATIONS pre-granted so the dialog cannot
+  cover Home.
+- CJK keyboard raises the IME only after the draft field reports focus, and
+  retries focus with the terminal View cleared. Smoke accepts the documented
+  shortcut-panel fallback when the IME refuses the field.
+
+
 ## 2.0.20 — 2026-11-12
 
 - Core terminals without `herdr.space`/`herdr.tab` labels now group by their

@@ -109,12 +109,11 @@ pub fn host_scroll_target(current: u64, max: u64, up: bool, rows: u32) -> Option
 /// `None` when the app uses page keys. Mirrors AgentMatrix.kt's scroll routes.
 fn wheel_rows_per_event(identity: Option<&str>) -> Option<u64> {
     let identity = identity?;
-    if identity.eq_ignore_ascii_case("qwen") {
+    if identity.eq_ignore_ascii_case("qwen") || identity.eq_ignore_ascii_case("opencode") {
         Some(3)
-    } else if identity.eq_ignore_ascii_case("codex")
-        || identity.eq_ignore_ascii_case("pi")
-        || identity.eq_ignore_ascii_case("opencode")
-    {
+    } else if identity.eq_ignore_ascii_case("pi") {
+        Some(2)
+    } else if identity.eq_ignore_ascii_case("codex") {
         Some(1)
     } else {
         None
@@ -227,16 +226,16 @@ mod tests {
 
     #[test]
     fn wheel_apps_use_their_identity_stride() {
-        for identity in ["codex", "pi", "opencode", "Codex"] {
-            let request = ScrollRequest { app_identity: Some(identity), ..herdr(-4) };
+        for (identity, stride) in [("codex", 1), ("pi", 2), ("opencode", 3), ("qwen", 3)] {
+            let request = ScrollRequest { app_identity: Some(identity), ..herdr(-12) };
             assert_eq!(
                 scroll_action(request),
-                ScrollAction::Wheel { notches: -4 },
-                "{identity} advances one row per notch"
+                ScrollAction::Wheel { notches: -12 / stride },
+                "{identity} advances {stride} rows per notch"
             );
         }
-        let qwen = ScrollRequest { app_identity: Some("qwen"), ..herdr(9) };
-        assert_eq!(scroll_action(qwen), ScrollAction::Wheel { notches: 3 });
+        let codex = ScrollRequest { app_identity: Some("Codex"), ..herdr(-4) };
+        assert_eq!(scroll_action(codex), ScrollAction::Wheel { notches: -4 });
     }
 
     #[test]

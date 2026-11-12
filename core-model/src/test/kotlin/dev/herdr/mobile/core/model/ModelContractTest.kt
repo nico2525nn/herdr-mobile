@@ -314,12 +314,12 @@ class ModelContractTest {
 
     @Test
     fun `agent matrix preserves documented wheel stride`() {
-        listOf(
-            "codex", "opencode",
-        ).forEach { kind ->
-            assertEquals(1, AgentMatrix.wheelRowsPerEvent(kind))
-            assertEquals(1, AgentMatrix.wheelRowsPerEvent(kind.uppercase()))
-        }
+        // Codex advances one row per notch; OpenCode's TUI defaults to three
+        // (packages/tui/src/util/scroll.ts CustomSpeedScroll(3)).
+        assertEquals(1, AgentMatrix.wheelRowsPerEvent("codex"))
+        assertEquals(1, AgentMatrix.wheelRowsPerEvent("CODEX"))
+        assertEquals(3, AgentMatrix.wheelRowsPerEvent("opencode"))
+        assertEquals(3, AgentMatrix.wheelRowsPerEvent("OPENCODE"))
         // Measured on device: Pi advances two rows per notch (one notch per row
         // ran the drag at 2x).
         assertEquals(2, AgentMatrix.wheelRowsPerEvent("pi"))

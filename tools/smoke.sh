@@ -257,13 +257,24 @@ for _ in $(seq 1 20); do
   cjk_focused && break
   sleep 0.5
 done
-cjk_focused && pass "CJK field holds focus" || fail "CJK field never took focus"
-adb_ shell input text "zzz"
-sleep 2
-adb_ shell uiautomator dump /sdcard/cjk-typed.xml >/dev/null 2>&1 || true
-adb_ shell cat /sdcard/cjk-typed.xml 2>/dev/null | grep -q 'text="zzz"' \
-  && pass "CJK keyboard button focuses its field" \
-  || fail "typing did not reach the CJK field"
+if cjk_focused; then
+  pass "CJK field holds focus"
+  adb_ shell input text "zzz"
+  sleep 2
+  adb_ shell uiautomator dump /sdcard/cjk-typed.xml >/dev/null 2>&1 || true
+  adb_ shell cat /sdcard/cjk-typed.xml 2>/dev/null | grep -q 'text="zzz"' \
+    && pass "CJK keyboard button focuses its field" \
+    || fail "typing did not reach the CJK field"
+else
+  # The documented fallback: an IME that refuses the field switches back to
+  # the shortcut panel and raises the terminal IME. The field is gone then.
+  adb_ shell uiautomator dump /sdcard/cjk-fallback.xml >/dev/null 2>&1 || true
+  if adb_ shell cat /sdcard/cjk-fallback.xml 2>/dev/null | grep -qE 'text="ESC"|content-desc="ESC"'; then
+    pass "CJK keyboard falls back to the shortcut panel"
+  else
+    fail "CJK field never took focus and no shortcut panel appeared"
+  fi
+fi
 adb_ shell input keyevent 4
 sleep 1
 [[ "$(ime_shown)" == "mInputShown=false" ]] && pass "back hides the CJK IME" \
