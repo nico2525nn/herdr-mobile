@@ -523,6 +523,9 @@ PRIVATE_LABELS="$(daemon_json "$PRIVATE_URL" /v1/snapshot 2>/dev/null |
 say "installing $APK"
 adb_ install -r "$APK" >/dev/null || die "APK install failed"
 INSTALLED=1
+# A fresh install shows the POST_NOTIFICATIONS dialog above Home, so the smoke
+# never finds the workspace card. Pre-grant it (API 33+; older devices ignore).
+adb_ shell pm grant "$PKG" android.permission.POST_NOTIFICATIONS >/dev/null 2>&1 || true
 
 OLD_REVERSE="$(adb_ reverse --list 2>/dev/null | awk -v p="tcp:$APP_PORT" '$2 == p { print $3; exit }')"
 adb_ reverse "tcp:$APP_PORT" "tcp:$PRIVATE_PORT" >/dev/null ||
