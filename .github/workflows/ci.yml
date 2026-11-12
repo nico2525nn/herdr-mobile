@@ -23,8 +23,8 @@ jobs:
         uses: actions/checkout@v4
 
       # The wrapper is committed without the executable bit.
-      - name: Make Gradle wrapper executable
-        run: chmod +x gradlew
+      - name: Make Gradle wrapper and tool scripts executable
+        run: chmod +x gradlew tools/*.sh
 
       - name: Set up JDK 21
         uses: actions/setup-java@v4
@@ -89,8 +89,8 @@ jobs:
 
       # The wrapper is committed without the executable bit; tools/ci.sh calls
       # ./gradlew directly to build the APK.
-      - name: Make Gradle wrapper executable
-        run: chmod +x gradlew
+      - name: Make Gradle wrapper and tool scripts executable
+        run: chmod +x gradlew tools/*.sh
 
       - name: Set up JDK 21
         uses: actions/setup-java@v4
@@ -215,7 +215,7 @@ jobs:
           # again by `adb emu kill` at the end of the run).
           emulator-options: -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim
           emulator-boot-timeout: 900
-          script: tools/ci.sh
+          script: bash tools/ci.sh
 
       - name: Upload smoke artifacts
         if: failure()
