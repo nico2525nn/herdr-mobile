@@ -16,9 +16,6 @@ use std::path::{Path, PathBuf};
 use std::sync::{LazyLock, Mutex};
 use std::time::SystemTime;
 
-/// OpenCode's documented default (`CustomSpeedScroll(3)`).
-pub const DEFAULT_OPENCODE_WHEEL_ROWS: f64 = 3.0;
-
 #[derive(Clone, Copy)]
 struct Cached {
     modified: Option<SystemTime>,
@@ -220,11 +217,6 @@ fn strip_trailing_commas(input: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn default_matches_opencode() {
-        assert_eq!(DEFAULT_OPENCODE_WHEEL_ROWS, 3.0);
-    }
 
     #[test]
     fn reads_speed_from_plain_json() {
