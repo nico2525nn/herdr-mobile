@@ -18,6 +18,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.input.KeyboardType
@@ -55,6 +56,7 @@ fun CjkInputPanel(
     onBackspace: () -> Unit,
     focusRequester: FocusRequester,
     modifier: Modifier = Modifier,
+    onFocusChanged: (Boolean) -> Unit = {},
 ) {
     fun commit() {
         // Empty commit = bare Enter key (CR). Non-empty = verbatim text, no
@@ -88,7 +90,8 @@ fun CjkInputPanel(
             onValueChange = onTextChange,
             modifier = Modifier
                 .weight(1f)
-                .focusRequester(focusRequester),
+                .focusRequester(focusRequester)
+                .onFocusChanged { onFocusChanged(it.isFocused) },
             placeholder = { Text("Type, convert, then send") },
             singleLine = true,
             keyboardOptions = KeyboardOptions(

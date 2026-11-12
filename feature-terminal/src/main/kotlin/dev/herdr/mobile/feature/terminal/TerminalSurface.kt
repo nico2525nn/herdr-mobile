@@ -59,6 +59,7 @@ internal fun TerminalSurface(
     onKeyboardShowHandled: (Int) -> Unit,
     inputTick: Flow<Int>,
     cjkFocus: FocusRequester,
+    cjkFieldFocused: Boolean,
     modifier: Modifier = Modifier,
 ) {
     val backend = state.backend ?: return
@@ -216,6 +217,10 @@ internal fun TerminalSurface(
     LaunchedEffect(state.inputPage, imeVisible, controller) {
         if (!imeVisible) return@LaunchedEffect
         if (state.inputPage == InputPanelPage.CJK_INPUT) {
+            // The terminal View owns Android focus while it is showing. Clear
+            // it before focusing the field: some IMEs (the AOSP keyboard on a
+            // fresh emulator) otherwise keep the terminal's input connection.
+            controller.view.clearFocus()
             cjkFocus.requestFocus()
         } else {
             controller.view.requestFocus()
@@ -226,6 +231,7 @@ internal fun TerminalSurface(
     // recomposition after a pane switch).
     val softwareKeyboard = LocalSoftwareKeyboardController.current
     val imeVisibleNow = rememberUpdatedState(imeVisible)
+    val cjkFocusedNow = rememberUpdatedState(cjkFieldFocused)
     LaunchedEffect(keyboardShowRequest, controller) {
         if (keyboardShowRequest > keyboardShowHandled) {
             onKeyboardShowHandled(keyboardShowRequest)
@@ -234,7 +240,21 @@ internal fun TerminalSurface(
                 // focus it and let the window show the IME. If the keyboard
                 // still does not appear, fall back to the shortcut panel and
                 // raise the terminal IME directly (explicit user preference).
-                val focused = runCatching { cjkFocus.requestFocus() }.isSuccess
+                // requestFocus() only throws when the target is uninitialised;
+                // on a slow device it can return success without the field
+                // actually taking focus. Retry against the focus callback
+                // instead of trusting the return value.
+                var focused = false
+                for (attempt in 0 until 8) {
+                    if (focused) break
+                    runCatching {
+                        controller.view.clearFocus()
+                        cjkFocus.requestFocus()
+                    }
+                    withFrameNanos { }
+                    focused = cjkFocusedNow.value
+                    if (!focused) kotlinx.coroutines.delay(50)
+                }
                 if (!focused) {
                     if (state.settings.extraKeysEnabled) {
                         viewModel.setInputPage(InputPanelPage.EXTRA_KEYS)

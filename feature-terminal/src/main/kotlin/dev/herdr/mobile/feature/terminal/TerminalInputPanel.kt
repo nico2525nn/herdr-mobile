@@ -36,6 +36,7 @@ internal fun BottomInputPanel(
     onExtraKey: (TerminalKeyEncoder.Key) -> Unit,
     onPageChange: (InputPanelPage) -> Unit,
     cjkFocus: androidx.compose.ui.focus.FocusRequester,
+    onCjkFocusChanged: (Boolean) -> Unit = {},
 ) {
     val settings = state.settings
     val pages = buildList {
@@ -154,6 +155,7 @@ internal fun BottomInputPanel(
                                 },
                                 onBackspace = { onSendBytes(byteArrayOf(0x7F)) },
                                 focusRequester = cjkFocus,
+                                onFocusChanged = onCjkFocusChanged,
                             )
                         }
                     }
@@ -179,6 +181,7 @@ internal fun BottomInputPanel(
                             },
                             onBackspace = { onSendBytes(byteArrayOf(0x7F)) },
                             focusRequester = cjkFocus,
+                            onFocusChanged = onCjkFocusChanged,
                         )
                     }
                 }

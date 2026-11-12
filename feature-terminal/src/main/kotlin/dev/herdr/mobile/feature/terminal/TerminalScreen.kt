@@ -104,6 +104,7 @@ fun TerminalScreen(
     // One requester for the CJK draft field, shared by the terminal surface
     // (page-switch IME retargeting) and the bottom panel (field attachment).
     val cjkFocus = remember { androidx.compose.ui.focus.FocusRequester() }
+    var cjkFieldFocused by remember { mutableStateOf(false) }
     // No backend means the surface returns before its key effect, so a summon
     // while detached would otherwise fire on its own after reattach.
     LaunchedEffect(state.backend, keyboardShowRequest) {
@@ -297,6 +298,7 @@ fun TerminalScreen(
                     onKeyboardShowHandled = { keyboardShowHandled = it },
                     inputTick = viewModel.inputTick,
                     cjkFocus = cjkFocus,
+                    cjkFieldFocused = cjkFieldFocused,
                 )
             }
             // Floats over the terminal's top rows; sub-second drops never show.
@@ -315,6 +317,7 @@ fun TerminalScreen(
             onExtraKey = { viewModel.sendExtraKey(it) },
             onPageChange = { viewModel.setInputPage(it) },
             cjkFocus = cjkFocus,
+            onCjkFocusChanged = { cjkFieldFocused = it },
         )
     }
 
