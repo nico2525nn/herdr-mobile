@@ -1,5 +1,21 @@
 # Changelog
 
+## 2.0.23 — 2026-11-12
+
+- The terminal inbound lane is bounded (1024 records). OkHttp callbacks cannot
+  suspend, so the old unlimited lane could pin memory when the UI stalled;
+  overflow now closes the socket for a clean `lagged_resync` reattach instead
+  of silently dropping bytes or growing without limit.
+- Notification seeding no longer overwrites a live transition with the older
+  snapshot state, and alerts disabled at startup (monitoring/category off) are
+  retracted as soon as the persisted map is seeded.
+- Removing a host profile deletes its keystore aliases only after the profile
+  write succeeds, so a failed DataStore edit no longer loses credentials for a
+  profile that still exists. Probe closes are bounded to 5 s.
+- The Home create-workspace dialog and its fields survive rotation.
+- Verified with `tools/check.sh`, the on-device smoke, and CI (Kotlin, Rust,
+  release/lint/JNI, emulator).
+
 ## 2.0.22 — 2026-11-12
 
 Twenty-plus audit fixes across the link, terminal, settings, notifications and

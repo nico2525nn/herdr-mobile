@@ -49,6 +49,7 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import kotlinx.coroutines.delay
 import androidx.compose.ui.input.nestedscroll.nestedScroll
@@ -101,7 +102,7 @@ fun HomeScreen(
     var wsMenu by remember { mutableStateOf<HomeWsMenuTarget?>(null) }
     var wsRenameTarget by remember { mutableStateOf<HomeWsMenuTarget?>(null) }
     var wsCloseTarget by remember { mutableStateOf<HomeWsMenuTarget?>(null) }
-    var showCreate by remember { mutableStateOf(false) }
+    var showCreate by rememberSaveable { mutableStateOf(false) }
     // Screen origin in window coords: the anchor Box renders here, so press
     // points (window coords) are offset back by this to land on the chip.
     var screenOrigin by remember { mutableStateOf(androidx.compose.ui.geometry.Offset.Zero) }

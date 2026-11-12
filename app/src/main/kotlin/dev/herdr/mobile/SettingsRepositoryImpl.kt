@@ -200,13 +200,11 @@ class SettingsRepositoryImpl(
     override suspend fun removeProfile(profileId: String) {
         val current = _settings.value.hostProfiles.firstOrNull { it.id == profileId }
         val keyAlias = current?.privateKeyAlias
-        if (keyAlias != null) deletePrivateKey(keyAlias)
         val tokenAlias = current?.bearerTokenAlias
-        if (tokenAlias != null) deleteBearerToken(tokenAlias)
         val hostAlias = current?.hostKeyAlias
-        if (hostAlias != null) secrets.delete(hostAlias)
         val passwordSecretAlias = current?.passwordAlias
-        if (passwordSecretAlias != null) deleteSshPassword(passwordSecretAlias)
+        // Remove the profile first: deleting its secrets before a failed
+        // DataStore write left an existing profile unusable with no way back.
         update { s ->
             val remaining = s.hostProfiles.filterNot { it.id == profileId }
             val active = s.activeProfileId
@@ -217,6 +215,10 @@ class SettingsRepositoryImpl(
                 activeProfileId = if (active == profileId) remaining.firstOrNull()?.id else active,
             )
         }
+        runCatching { keyAlias?.let { deletePrivateKey(it) } }
+        runCatching { tokenAlias?.let { deleteBearerToken(it) } }
+        runCatching { hostAlias?.let { secrets.delete(it) } }
+        runCatching { passwordSecretAlias?.let { deleteSshPassword(it) } }
     }
 
     override suspend fun setActiveProfile(profileId: String?) {
@@ -292,7 +294,7 @@ class SettingsRepositoryImpl(
                 val closeJob = kotlinx.coroutines.CoroutineScope(
                     kotlinx.coroutines.SupervisorJob() + kotlinx.coroutines.Dispatchers.IO,
                 ).launch { runCatching { provider.close() } }
-                closeJob.join()
+                kotlinx.coroutines.withTimeoutOrNull(5_000) { closeJob.join() }
             }
         }
     }

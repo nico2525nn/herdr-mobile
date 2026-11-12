@@ -134,6 +134,11 @@ class NotificationRelay(
                     } else {
                         for (pane in snapshot.workspaces.flatMap { it.tabs }.flatMap { it.panes }) {
                             val old = persisted[pane.id]
+                            // The event collector may have processed a newer
+                            // transition while the persisted map was loading.
+                            // Never overwrite that state or post its alert again.
+                            val live = lastNotified[pane.id]
+                            if (live != null && live.status != pane.status) continue
                             lastNotified[pane.id] =
                                 NotifiedState(pane.status, pane.workspaceId)
                             if (old != null && old.status != pane.status) {
@@ -174,6 +179,18 @@ class NotificationRelay(
                     }
                     persistLocked()
                     seeded = true
+                    val currentSettings = settings.settings.value
+                    for ((paneId, state) in lastNotified) {
+                        if (shouldRetractAlert(
+                                state.status,
+                                currentSettings.backgroundMonitoring,
+                                currentSettings.notifyDone,
+                                currentSettings.notifyBlocked,
+                            )
+                        ) {
+                            HerdrNotifications.dismissPane(context, state.workspaceId, paneId)
+                        }
+                    }
                     return@collect
                     }
                 }

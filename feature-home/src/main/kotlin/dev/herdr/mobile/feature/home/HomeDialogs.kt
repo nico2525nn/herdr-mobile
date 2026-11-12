@@ -48,6 +48,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.input.nestedscroll.nestedScroll
 import androidx.compose.ui.layout.onGloballyPositioned
@@ -157,8 +158,8 @@ internal fun HomeWsCreateDialog(
     onDismiss: () -> Unit,
     onConfirm: (label: String?, cwd: String?) -> Unit,
 ) {
-    var label by remember { mutableStateOf("") }
-    var cwd by remember { mutableStateOf("") }
+    var label by rememberSaveable { mutableStateOf("") }
+    var cwd by rememberSaveable { mutableStateOf("") }
     AlertDialog(
         onDismissRequest = onDismiss,
         title = { Text("New workspace") },

@@ -221,7 +221,11 @@ class TerminalSocket(
      * tryEmit-then-mutex lets a later fast-path frame overtake an earlier
      * queued suspend-emit; only a single ordered queue preserves PTY order.
      */
-    private val inboundLane = Channel<TerminalInbound>(capacity = Channel.UNLIMITED)
+    // Bounded: the SharedFlow suspends the forwarder, but OkHttp's callback
+    // cannot, so an unbounded lane pinned every byte when the UI stalled.
+    // Overflow means the socket is unrecoverably behind; close and let the
+    // normal reattach path replay the visible screen instead of growing RAM.
+    private val inboundLane = Channel<TerminalInbound>(capacity = 1024)
 
     init {
         scope.launch {
@@ -258,10 +262,14 @@ class TerminalSocket(
     }
 
     private fun emit(value: TerminalInbound) {
-        // UNLIMITED channel never suspends the OkHttp callback thread; order
-        // is preserved by the single consumer above. Backpressure lives at
-        // the _inbound SharedFlow (SUSPEND), not here.
-        inboundLane.trySend(value)
+        // Never suspend the OkHttp callback thread. Order is preserved by the
+        // single consumer; if the bounded lane is full the stream is too far
+        // behind to heal in place, so close and resync instead of dropping
+        // bytes (which would silently desync the emulator).
+        if (released.get()) return
+        if (!inboundLane.trySend(value).isSuccess) {
+            socket?.close(1011, "lagged_resync")
+        }
     }
 
     override suspend fun send(data: ByteArray) {
