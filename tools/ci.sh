@@ -521,6 +521,10 @@ PRIVATE_LABELS="$(daemon_json "$PRIVATE_URL" /v1/snapshot 2>/dev/null |
 
 # -------------------------------------------------------------- device wiring
 say "installing $APK"
+# The cached AVD snapshot may carry a build signed by a previous runner's
+# debug keystore; `install -r` then fails with a signature mismatch. Uninstall
+# first (CI owns this throwaway device).
+adb_ uninstall "$PKG" >/dev/null 2>&1 || true
 adb_ install -r "$APK" >/dev/null || die "APK install failed"
 INSTALLED=1
 # A fresh install shows the POST_NOTIFICATIONS dialog above Home, so the smoke
