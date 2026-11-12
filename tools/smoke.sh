@@ -234,10 +234,30 @@ else
   fail "HOME key not found for the panel swipe"
 fi
 adb_ shell input tap 860 255   # keyboard button
-sleep 2
+for _ in $(seq 1 20); do
+  [[ "$(ime_shown)" == "mInputShown=true" ]] && break
+  sleep 0.5
+done
 [[ "$(ime_shown)" == "mInputShown=true" ]] && pass "CJK keyboard button raises the IME" \
   || fail "CJK keyboard button did not raise the IME ($(ime_shown))"
-sleep 1
+# The field focus lands on the next frame; typing before that can go to the
+# terminal on a slow emulator. Wait for the EditText node itself.
+cjk_focused() {
+  adb_ shell uiautomator dump /sdcard/cjk-focus.xml >/dev/null 2>&1 || return 1
+  adb_ shell cat /sdcard/cjk-focus.xml 2>/dev/null |
+    python3 -c '
+import re,sys
+x=sys.stdin.read()
+for node in re.findall(r"<node[^>]*>", x):
+    if "android.widget.EditText" in node and "focused=\"true\"" in node:
+        sys.exit(0)
+sys.exit(1)'
+}
+for _ in $(seq 1 20); do
+  cjk_focused && break
+  sleep 0.5
+done
+cjk_focused && pass "CJK field holds focus" || fail "CJK field never took focus"
 adb_ shell input text "zzz"
 sleep 2
 adb_ shell uiautomator dump /sdcard/cjk-typed.xml >/dev/null 2>&1 || true
