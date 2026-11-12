@@ -159,6 +159,9 @@ class HerdrClient(
 
     private suspend fun testConnectionBlocking(provider: DaemonEndpointProvider): ConnectionTestResult {
         val started = System.currentTimeMillis()
+        suspend fun closeProbe() {
+            if (provider !== endpointProvider) runCatching { provider.close() }
+        }
         val ep: DaemonEndpoint
         try {
             ep = provider.open()
@@ -168,6 +171,7 @@ class HerdrClient(
             var cause: Throwable? = e
             while (cause != null) {
                 if (cause is dev.herdr.mobile.core.model.UnknownHostKeyException) {
+                    closeProbe()
                     return ConnectionTestResult.UnknownHostKey(
                         detail = "${cause.host} presented an unknown key (${cause.fingerprint}). " +
                             "Verify it out of band, then approve below.",
@@ -179,6 +183,7 @@ class HerdrClient(
                 }
                 cause = cause.cause
             }
+            closeProbe()
             return ConnectionTestResult.Failure(classifyFailure(e), userMessage(e))
         }
         return try {

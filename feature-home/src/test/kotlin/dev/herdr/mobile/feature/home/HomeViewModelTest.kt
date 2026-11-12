@@ -190,6 +190,16 @@ class HomeViewModelTest {
         assertEquals(false, model.uiState.value.showOfflineBanner)
         assertEquals(1, model.uiState.value.workspaceCount)
         assertEquals(1, model.uiState.value.tabCount)
+
+        // A stopped link (monitoring off + background) is offline, not an
+        // empty server; an error without a snapshot same.
+        session.publish(HerdrClientState(connection = ConnectionState.IDLE))
+        advanceUntilIdle()
+        assertTrue(model.uiState.value.showOfflineBanner)
+
+        session.publish(HerdrClientState(connection = ConnectionState.CONNECTED, error = "auth failed"))
+        advanceUntilIdle()
+        assertTrue(model.uiState.value.showOfflineBanner)
     }
 
     @Test

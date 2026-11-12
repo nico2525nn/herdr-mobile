@@ -7,6 +7,8 @@ import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.channels.BufferOverflow
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.SharedFlow
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import kotlinx.serialization.json.JsonPrimitive
 
 /**
@@ -30,6 +32,9 @@ internal class SnapshotSync(
      * Single SharedFlow (never swapped): stale events are dropped at emit time by the
      * generation check in [accept], which is the only writer.
      */
+    /** Concurrent manual refreshes must not race an older response over a newer one. */
+    private val refetchMutex = Mutex()
+
     private val _events = MutableSharedFlow<SemanticEvent>(
         replay = 0,
         extraBufferCapacity = 64,
@@ -42,7 +47,7 @@ internal class SnapshotSync(
      * replaced. `stream.ready` carries the daemon cursor with no replay, so a cursor that
      * moved past our snapshot forces a refetch before consuming.
      */
-    suspend fun consume(generation: Long) {
+    suspend fun consume(generation: Long, onStreamEvent: () -> Unit = {}) {
         if (!state.isCurrent(generation)) {
             throw DaemonException("not_connected", "Connection was replaced")
         }
@@ -58,7 +63,13 @@ internal class SnapshotSync(
                     }
                 }
 
-                is EventSocket.Signal.Event -> applyEvent(signal.event, generation)
+                is EventSocket.Signal.Event -> {
+                    // Proven data flow (not merely an accepted socket): used
+                    // by the retry policy to reset backoff only once a stream
+                    // actually delivers an event.
+                    onStreamEvent()
+                    applyEvent(signal.event, generation)
+                }
 
                 is EventSocket.Signal.Closed ->
                     throw DaemonException("stream_closed", signal.reason.ifBlank { "Event stream closed" })
@@ -109,33 +120,41 @@ internal class SnapshotSync(
 
     /** Force an authoritative snapshot (presence check, cursor drift, gap, manual refresh). */
     suspend fun refetch(reason: String, generation: Long) {
-        if (!state.isCurrent(generation)) return
-        try {
-            val snapshot = fetchSnapshot()
-            state.update(generation) {
-                it.copy(
-                    connection = ConnectionState.CONNECTED,
-                    snapshot = snapshot,
-                    stale = false,
-                    error = null,
-                    lastSyncAt = clock.now(),
-                )
-            }
-        } catch (e: CancellationException) {
-            throw e
-        } catch (e: Exception) {
-            state.update(generation) {
-                it.copy(
-                    connection = if (it.snapshot != null) {
-                        ConnectionState.RECONNECTING
+        refetchMutex.withLock {
+            if (!state.isCurrent(generation)) return
+            try {
+                val snapshot = fetchSnapshot()
+                state.update(generation) { current ->
+                    // Events may have folded past a slow GET. Installing the
+                    // older response would regress seq and force a gap refetch.
+                    if (snapshot.seq < (current.snapshot?.seq ?: Long.MIN_VALUE)) {
+                        current
                     } else {
-                        ConnectionState.CONNECTING
-                    },
-                    stale = it.snapshot != null,
-                    error = "Refetch failed ($reason): ${userMessage(e)}",
-                )
+                        current.copy(
+                            connection = ConnectionState.CONNECTED,
+                            snapshot = snapshot,
+                            stale = false,
+                            error = null,
+                            lastSyncAt = clock.now(),
+                        )
+                    }
+                }
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                state.update(generation) {
+                    it.copy(
+                        connection = if (it.snapshot != null) {
+                            ConnectionState.RECONNECTING
+                        } else {
+                            ConnectionState.CONNECTING
+                        },
+                        stale = it.snapshot != null,
+                        error = "Refetch failed ($reason): ${userMessage(e)}",
+                    )
+                }
+                throw e
             }
-            throw e
         }
     }
 

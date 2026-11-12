@@ -105,14 +105,8 @@ fun TerminalScreen(
     // (page-switch IME retargeting) and the bottom panel (field attachment).
     val cjkFocus = remember { androidx.compose.ui.focus.FocusRequester() }
     var cjkFieldFocused by remember { mutableStateOf(false) }
-    // No backend means the surface returns before its key effect, so a summon
-    // while detached would otherwise fire on its own after reattach.
-    LaunchedEffect(state.backend, keyboardShowRequest) {
-        if (state.backend == null && keyboardShowRequest > keyboardShowHandled) {
-            keyboardShowHandled = keyboardShowRequest
-        }
-    }
-
+    // Do not mark a summon handled while there is no backend: the request
+    // should fire when the surface reattaches, not disappear.
     // Screen-level IME hygiene: the keyboard must not outlive its pane. Closing
     // the last workspace/tab (backend becomes null) or leaving the screen used
     // to leave it up, floating over Home with no terminal behind it.

@@ -4,6 +4,7 @@ on:
   push:
     branches: [main]
   pull_request:
+  workflow_dispatch:
 
 permissions:
   contents: read
@@ -46,6 +47,13 @@ jobs:
       - name: Run unit tests with coverage
         run: ./gradlew test -Pcoverage --console=plain
 
+      # The unit tests never exercise R8, release resource shrinking, the
+      # release ABI filter, or the JNI symbol contract. Build both here.
+      - name: Release assembly, lint, and JNI contract
+        run: |
+          ./gradlew :app:assembleRelease :terminal-ghostty:assembleDebug :app:lintDebug --console=plain
+          tools/check-jni.sh
+
       # Coverage is opt-in (-Pcoverage), so only this job resolves JaCoCo.
       # Upload on every run, not just failures: the XML feeds coverage diffing.
       - name: Upload coverage
@@ -54,6 +62,17 @@ jobs:
         with:
           name: coverage
           path: "*/build/reports/jacoco/**/*.xml"
+          if-no-files-found: warn
+          retention-days: 7
+
+      - name: Upload test reports on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: kotlin-test-reports
+          path: |
+            */build/test-results/**/*.xml
+            */build/reports/tests/**
           if-no-files-found: ignore
           retention-days: 7
 

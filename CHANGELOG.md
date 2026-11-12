@@ -1,5 +1,84 @@
 # Changelog
 
+## 2.0.22 — 2026-11-12
+
+Twenty-plus audit fixes across the link, terminal, settings, notifications and
+daemon. Each item has a narrow test or a reproducible path.
+
+Connection and recovery:
+- An explicit `stop()` is now sticky: a network-regain `kick()` no longer
+  resurrects a link the user turned off (background monitoring off + cached
+  process), and `publishStopped()` collapses a failed first dial from
+  `CONNECTING` to `IDLE` instead of leaving a permanent "Connecting…".
+- A bootstrap alone no longer resets reconnect backoff; only a delivered event
+  proves the long-lived event stream healthy. An accept-then-close proxy would
+  otherwise redial every 500 ms forever.
+- Foregrounding with monitoring off starts/kicks the link again, so rotation or
+  returning from another app no longer leaves Home on a dead stale cache.
+- `/v1/events` has a 1024-slot buffer instead of silently dropping frames at 64;
+  malformed `type`/`seq`/ready fields are ignored instead of crashing the socket
+  callback. Closing emits one Closed signal, not two.
+- Concurrent snapshot refetches are serialized and an older response can no
+  longer overwrite a newer snapshot (seq monotonicity).
+
+Terminal:
+- Input typed while the stream is detached is queued and flushed on reattach
+  instead of vanishing into a closed socket; the 40 ms scroll coalescer is
+  cancelled/retargeted on a pane switch so the first gesture is not swallowed.
+- The reconnect overlay is rendered again (last frame stays under "Reconnecting…
+  / Retry"); the dead 2-second snapshot poll on every agent scroll was removed.
+- A read-ack focus call is cancelled when the user switches panes, preventing a
+  late focus steal; cancellation during `awaitConnected` is propagated instead
+  of being reported as a timeout.
+- Wheel accumulation keeps sub-notch remainders for fractional/agent strides and
+  mouse-tracking; a fling over the cap still drops its excess. Generic-motion
+  page scrolling flushes one notch (mouse/trackpad had no ACTION_UP).
+- Raw SGR wheel bytes are restricted to verified wheel agents; the explicit
+  Mouse wheel mode no longer types escape sequences into a shell.
+- Extra-keys buttons expose a real accessibility click action; the reconnect
+  overlay, box-drawing `RectF` reuse, cached accessibility text, volatile frame
+  post flag and `@Immutable` terminal state cut per-frame/per-gesture work.
+- OpenCode's global `cli.json` (`scroll.speed`, JSONC) is stamped on the pane;
+  the config path is resolved once per process and the last parsed value is
+  reused until the file's metadata changes.
+
+Settings and app lifecycle:
+- Scroll mode is persisted (it silently reset to Automatic on every restart).
+- Settings load ordering is fixed (`loaded`/corrupt-raw initialized before the
+  loader), initial read failures retry before an edit overwrites the file, and
+  writes persist before publishing so a failed DataStore edit cannot leave the
+  UI/transport on unsaved values.
+- Active profile removal promotes a survivor instead of showing no radio while
+  connecting to the first profile; profile ports are validated (1–65535) instead
+  of silently becoming 22/8765; target keys ignore cosmetic label edits.
+- POST_NOTIFICATIONS is asked once per install (not on every cold start), posted
+  alerts retract when their category or monitoring is disabled, and the monitor
+  foreground-service type is only SPECIAL_USE on API 34+ (passing it on 29–33 is
+  rejected by the platform). STOP clears the running flag synchronously so an
+  immediate OFF→ON toggle re-arms.
+- Home command errors are laid out above the list (they had zero height), clear
+  after 5 s or on success, and IDLE/error-without-snapshot renders the offline
+  body instead of "No workspaces".
+
+Daemon and release:
+- Health no longer deep-clones the snapshot just to test presence; status
+  folding no longer deep-clones it either. Snapshot+ping overlap with a 2 s ping
+  bound, structural resubscribes skip a duplicate refresh, and the first 60 s
+  reconcile no longer runs immediately.
+- Synthetic event sequence reservations are unique; update-available events
+  stamp the reserved seq into the snapshot; resize coalescing clears a stale
+  pending geometry; core tab numbering uses max+1, focus resolves `where`-only
+  tabs, resize only reports success after a frame, and error mapping no longer
+  treats "deliver" as "live".
+- Update runs have a timeout/kill-on-drop and preserve known version/notes on a
+  transient manifest failure; a successful update re-reads the Herdr version.
+- Release builds validate `-Pabi`, require signing with `-PrequireSigning`, use
+  a phone-safe Direct default (127.0.0.1, no 10.0.2.2 cleartext exemption), and
+  the benchmark build includes x86_64. CI now builds release/lint/JNI, scripts
+  restore the IME setting, only CI uninstalls the debug app, smoke labels are
+  unique, JNI checks fail clearly on missing artifacts, and daemon deploy rolls
+  back on a failed health check.
+
 ## 2.0.21 — 2026-11-12
 
 - OpenCode TUI scrolled 3x too fast: its `packages/tui/src/util/scroll.ts`

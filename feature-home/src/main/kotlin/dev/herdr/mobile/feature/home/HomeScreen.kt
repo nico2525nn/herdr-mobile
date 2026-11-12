@@ -45,10 +45,12 @@ import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
+import kotlinx.coroutines.delay
 import androidx.compose.ui.input.nestedscroll.nestedScroll
 import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.layout.positionInWindow
@@ -86,6 +88,14 @@ fun HomeScreen(
     val state by viewModel.uiState.collectAsStateWithLifecycle()
     val message by viewModel.message.collectAsStateWithLifecycle()
     val updateRunning by viewModel.updateRunning.collectAsStateWithLifecycle()
+    // Command errors are transient feedback, not a permanent banner: clear
+    // them after a few seconds (or when the next command succeeds).
+    LaunchedEffect(message) {
+        if (message != null) {
+            delay(5_000)
+            viewModel.clearMessage()
+        }
+    }
     var tabMenu by remember { mutableStateOf<HomeTabMenuTarget?>(null) }
     var renameTarget by remember { mutableStateOf<HomeTabMenuTarget?>(null) }
     var wsMenu by remember { mutableStateOf<HomeWsMenuTarget?>(null) }
@@ -114,6 +124,14 @@ fun HomeScreen(
                 latest = latest,
                 running = updateRunning,
                 onUpdate = { viewModel.runHerdrUpdate() },
+            )
+        }
+        message?.let { shown ->
+            Text(
+                text = shown.let { LocalUiCopy.current.render(it) },
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.error,
+                modifier = Modifier.padding(horizontal = 20.dp, vertical = 4.dp),
             )
         }
         when {
@@ -180,14 +198,6 @@ fun HomeScreen(
                     }
                 }
             }
-        }
-        message?.let { shown ->
-            Text(
-                text = shown.let { LocalUiCopy.current.render(it) },
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.error,
-                modifier = Modifier.padding(horizontal = 20.dp, vertical = 4.dp),
-            )
         }
     }
 

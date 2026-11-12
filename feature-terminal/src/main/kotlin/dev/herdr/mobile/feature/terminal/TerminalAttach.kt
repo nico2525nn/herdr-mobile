@@ -90,6 +90,8 @@ internal suspend fun awaitConnected(session: HerdrSession, timeoutMs: Long = 30_
         session.state.first { it.connection == ConnectionState.CONNECTED }
     }
     true
+} catch (e: CancellationException) {
+    throw e
 } catch (_: Exception) {
     false
 }

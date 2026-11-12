@@ -39,8 +39,7 @@ pub fn wheel_rows_per_event(agent: Option<&str>) -> Option<f64> {
             return parse_scroll_speed(&content);
         }
     }
-    let path = config_path()?;
-    read_cached(&path)
+    read_cached(CONFIG_PATH.as_deref()?)
 }
 
 fn env_path(name: &str) -> Option<PathBuf> {
@@ -53,7 +52,9 @@ fn env_path(name: &str) -> Option<PathBuf> {
 /// `OPENCODE_CONFIG_DIR` and XDG take precedence; the remaining candidates
 /// cover the default Linux and macOS roots. A missing file is not an error:
 /// the audited default already matches OpenCode's built-in speed.
-fn config_path() -> Option<PathBuf> {
+static CONFIG_PATH: LazyLock<Option<PathBuf>> = LazyLock::new(resolve_config_path);
+
+fn resolve_config_path() -> Option<PathBuf> {
     if let Some(dir) = env_path("OPENCODE_CONFIG_DIR") {
         return Some(dir.join("cli.json"));
     }

@@ -23,6 +23,7 @@ import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.onClick
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.semantics.toggleableState
 import androidx.compose.ui.state.ToggleableState
@@ -162,7 +163,10 @@ private fun RepeatableKeyButton(
     // interaction above stays silent for them). Release with net downward
     // travel past slop = flick action; anything else = tap action.
     FilledTonalButton(
-        onClick = {},
+        // The pointer path emits through PressInteraction; TalkBack and
+        // switch access invoke the semantics action without a Press, so the
+        // panel must handle that action explicitly or every key is inert.
+        onClick = { if (dualAction) onPress() },
         modifier = modifier
             .heightIn(min = 44.dp)
             .then(
@@ -208,6 +212,12 @@ private fun RepeatableKeyButton(
             .semantics {
                 if (key.modifier != null) {
                     toggleableState = if (isArmed) ToggleableState.On else ToggleableState.Off
+                }
+                if (!dualAction) {
+                    onClick(label = "Press ${key.label}") {
+                        onPress()
+                        true
+                    }
                 }
             },
         shape = ButtonDefaults.filledTonalShape,

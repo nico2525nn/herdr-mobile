@@ -75,10 +75,12 @@ class SettingsViewModelTest {
         }
 
         override suspend fun removeProfile(profileId: String) {
+            failure?.let { throw it }
             removed += profileId
         }
 
         override suspend fun setActiveProfile(profileId: String?) {
+            failure?.let { throw it }
             active = profileId
         }
 
@@ -167,6 +169,38 @@ class SettingsViewModelTest {
 
         assertEquals(listOf("a"), repo.updated.map { it.id })
         assertEquals(listOf("b"), repo.added.map { it.id })
+    }
+
+    @Test
+    fun `profile activation and removal surface repository failures`() = runTest(dispatcher) {
+        val repo = FakeRepository().apply { failure = IllegalStateException("storage full") }
+        val model = SettingsViewModel(repo)
+        advanceUntilIdle()
+
+        model.setActiveProfile("a")
+        advanceUntilIdle()
+        assertNotNull(model.uiState.value.error)
+
+        model.clearError()
+        model.removeProfile("a")
+        advanceUntilIdle()
+        assertNotNull(model.uiState.value.error)
+    }
+
+    @Test
+    fun `a successful edit clears the previous save error`() = runTest(dispatcher) {
+        val repo = FakeRepository()
+        val model = SettingsViewModel(repo)
+        advanceUntilIdle()
+        repo.failure = IllegalStateException("disk full")
+        model.setDynamicColor(false)
+        advanceUntilIdle()
+        assertNotNull(model.uiState.value.error)
+
+        repo.failure = null
+        model.setDynamicColor(true)
+        advanceUntilIdle()
+        assertEquals(null, model.uiState.value.error)
     }
 
     @Test

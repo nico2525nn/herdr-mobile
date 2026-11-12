@@ -244,11 +244,19 @@ public class GhosttyTerminalView @JvmOverloads constructor(
 
     private val accessibilityManager = context.getSystemService(Context.ACCESSIBILITY_SERVICE) as AccessibilityManager
     private var accessibilityTextPending = false
+    private var lastAccessibilityText: String? = null
     private val accessibilityTextRunnable = Runnable {
         accessibilityTextPending = false
         if (accessibilityManager.isEnabled) {
             session?.withTerminal { handle ->
-                contentDescription = GhosttyVt.nativeViewportText(handle)?.toString(Charsets.UTF_8)
+                val text = GhosttyVt.nativeViewportText(handle)?.toString(Charsets.UTF_8)
+                // Assigning an identical description invalidates the a11y
+                // subtree every 500ms; TalkBack then re-reads a screen that
+                // did not change.
+                if (text != lastAccessibilityText) {
+                    lastAccessibilityText = text
+                    contentDescription = text
+                }
             }
         }
     }
@@ -575,21 +583,15 @@ public class GhosttyTerminalView @JvmOverloads constructor(
                     // Agents differ in rows per wheel notch (pi 2, qwen 3);
                     // sending one notch per gesture made them scroll 2-3x too
                     // fast. Accumulate the remainder across gestures.
-                    val stride = wheelRowsPerEvent.coerceAtLeast(0.01f)
                     wheelRowAccumulator += deltaRows
-                    val notches = (wheelRowAccumulator / stride).toInt()
-                    if (notches != 0) {
-                        // Keep the sub-notch remainder, but drop a fling's
-                        // excess instead of queuing a notch per row: flooded
-                        // agents kept scrolling long after the finger stopped.
-                        wheelRowAccumulator = 0f
-                        val capped = notches.coerceIn(
-                            -MAX_WHEEL_NOTCHES_PER_EVENT,
-                            MAX_WHEEL_NOTCHES_PER_EVENT,
-                        )
-                        repeat(abs(capped)) {
-                            sendRawWheel(if (capped > 0) 1 else -1, col, row)
-                        }
+                    val (notches, remainder) = takeWheelNotches(
+                        wheelRowAccumulator,
+                        wheelRowsPerEvent,
+                        MAX_WHEEL_NOTCHES_PER_EVENT,
+                    )
+                    wheelRowAccumulator = remainder
+                    repeat(abs(notches)) {
+                        sendRawWheel(if (notches > 0) 1 else -1, col, row)
                     }
                 } else {
                     pageAccumulator += deltaRows
@@ -612,15 +614,19 @@ public class GhosttyTerminalView @JvmOverloads constructor(
         }
         if (state and GhosttyVt.VIEWPORT_MOUSE_TRACKING != 0) {
             mouseWheelAccumulator += deltaRows
-            val notches = mouseWheelAccumulator / MOUSE_WHEEL_ROWS_PER_NOTCH
+            val (notches, remainder) = takeMouseWheelNotches(
+                mouseWheelAccumulator,
+                MOUSE_WHEEL_ROWS_PER_NOTCH,
+                MAX_WHEEL_NOTCHES_PER_EVENT,
+            )
+            mouseWheelAccumulator = remainder
             if (notches != 0) {
-                mouseWheelAccumulator = 0
                 val button = if (notches > 0) {
                     GhosttyVt.MOUSE_BUTTON_WHEEL_DOWN
                 } else {
                     GhosttyVt.MOUSE_BUTTON_WHEEL_UP
                 }
-                repeat(kotlin.math.min(abs(notches), MAX_WHEEL_NOTCHES_PER_EVENT)) {
+                repeat(abs(notches)) {
                     sendMouseReport(handle, GhosttyVt.MOUSE_ACTION_PRESS, button, col, row)
                 }
             }
@@ -1014,7 +1020,7 @@ public class GhosttyTerminalView @JvmOverloads constructor(
             }
             invalidate()
 
-            if (accessibilityManager.isEnabled && !accessibilityTextPending) {
+            if (accessibilityManager.isEnabled && rowCount > 0 && !accessibilityTextPending) {
                 accessibilityTextPending = true
                 postDelayed(accessibilityTextRunnable, ACCESSIBILITY_TEXT_DELAY_MS)
             }
@@ -1897,6 +1903,9 @@ public class GhosttyTerminalView @JvmOverloads constructor(
                     val col = (event.x / cellWidth).toInt().coerceIn(0, cols - 1)
                     val row = rowAt(event.y)
                     scrollContent(handle, if (vertical > 0f) -WHEEL_SCROLL_ROWS else WHEEL_SCROLL_ROWS, col, row)
+                    // A mouse/trackpad has no ACTION_UP to flush the page
+                    // accumulator, so one wheel notch is the whole gesture.
+                    if (scrollRouting == ScrollRouting.REMOTE_PAGE) flushPages(force = true)
                     true
                 } ?: false
                 if (handled) return true

@@ -1,9 +1,12 @@
 package dev.herdr.mobile.core.network
 
 import dev.herdr.mobile.core.model.SemanticEvent
+import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.channels.awaitClose
+import kotlinx.coroutines.flow.buffer
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.callbackFlow
+import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.contentOrNull
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
@@ -53,8 +56,11 @@ class EventSocket(
                     return
                 }
                 val obj = element as? kotlinx.serialization.json.JsonObject ?: return
-                val type = obj["type"]?.jsonPrimitive?.contentOrNull ?: return
-                val seq = obj["seq"]?.jsonPrimitive?.longOrNull ?: return
+                // Never let a shape error escape the OkHttp callback: that
+                // kills the whole events stream. `jsonPrimitive` is a cast,
+                // not a safe accessor.
+                val type = (obj["type"] as? JsonPrimitive)?.contentOrNull ?: return
+                val seq = (obj["seq"] as? JsonPrimitive)?.longOrNull ?: return
                 if (type == SemanticEvent.TYPE_STREAM_READY) {
                     trySend(Signal.Ready(seq))
                 } else {
@@ -68,7 +74,8 @@ class EventSocket(
             }
 
             override fun onClosing(webSocket: WebSocket, code: Int, reason: String) {
-                trySend(Signal.Closed(code, reason))
+                // Acknowledge the peer's close; onClosed/onFailure emits the
+                // single Closed signal (emitting here duplicated it).
                 webSocket.close(code, reason)
             }
 
@@ -92,5 +99,9 @@ class EventSocket(
                 // Already gone; closing the flow is what matters.
             }
         }
-    }
+    // A refetch can block the collector for a full REST round trip. The
+    // callbackFlow producer cannot suspend, so the default 64-slot buffer
+    // silently dropped events under load (then every gap forced another
+    // refetch). Keep a generous bounded buffer and let backpressure surface.
+    }.buffer(capacity = 1024)
 }

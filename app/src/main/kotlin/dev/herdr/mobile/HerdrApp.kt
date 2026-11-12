@@ -25,6 +25,20 @@ class HerdrApp : Application() {
                 runCatching {
                     if (container.settingsRepository.settings.value.backgroundMonitoring) {
                         HerdrMonitorService.start(this@HerdrApp)
+                    } else {
+                        // Monitoring off stops the link when the last activity
+                        // leaves; without this, rotation/return left Home on a
+                        // dead stale cache forever. kick() is a no-op while
+                        // CONNECTED; start() clears the explicit-stop intent.
+                        if (container.client.state.value.connection ==
+                            dev.herdr.mobile.core.model.ConnectionState.CONNECTED
+                        ) {
+                            container.client.kick()
+                        } else {
+                            // Covers IDLE after the explicit stop and a stop
+                            // still in flight (CONNECTING/RECONNECTING).
+                            container.client.start()
+                        }
                     }
                 }
             }

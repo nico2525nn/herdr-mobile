@@ -1,4 +1,4 @@
-# Terminal engine (libghostty-vt 1.0)
+# Terminal engine (libghostty-vt 1.0.1)
 
 The terminal is **libghostty-vt 1.0.1**, the same VT engine Herdr runs on the
 server. The Android view, session, theme and selection code is the vendored MIT
@@ -13,7 +13,7 @@ library `SagerNet/libghostty-android`, ported to the 1.0 C API
   bracketed paste are queried through the C API, so scrolling, key encoding and
   paste routing are decisions, not heuristics.
 - ABI-stable C library: vendored `libghostty-vt.a` per ABI (arm64-v8a,
-  x86_64) with headers; upgrades are a header/lib swap plus the drift fixes
+  armeabi-v7a, x86, x86_64) with headers; upgrades are a header/lib swap plus the drift fixes
   documented below.
 
 ## Attach model (important)

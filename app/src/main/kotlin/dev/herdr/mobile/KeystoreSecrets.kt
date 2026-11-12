@@ -31,7 +31,17 @@ class KeystoreSecrets(context: Context) {
         private const val TRANSFORMATION = "AES/GCM/NoPadding"
     }
 
-    private fun key(): SecretKey {
+    // KeyStore.load + a store lookup on every secret read/write was visible
+    // during profile switches and provider rebuilds. The Keystore key is
+    // process-stable, so resolve it once; a failed decrypt clears it so a
+    // transient Keystore lock/corruption can be retried instead of cached.
+    @Volatile private var cachedKey: SecretKey? = null
+
+    private fun key(): SecretKey = cachedKey ?: synchronized(this) {
+        cachedKey ?: loadKey().also { cachedKey = it }
+    }
+
+    private fun loadKey(): SecretKey {
         val store = KeyStore.getInstance(ANDROID_KEYSTORE).apply { load(null) }
         (store.getEntry(KEY_ALIAS, null) as? KeyStore.SecretKeyEntry)?.let { return it.secretKey }
         val generator = KeyGenerator.getInstance(KeyProperties.KEY_ALGORITHM_AES, ANDROID_KEYSTORE)
@@ -79,6 +89,7 @@ class KeystoreSecrets(context: Context) {
             )
             String(cipher.doFinal(Base64.decode(data, Base64.NO_WRAP)), Charsets.UTF_8)
         } catch (e: Exception) {
+            cachedKey = null
             throw KeystoreCorruptException(alias, e)
         }
     }

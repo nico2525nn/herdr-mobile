@@ -25,9 +25,42 @@ import kotlinx.coroutines.launch
 internal data class ConnectionTargetKey(
     val transportMode: TransportMode,
     val directUrl: String?,
-    val activeProfile: HostProfile?,
+    val profile: ProfileTargetKey?,
     val backendMode: BackendMode,
 )
+
+/**
+ * Only fields that affect the tunnel/session. Labels and key display names are
+ * cosmetic: including the whole [HostProfile] tore down a healthy SSH tunnel
+ * and cleared the snapshot on a rename.
+ */
+internal data class ProfileTargetKey(
+    val id: String,
+    val host: String,
+    val port: Int,
+    val username: String,
+    val daemonPort: Int,
+    val daemonHost: String,
+    val privateKeyAlias: String?,
+    val passwordAlias: String?,
+    val hostKeyAlias: String?,
+    val useTls: Boolean,
+    val bearerTokenAlias: String?,
+) {
+    constructor(profile: HostProfile) : this(
+        id = profile.id,
+        host = profile.host,
+        port = profile.port,
+        username = profile.username,
+        daemonPort = profile.daemonPort,
+        daemonHost = profile.daemonHost,
+        privateKeyAlias = profile.privateKeyAlias,
+        passwordAlias = profile.passwordAlias,
+        hostKeyAlias = profile.hostKeyAlias,
+        useTls = profile.useTls,
+        bearerTokenAlias = profile.bearerTokenAlias,
+    )
+}
 
 internal fun connectionTargetKey(settings: AppSettings): ConnectionTargetKey {
     val activeProfile = settings.hostProfiles.firstOrNull { it.id == settings.activeProfileId }
@@ -35,7 +68,7 @@ internal fun connectionTargetKey(settings: AppSettings): ConnectionTargetKey {
     return ConnectionTargetKey(
         transportMode = settings.transportMode,
         directUrl = settings.directUrl.takeIf { settings.transportMode == TransportMode.DIRECT },
-        activeProfile = activeProfile,
+        profile = activeProfile?.let(::ProfileTargetKey),
         backendMode = if (settings.transportMode == TransportMode.SSH) {
             activeProfile?.backendMode ?: BackendMode.TUI
         } else {

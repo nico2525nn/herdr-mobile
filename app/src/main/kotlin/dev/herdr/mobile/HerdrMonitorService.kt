@@ -57,7 +57,9 @@ class HerdrMonitorService : Service() {
             this,
             MONITOR_ID,
             persistentNotification(this, "Connecting…"),
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            // SPECIAL_USE only exists from API 34; passing its inlined bitmask
+            // to startForeground on API 29–33 is rejected by the platform.
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
                 ServiceInfo.FOREGROUND_SERVICE_TYPE_SPECIAL_USE
             } else {
                 0
@@ -174,6 +176,9 @@ class HerdrMonitorService : Service() {
         }
 
         fun stop(context: Context) {
+            // Clear synchronously: stopService is async, and an immediate
+            // OFF→ON toggle otherwise sees running=true and never re-arms.
+            markStopped()
             context.stopService(Intent(context, HerdrMonitorService::class.java))
         }
 

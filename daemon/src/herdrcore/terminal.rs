@@ -50,7 +50,7 @@ pub async fn bridge(mut socket: WebSocket, core: CoreClient, address: String, co
             .terminal
             .get("cols")
             .and_then(Value::as_u64)
-            .unwrap_or(rows as u64) as u32,
+            .unwrap_or(cols as u64) as u32,
         attachment
             .terminal
             .get("rows")

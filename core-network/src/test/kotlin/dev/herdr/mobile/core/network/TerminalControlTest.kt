@@ -99,6 +99,22 @@ class TerminalControlTest {
     }
 
     @Test
+    fun malformedReadyFieldsFallBackInsteadOfCrashingTheSocket() {
+        val ready = parseTerminalControl(
+            """{"type":"ready","paneId":{},"cols":[],"rows":{},"resumed":{},"visibleOk":{}}""",
+            previous = null,
+            fallbackPaneId = "socket-pane",
+        )
+        assertTrue(ready != null)
+        val parsed = ready!!.inbound as TerminalInbound.Ready
+        assertEquals("socket-pane", parsed.paneId)
+        assertEquals(0, parsed.cols)
+        assertEquals(0, parsed.rows)
+        assertFalse(parsed.resumed)
+        assertTrue(parsed.visibleOk)
+    }
+
+    @Test
     fun unknownTypeIsIgnored() {
         assertNull(parseTerminalControl("""{"type":"pong"}""", null, "p"))
     }

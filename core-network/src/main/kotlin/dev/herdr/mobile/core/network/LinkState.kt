@@ -158,6 +158,7 @@ internal class LinkState(private val clock: LinkClock) {
     fun publishStopped() {
         _state.update {
             if (it.connection == ConnectionState.CONNECTED ||
+                it.connection == ConnectionState.CONNECTING ||
                 it.connection == ConnectionState.RECONNECTING ||
                 it.connection == ConnectionState.STALE ||
                 it.connection == ConnectionState.FAILED

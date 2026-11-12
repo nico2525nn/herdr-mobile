@@ -208,35 +208,33 @@ internal object BoxDrawingPainter {
         val right = right != 0
         val vTailEnd: Float
         val hTailEnd: Float
-        val arcRect: RectF
         var startAngle: Float
         when {
             down && right -> { // ╭
-                arcRect = RectF(cx, cy, cx + 2 * radius, cy + 2 * radius)
+                arc.set(cx, cy, cx + 2 * radius, cy + 2 * radius)
                 startAngle = 180f
                 vTailEnd = cy + radius
                 hTailEnd = cx + radius
             }
             down && !right -> { // ╮
-                arcRect = RectF(cx - 2 * radius, cy, cx, cy + 2 * radius)
+                arc.set(cx - 2 * radius, cy, cx, cy + 2 * radius)
                 startAngle = 270f
                 vTailEnd = cy + radius
                 hTailEnd = cx - radius
             }
             !down && right -> { // ╰
-                arcRect = RectF(cx, cy - 2 * radius, cx + 2 * radius, cy)
+                arc.set(cx, cy - 2 * radius, cx + 2 * radius, cy)
                 startAngle = 90f
                 vTailEnd = cy - radius
                 hTailEnd = cx + radius
             }
             else -> { // ╯
-                arcRect = RectF(cx - 2 * radius, cy - 2 * radius, cx, cy)
+                arc.set(cx - 2 * radius, cy - 2 * radius, cx, cy)
                 startAngle = 0f
                 vTailEnd = cy - radius
                 hTailEnd = cx - radius
             }
         }
-        arc.set(arcRect)
         canvas.drawArc(arc, startAngle, 90f, false, stroke)
         val vEdge = if (down) y1 else y0
         val hEdge = if (right) x1 else x0

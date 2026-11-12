@@ -4,6 +4,7 @@ import dev.herdr.mobile.core.model.AppSettings
 import dev.herdr.mobile.core.model.BackendMode
 import dev.herdr.mobile.core.model.HostProfile
 import dev.herdr.mobile.core.model.TransportMode
+import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNotEquals
 import org.junit.Test
 
@@ -30,5 +31,14 @@ class ConnectionTargetKeyTest {
         )
         assertNotEquals(connectionTargetKey(ssh), connectionTargetKey(direct))
         assertNotEquals(connectionTargetKey(direct), connectionTargetKey(direct.copy(directUrl = "https://two.test")))
+
+        // Cosmetic edits must not tear down the tunnel or clear the cache.
+        assertEquals(
+            connectionTargetKey(ssh),
+            connectionTargetKey(ssh.copy(hostProfiles = listOf(
+                first.copy(label = "renamed", privateKeyLabel = "new key name"),
+                second,
+            ))),
+        )
     }
 }

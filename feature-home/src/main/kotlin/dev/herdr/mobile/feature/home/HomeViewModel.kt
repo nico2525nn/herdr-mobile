@@ -27,9 +27,13 @@ data class HomeUiState(
     val workspaceCount: Int get() = snapshot?.workspaces?.size ?: 0
     val tabCount: Int get() = snapshot?.tabCount ?: 0
     val showOfflineBanner: Boolean
-        get() = connection == ConnectionState.RECONNECTING ||
-            connection == ConnectionState.CONNECTING ||
-            (connection == ConnectionState.FAILED && snapshot == null)
+        get() = snapshot == null && (
+            connection == ConnectionState.RECONNECTING ||
+                connection == ConnectionState.CONNECTING ||
+                connection == ConnectionState.IDLE ||
+                connection == ConnectionState.FAILED ||
+                error != null
+            )
     /** Latest verified Herdr release, when newer than the connected one. */
     val updateAvailable: String?
         get() {
@@ -49,6 +53,7 @@ class HomeViewModel(
     fun closeTab(tabId: String) {
         viewModelScope.launch {
             runCatching { client.closeTab(tabId) }
+                .onSuccess { _message.value = null }
                 .onFailure { _message.value = UiMessage.CommandFailed(UiMessage.CommandFailed.Command.CLOSE_TAB, it.message) }
         }
     }
@@ -56,6 +61,7 @@ class HomeViewModel(
     fun renameTab(tabId: String, label: String) {
         viewModelScope.launch {
             runCatching { client.renameTab(tabId, label.trim()) }
+                .onSuccess { _message.value = null }
                 .onFailure { _message.value = UiMessage.CommandFailed(UiMessage.CommandFailed.Command.RENAME_TAB, it.message) }
         }
     }
@@ -67,6 +73,7 @@ class HomeViewModel(
     fun createWorkspace(label: String?, cwd: String?) {
         viewModelScope.launch {
             runCatching { client.createWorkspace(label?.trim()?.ifEmpty { null }, cwd?.trim()?.ifEmpty { null }) }
+                .onSuccess { _message.value = null }
                 .onFailure { _message.value = UiMessage.CommandFailed(UiMessage.CommandFailed.Command.CREATE_WORKSPACE, it.message) }
         }
     }
@@ -74,6 +81,7 @@ class HomeViewModel(
     fun renameWorkspace(workspaceId: String, label: String) {
         viewModelScope.launch {
             runCatching { client.renameWorkspace(workspaceId, label.trim()) }
+                .onSuccess { _message.value = null }
                 .onFailure { _message.value = UiMessage.CommandFailed(UiMessage.CommandFailed.Command.RENAME_WORKSPACE, it.message) }
         }
     }
@@ -93,15 +101,17 @@ class HomeViewModel(
                     workspaceId,
                     dev.herdr.mobile.core.model.Reorder.insertIndex(from, toIndex, workspaces.size),
                 )
-            }.onFailure {
-                _message.value = UiMessage.CommandFailed(UiMessage.CommandFailed.Command.MOVE_WORKSPACE, it.message)
-            }
+            }.onSuccess { _message.value = null }
+                .onFailure {
+                    _message.value = UiMessage.CommandFailed(UiMessage.CommandFailed.Command.MOVE_WORKSPACE, it.message)
+                }
         }
     }
 
     fun closeWorkspace(workspaceId: String) {
         viewModelScope.launch {
             runCatching { client.closeWorkspace(workspaceId) }
+                .onSuccess { _message.value = null }
                 .onFailure { _message.value = UiMessage.CommandFailed(UiMessage.CommandFailed.Command.CLOSE_WORKSPACE, it.message) }
         }
     }
@@ -115,6 +125,7 @@ class HomeViewModel(
         viewModelScope.launch {
             _updateRunning.value = true
             runCatching { client.runHerdrUpdate() }
+                .onSuccess { _message.value = null }
                 .onFailure { _message.value = UiMessage.CommandFailed(UiMessage.CommandFailed.Command.UPDATE_HERDR, it.message) }
             _updateRunning.value = false
         }

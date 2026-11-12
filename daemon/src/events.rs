@@ -34,7 +34,9 @@ impl EventBus {
     }
 
     pub fn broadcast(&self, event: SemanticEvent) {
-        self.cursor.store(event.seq as u64, Ordering::SeqCst);
+        // Concurrent producers may send out of order; the cursor must never
+        // regress or a ready handshake can advertise a stale replay point.
+        self.cursor.fetch_max(event.seq as u64, Ordering::SeqCst);
         if self.tx.receiver_count() == 0 {
             return;
         }
@@ -46,8 +48,9 @@ impl EventBus {
     /// The live snapshot's `update` block just changed (new check result):
     /// clients refetch once instead of maintaining a second fold path.
     pub fn broadcast_update(&self, cache: &SessionCache) {
+        let seq = cache.next_seq_for_broadcast(0);
         let event = SemanticEvent {
-            seq: cache.seq() + 1,
+            seq,
             kind: "herdr.update_available".to_string(),
             at: crate::cache::now_rfc3339(),
             workspace_id: None,
@@ -59,13 +62,15 @@ impl EventBus {
             revision: Some(cache.revision()),
             detail: None,
         };
-        let _ = cache.next_seq_for_broadcast(event.seq);
+        // The snapshot update block is already fresh; stamp the reserved seq
+        // so a client refetch does not receive the older N and immediately gap.
+        cache.sync_snapshot_seq();
         self.broadcast(event);
     }
 
     /// The cache is untrustworthy (reconnect, events_lost): force every client to refetch.
     pub fn broadcast_snapshot_required(&self, cache: &SessionCache) {
-        let seq = cache.seq() + 1;
+        let seq = cache.next_seq_for_broadcast(0);
         // Reserve the number on the cache so the next real event cannot collide with it.
         let event = SemanticEvent {
             seq,
@@ -84,7 +89,6 @@ impl EventBus {
         // stamp the snapshot with it: the cache is still the pre-break copy,
         // and a client refetching now would receive stale data marked current
         // (then no gap would ever force another fetch).
-        let _ = cache.next_seq_for_broadcast(seq);
         self.broadcast(event);
     }
 }

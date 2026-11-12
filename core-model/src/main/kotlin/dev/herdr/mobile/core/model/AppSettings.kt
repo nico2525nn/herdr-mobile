@@ -25,7 +25,12 @@ enum class ScrollMode(val wire: String, val displayName: String) {
     AUTO("auto", "Automatic"),
     WHEEL("wheel", "Mouse wheel"),
     PAGE("page", "Page keys"),
-    LOCAL("local", "Terminal history"),
+    LOCAL("local", "Terminal history");
+
+    companion object {
+        fun fromWire(value: String?): ScrollMode =
+            entries.firstOrNull { it.wire == value } ?: AUTO
+    }
 }
 
 /** Built-in terminal colour schemes. Terminal content is the only place these are used. */
@@ -152,7 +157,7 @@ data class AppSettings(
     val activeProfileId: String? = null,
     val hostProfiles: List<HostProfile> = emptyList(),
     /** Direct-transport daemon origin, e.g. `http://100.x.y.z:8765`. Not a secret. */
-    val directUrl: String = "http://10.0.2.2:8765",
+    val directUrl: String = "http://127.0.0.1:8765",
     /** Backend used by the direct connection. SSH connections persist theirs on [HostProfile]. */
     val directBackendMode: BackendMode = BackendMode.TUI,
 

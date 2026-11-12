@@ -18,6 +18,10 @@ APK="${APK:-app/build/outputs/apk/debug/app-debug.apk}"
 PKG="${PKG:-dev.herdr.mobile.debug}"
 ACTIVITY="$PKG/dev.herdr.mobile.MainActivity"
 WORKDIR="$(mktemp -d)"
+# Unique per run: cleanup sweeps by label, and a fixed name let two runs
+# (or a user workspace) close each other's fixture.
+LABEL="${SMOKE_LABEL:-smoke-scroll-$$}"
+export SMOKE_LABEL="$LABEL"
 ARTIFACTS="${ARTIFACTS:-$(pwd)/build/smoke-artifacts}"
 mkdir -p "$ARTIFACTS"
 WS=""
@@ -43,13 +47,14 @@ cleanup() {
   # A killed run (Ctrl-C, cancelled job) skips the normal path: sweep any
   # leftover fixture workspaces by label so the user's list stays clean.
   for id in $(api "$BASE_URL/v1/snapshot" 2>/dev/null | python3 -c '
-import sys,json
+import os,sys,json
 try:
     d=json.load(sys.stdin)
 except Exception:
     raise SystemExit
+label=os.environ["SMOKE_LABEL"]
 for w in d["workspaces"]:
-    if w.get("label") in ("smoke-scroll",):
+    if w.get("label") == label:
         print(w["id"])
 ' 2>/dev/null); do
     api -X POST "$BASE_URL/v1/workspace/$id/close" >/dev/null 2>&1 || true
@@ -82,7 +87,7 @@ import sys,json
 print(",".join(sorted(w["id"] for w in json.load(sys.stdin)["workspaces"] if w.get("focused"))))')
 say "focused workspace before: ${FOCUS_BEFORE:-none}"
 WS=$(api -X POST "$BASE_URL/v1/workspace" -H 'Content-Type: application/json' \
-      -d '{"cwd":"/tmp","label":"smoke-scroll","focus":false}' | python3 -c 'import sys,json;print(json.load(sys.stdin)["workspaceId"])')
+      -d "{\"cwd\":\"/tmp\",\"label\":\"$LABEL\",\"focus\":false}" | python3 -c 'import sys,json;print(json.load(sys.stdin)["workspaceId"])')
 sleep 2
 api -X POST "$BASE_URL/v1/pane/$WS:p1/input" -H 'Content-Type: application/json' \
     -d "{\"text\":\"less $LINES\\n\"}" >/dev/null
@@ -95,8 +100,8 @@ sleep 8
 # Bring the card into view and open it. The Home list is a grid; swiping up a
 # few times reaches the newest workspace regardless of how many exist.
 for _ in $(seq 1 8); do
-  adb_ shell uiautomator dump /sdcard/smoke.xml >/dev/null 2>&1 || true
-  if adb_ shell cat /sdcard/smoke.xml 2>/dev/null | grep -q 'text="smoke-scroll"'; then break; fi
+  adb_ shell rm -f /sdcard/smoke.xml >/dev/null 2>&1; adb_ shell uiautomator dump /sdcard/smoke.xml >/dev/null 2>&1 || true
+  if adb_ shell cat /sdcard/smoke.xml 2>/dev/null | grep -q "text=\"$LABEL\""; then break; fi
   adb_ shell input touchscreen swipe 540 1900 540 700 250
   sleep 1
 done
@@ -105,7 +110,9 @@ BOUNDS=$(adb_ shell cat /sdcard/smoke.xml 2>/dev/null |
   python3 -c '
 import re,sys
 x=sys.stdin.read()
-m=re.search(r"text=\"smoke-scroll\"[^>]*bounds=\"\[(\d+),(\d+)\]\[(\d+),(\d+)\]\"", x)
+import os,re as _re
+label=os.environ["SMOKE_LABEL"]
+m=re.search(r"text=\"" + _re.escape(label) + r"\"[^>]*bounds=\"\[(\d+),(\d+)\]\[(\d+),(\d+)\]\"", x)
 print("" if not m else f"{(int(m.group(1))+int(m.group(3)))//2} {(int(m.group(2))+int(m.group(4)))//2}")')
 [[ -n "$BOUNDS" ]] || { fail "workspace card not found on Home"; exit 1; }
 adb_ shell input tap $BOUNDS
@@ -151,7 +158,7 @@ TAB2=$(api -X POST "$BASE_URL/v1/tab" -H 'Content-Type: application/json' \
   python3 -c 'import sys,json;print(json.load(sys.stdin).get("tabId",""))' 2>/dev/null)
 sleep 2
 tab_bounds() {
-  adb_ shell uiautomator dump /sdcard/tabs.xml >/dev/null 2>&1 || true
+  adb_ shell rm -f /sdcard/tabs.xml >/dev/null 2>&1; adb_ shell uiautomator dump /sdcard/tabs.xml >/dev/null 2>&1 || true
   adb_ shell cat /sdcard/tabs.xml 2>/dev/null |
     python3 -c '
 import re,sys
@@ -226,7 +233,7 @@ if [[ -n "$HOME_BOUNDS" ]]; then
   read -r HX HY <<< "$HOME_BOUNDS"
   adb_ shell input swipe "$HX" "$HY" "$((HX - 380))" "$HY" 600
   sleep 1
-  adb_ shell uiautomator dump /sdcard/cjk.xml >/dev/null 2>&1 || true
+  adb_ shell rm -f /sdcard/cjk.xml >/dev/null 2>&1; adb_ shell uiautomator dump /sdcard/cjk.xml >/dev/null 2>&1 || true
   adb_ shell cat /sdcard/cjk.xml 2>/dev/null | grep -q 'Type, convert, then send' \
     && pass "a swipe over the keys reaches the CJK field" \
     || fail "CJK field not found after swiping over the keys"
@@ -243,7 +250,7 @@ done
 # The field focus lands on the next frame; typing before that can go to the
 # terminal on a slow emulator. Wait for the EditText node itself.
 cjk_focused() {
-  adb_ shell uiautomator dump /sdcard/cjk-focus.xml >/dev/null 2>&1 || return 1
+  adb_ shell rm -f /sdcard/cjk-focus.xml >/dev/null 2>&1; adb_ shell uiautomator dump /sdcard/cjk-focus.xml >/dev/null 2>&1 || return 1
   adb_ shell cat /sdcard/cjk-focus.xml 2>/dev/null |
     python3 -c '
 import re,sys
@@ -261,14 +268,14 @@ if cjk_focused; then
   pass "CJK field holds focus"
   adb_ shell input text "zzz"
   sleep 2
-  adb_ shell uiautomator dump /sdcard/cjk-typed.xml >/dev/null 2>&1 || true
+  adb_ shell rm -f /sdcard/cjk-typed.xml >/dev/null 2>&1; adb_ shell uiautomator dump /sdcard/cjk-typed.xml >/dev/null 2>&1 || true
   adb_ shell cat /sdcard/cjk-typed.xml 2>/dev/null | grep -q 'text="zzz"' \
     && pass "CJK keyboard button focuses its field" \
     || fail "typing did not reach the CJK field"
 else
   # The documented fallback: an IME that refuses the field switches back to
   # the shortcut panel and raises the terminal IME. The field is gone then.
-  adb_ shell uiautomator dump /sdcard/cjk-fallback.xml >/dev/null 2>&1 || true
+  adb_ shell rm -f /sdcard/cjk-fallback.xml >/dev/null 2>&1; adb_ shell uiautomator dump /sdcard/cjk-fallback.xml >/dev/null 2>&1 || true
   if adb_ shell cat /sdcard/cjk-fallback.xml 2>/dev/null | grep -qE 'text="ESC"|content-desc="ESC"'; then
     pass "CJK keyboard falls back to the shortcut panel"
   else

@@ -46,7 +46,7 @@ class LinkLifecycleTest {
     }
 
     @Test
-    fun aSuccessfulBootstrapResetsBackoffToTheInitialDelay() = runBlocking {
+    fun aBootstrapThatNeverDeliversAnEventDoesNotResetBackoff() = runBlocking {
         val transport = FakeDaemonTransport()
         // First dial fails; the next one bootstraps and then the event stream dies.
         transport.openFailure = { attempt -> if (attempt == 1) IOException("dial failed") else null }
@@ -55,15 +55,57 @@ class LinkLifecycleTest {
             link.lifecycle.start()
             assertEquals(500L, link.clock.nextBackoff())
 
-            // Second dial succeeded (health + snapshot), then the stream closed at seq 1.
-            link.clock.awaitSleep(500)
-            assertEquals(500L, link.clock.nextBackoff())
+            // Second dial succeeded (health + snapshot), but the stream closed
+            // before delivering an event: the next wait must still grow.
+            link.clock.awaitSleep(1_000)
+            assertEquals(1_000L, link.clock.nextBackoff())
             // The third dial may already be in flight after the stream drop;
             // the assertion that matters is the reset backoff above.
             assertTrue(transport.opens.get() >= 2)
             assertTrue(transport.healthChecks.get() >= 1)
             assertTrue(transport.snapshots.get() >= 1)
             assertEquals(ConnectionState.RECONNECTING, link.state.state.value.connection)
+        } finally {
+            link.scope.cancel()
+        }
+    }
+
+    @Test
+    fun aDeliveredEventResetsBackoff() = runBlocking {
+        val transport = FakeDaemonTransport()
+        transport.openFailure = { attempt -> if (attempt == 1) IOException("dial failed") else null }
+        transport.events = {
+            kotlinx.coroutines.flow.flowOf(
+                EventSocket.Signal.Event(
+                    SemanticEvent(seq = 2, type = SemanticEvent.TYPE_SNAPSHOT_TICK),
+                ),
+                EventSocket.Signal.Closed(1000, "closed"),
+            )
+        }
+        val link = Harness(transport = transport)
+        try {
+            link.lifecycle.start()
+            assertEquals(500L, link.clock.nextBackoff())
+            withTimeout(5_000) { while (transport.snapshots.get() < 1) delay(1) }
+            withTimeout(5_000) { while (transport.closes.get() < 1) delay(1) }
+            assertEquals(500L, link.clock.nextBackoff())
+        } finally {
+            link.scope.cancel()
+        }
+    }
+
+    @Test
+    fun publishStoppedCollapsesAFailedConnectAttemptToIdle() {
+        val link = Harness()
+        try {
+            assertTrue(
+                link.state.update(link.state.linkGeneration) {
+                    it.copy(connection = ConnectionState.CONNECTING)
+                },
+            )
+            link.state.beginStop()
+            link.state.publishStopped()
+            assertEquals(ConnectionState.IDLE, link.state.state.value.connection)
         } finally {
             link.scope.cancel()
         }
@@ -104,6 +146,30 @@ class LinkLifecycleTest {
         } finally {
             link.scope.cancel()
         }
+    }
+
+    @Test
+    fun aStaleRefetchDoesNotRegressTheSnapshotSeq() = runBlocking {
+        val clock = ManualClock()
+        val transport = FakeDaemonTransport()
+        val state = LinkState(clock)
+        val sync = SnapshotSync(state, transport, clock)
+        val generation = state.linkGeneration
+        assertTrue(state.installEndpoint(generation, transport.endpoint))
+        assertTrue(
+            state.update(generation) {
+                it.copy(
+                    connection = ConnectionState.CONNECTED,
+                    snapshot = SessionSnapshot(revision = 2, seq = 20),
+                )
+            },
+        )
+        transport.snapshot = SessionSnapshot(revision = 1, seq = 10)
+
+        sync.refetch("late concurrent GET", generation)
+
+        assertEquals(20L, state.state.value.snapshot?.seq)
+        assertEquals(ConnectionState.CONNECTED, state.state.value.connection)
     }
 
     @Test
@@ -209,6 +275,8 @@ class LinkLifecycleTest {
             withTimeout(5_000) {
                 while (link.transport.closes.get() <= closes) delay(1)
             }
+            // A network-regain kick must not resurrect an explicitly stopped link.
+            link.lifecycle.kick()
             // Let the cancelled sleeper's gate fire; a live loop would dial again.
             link.clock.release(2_000)
             delay(100)

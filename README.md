@@ -18,8 +18,7 @@ core-designsystem/   M3 theme, HerdrColors status tokens, StatusDot/Chip, Settin
 feature-home/        semantic overview: workspace cards, peer tab chips
 feature-terminal/    rails + terminal surface + extra-keys/CJK bottom panel
 feature-settings/    M3 grouped-list settings (appearance/connection/terminal/notifications)
-terminal-emulator/   pure-Kotlin VT parser + screen buffer + themes (+48 tests)
-terminal-view/       Canvas renderer, TerminalBridge, key encoder (+tests)
+terminal-ghostty/    libghostty-vt 1.0.1 JNI, Android view/session, key + scroll handling
 connection-ssh/      JSch tunnel provider (key auth, host-key verification, port forward)
 connection-direct/   tailnet/LAN direct provider
 notifications/       channels + semantic filters + deep-link intents
@@ -43,8 +42,10 @@ Prerequisites: Android SDK, KVM, an API 36+ AVD. From the project root:
 ./gradlew installDebug
 ```
 
-The daemon runs on the host; from the emulator it is `http://10.0.2.2:8765`
-(Settings → Transport → Direct (tailnet), debug builds allow cleartext).
+The daemon runs on the host. Debug builds default Direct to
+`http://127.0.0.1:8766`; run `adb reverse tcp:8766 tcp:8765` so the emulator
+reaches the host daemon. Release Direct defaults to `127.0.0.1:8765` as well;
+10.0.2.2 is no longer treated as a loopback exemption.
 Release builds use the SSH tunnel (loopback forward); the daemon speaks plain
 HTTP by design and there is no TLS terminator yet, so Direct-over-https is
 not currently available.
@@ -58,16 +59,19 @@ adb devices
 ## Release APK
 
 ```bash
-./gradlew :app:assembleRelease
-# → app/build/outputs/apk/release/app-release-unsigned.apk
-~/Android/Sdk/build-tools/36.0.0/apksigner sign \
-  --ks ~/.android/debug.keystore --ks-pass pass:android --key-pass pass:android \
-  --out app/build/outputs/apk/release/app-release-signed.apk \
-  app/build/outputs/apk/release/app-release-unsigned.apk
+export HERDR_RELEASE_KEYSTORE_PASSWORD=$(cat ~/.config/herdr-mobile/keystore.password)
+./gradlew :app:assembleRelease -PrequireSigning --offline
+# → app/build/outputs/apk/release/app-release.apk
+~/Android/Sdk/build-tools/36.0.0/apksigner verify --print-certs \
+  app/build/outputs/apk/release/app-release.apk
+
+# 32-bit device artifact
+./gradlew :app:assembleRelease -PrequireSigning -Pabi=armeabi-v7a --offline
 ```
 
-The signed APK is installable directly (`adb install -r`). Production releases must
-be signed with the real release key, never the debug key.
+`-PrequireSigning` fails the build instead of silently producing an unsigned
+APK. Production releases use `~/.config/herdr-mobile/release.keystore`, never the
+debug key. Attach one signed APK per ABI; never a universal APK.
 
 ## Protocol (v1)
 

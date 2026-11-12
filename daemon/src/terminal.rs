@@ -440,6 +440,11 @@ async fn run_session(
                     SessionCommand::Resize(c, r) => {
                         // Coalesce resizes to at most one per 120 ms.
                         if last_resize.elapsed() >= std::time::Duration::from_millis(120) {
+                            // A newer immediate resize supersedes any pending
+                            // deferred one; leaving it queued would replay the
+                            // older geometry after this newer one.
+                            pending_resize = None;
+                            flush_at = None;
                             if child.send_resize(c, r).await.is_err() { break; }
                             last_resize = tokio::time::Instant::now();
                             let _ = session.frames_tx.send(SessionFrame::Ready { cols: c, rows: r, resumed: false });

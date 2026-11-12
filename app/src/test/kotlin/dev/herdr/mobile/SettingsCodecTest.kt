@@ -4,6 +4,7 @@ import androidx.datastore.preferences.core.mutablePreferencesOf
 import androidx.datastore.preferences.core.preferencesOf
 import dev.herdr.mobile.core.model.AppSettings
 import dev.herdr.mobile.core.model.BackendMode
+import dev.herdr.mobile.core.model.ScrollMode
 import dev.herdr.mobile.core.model.CursorStyle
 import dev.herdr.mobile.core.model.HostProfile
 import dev.herdr.mobile.core.model.SwipeBehavior
@@ -21,8 +22,8 @@ import org.junit.Test
  * Pure codec tests: plain [androidx.datastore.preferences.core.Preferences],
  * no Android runtime and no DataStore file I/O.
  *
- * [AppSettings.scrollMode] and [AppSettings.extraKeysLayoutId] have no
- * preference key, so they stay at their defaults here and still round-trip.
+ * Every persisted field in [AppSettings] must round-trip through DataStore
+ * keys; [AppSettings.extraKeysLayoutId] is the only transient one.
  */
 class SettingsCodecTest {
 
@@ -33,6 +34,7 @@ class SettingsCodecTest {
         terminalFont = TerminalFont.MONOSPACE,
         terminalFontSizeSp = 17,
         terminalLineHeight = 1.4f,
+        scrollMode = ScrollMode.PAGE,
         cursorStyle = CursorStyle.BAR,
         boldIsBright = false,
         transportMode = TransportMode.DIRECT,

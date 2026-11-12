@@ -107,7 +107,6 @@ internal class GhosttyTerminalController(
         session.setTheme(scheme.toGhosttyTheme())
         session.setColorScheme(scheme.isDark())
         applySelectionColors(scheme)
-        applySelectionColors(scheme)
         view.setBackgroundColor(scheme.background.toArgb())
     }
 

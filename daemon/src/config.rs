@@ -126,6 +126,7 @@ fn arg_err(msg: &str) -> anyhow::Error {
 fn default_socket_path() -> Option<String> {
     std::env::var("HOME")
         .ok()
+        .filter(|home| !home.is_empty())
         .map(|home| format!("{home}/.config/herdr/herdr.sock"))
 }
 
@@ -133,6 +134,7 @@ fn default_core_socket() -> Option<String> {
     use std::os::unix::fs::MetadataExt;
     std::env::var("XDG_RUNTIME_DIR")
         .ok()
+        .filter(|runtime| !runtime.is_empty())
         .map(|runtime| format!("{runtime}/herdr-core/default.sock"))
         .or_else(|| {
             // $UID is not exported by POSIX shells (and dash has no UID), so

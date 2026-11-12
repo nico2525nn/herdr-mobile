@@ -9,6 +9,8 @@ import dev.herdr.mobile.notifications.HerdrNotifications
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.collectLatest
+import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.filterNotNull
 import kotlinx.coroutines.launch
 
@@ -62,6 +64,22 @@ class NotificationRelay(
     @Volatile private var resetEpoch = 0
 
     init {
+        scope.launch {
+            // Turning a category off must retract alerts already in the
+            // shade; they never transition again, so the status path cannot.
+            settings.settings
+                .map { Triple(it.backgroundMonitoring, it.notifyDone, it.notifyBlocked) }
+                .distinctUntilChanged()
+                .collect { (monitoring, done, blocked) ->
+                    synchronized(transitionLock) {
+                        for ((paneId, state) in lastNotified) {
+                            if (shouldRetractAlert(state.status, monitoring, done, blocked)) {
+                                HerdrNotifications.dismissPane(context, state.workspaceId, paneId)
+                            }
+                        }
+                    }
+                }
+        }
         scope.launch {
             // Latest snapshot wins; an older queued write must not land after
             // a newer one and resurrect a stale status.
@@ -274,3 +292,13 @@ class NotificationRelay(
         HerdrNotifications.notify(context, event, ws, tab)
     }
 }
+
+/** A posted alert is stale when its category (or monitoring) was turned off. */
+internal fun shouldRetractAlert(
+    status: AgentStatus,
+    monitoring: Boolean,
+    notifyDone: Boolean,
+    notifyBlocked: Boolean,
+): Boolean = !monitoring ||
+    (status == AgentStatus.DONE && !notifyDone) ||
+    (status == AgentStatus.BLOCKED && !notifyBlocked)

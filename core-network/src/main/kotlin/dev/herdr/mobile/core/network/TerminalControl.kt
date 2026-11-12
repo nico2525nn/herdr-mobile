@@ -55,15 +55,15 @@ internal fun parseReadyRecord(
     } catch (_: Exception) {
         return null
     }
-    fun int(key: String): Int =
-        obj[key]?.jsonPrimitive?.content?.toIntOrNull() ?: 0
-    fun bool(key: String): Boolean =
-        obj[key]?.jsonPrimitive?.content == "true"
-    fun optStr(key: String): String? =
-        obj[key]?.jsonPrimitive?.contentOrNull
+    // `jsonPrimitive` throws when the wire value is an object/array. A
+    // malformed field must degrade to its default, not kill the attach.
+    fun primitive(key: String) = obj[key] as? kotlinx.serialization.json.JsonPrimitive
+    fun int(key: String): Int = primitive(key)?.content?.toIntOrNull() ?: 0
+    fun bool(key: String): Boolean = primitive(key)?.content == "true"
+    fun optStr(key: String): String? = primitive(key)?.contentOrNull
     val hasHistory = obj.containsKey("historyRows")
     return TerminalInbound.Ready(
-        paneId = obj["paneId"]?.jsonPrimitive?.content ?: fallbackPaneId,
+        paneId = primitive("paneId")?.content ?: fallbackPaneId,
         cols = int("cols"),
         rows = int("rows"),
         resumed = bool("resumed"),
@@ -79,7 +79,7 @@ internal fun parseReadyRecord(
             previous?.historyError
         },
         visibleOk = if (obj.containsKey("visibleOk")) {
-            obj["visibleOk"]?.jsonPrimitive?.content != "false"
+            primitive("visibleOk")?.content != "false"
         } else {
             previous?.visibleOk ?: true
         },

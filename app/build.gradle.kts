@@ -6,6 +6,15 @@ plugins {
     alias(libs.plugins.kotlin.serialization)
 }
 
+// -Pabi selects the single release ABI. Validate it: a typo otherwise
+// produces an APK with no native libraries that only fails on-device.
+val supportedAbis = setOf("arm64-v8a", "armeabi-v7a", "x86_64", "x86")
+val releaseAbi = providers.gradleProperty("abi").orNull ?: "arm64-v8a"
+check(releaseAbi in supportedAbis) {
+    "-Pabi=$releaseAbi is not one of ${supportedAbis.sorted()}"
+}
+val requireSigning = providers.gradleProperty("requireSigning").isPresent
+
 android {
     namespace = "dev.herdr.mobile"
     compileSdk = 37
@@ -14,8 +23,8 @@ android {
         applicationId = "dev.herdr.mobile"
         minSdk = 26
         targetSdk = 37
-        versionCode = 86
-        versionName = "2.0.21"
+        versionCode = 87
+        versionName = "2.0.22"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
@@ -33,12 +42,13 @@ android {
             // One ABI per APK (download size): -Pabi=armeabi-v7a builds the
             // 32-bit artifact; the default is the arm64 one. Debug keeps all
             // four for the emulator.
-            val releaseAbi = providers.gradleProperty("abi").orNull ?: "arm64-v8a"
             ndk {
                 abiFilters.clear()
                 abiFilters += releaseAbi
             }
-            buildConfigField("String", "DEFAULT_DIRECT_URL", "\"http://10.0.2.2:8765\"")
+            // Release Direct is a user-entered LAN/tailnet origin; the
+            // emulator gateway 10.0.2.2 is not a valid default on a phone.
+            buildConfigField("String", "DEFAULT_DIRECT_URL", "\"http://127.0.0.1:8765\"")
             isMinifyEnabled = true
             isShrinkResources = true
             proguardFiles(
@@ -60,11 +70,23 @@ android {
                     keyPassword = keystorePassword
                 }
             }
+            if (requireSigning && signingConfig == null) {
+                throw GradleException(
+                    "-PrequireSigning needs ~/.config/herdr-mobile/release.keystore and " +
+                        "HERDR_RELEASE_KEYSTORE_PASSWORD; refusing to build an unsigned release",
+                )
+            }
         }
         // Baseline-profile generation runs this non-debuggable, minified build.
         create("benchmark") {
             initWith(getByName("release"))
             matchingFallbacks += listOf("release")
+            // Profile generation runs on x86_64 emulators AND physical arm64
+            // phones. The release ABI filter is arm64-only by default.
+            ndk {
+                abiFilters.clear()
+                abiFilters += listOf("arm64-v8a", "x86_64")
+            }
             signingConfig = signingConfigs.findByName("herdrRelease")
                 ?: signingConfigs.getByName("debug")
         }

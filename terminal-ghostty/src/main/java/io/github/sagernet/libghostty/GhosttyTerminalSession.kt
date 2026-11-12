@@ -145,6 +145,7 @@ public class GhosttyTerminalSession private constructor(
     private var cellHeightPixels = 0
 
     private var sentColumns = 0
+    @Volatile
     private var framePostPending = false
     private var sentRows = 0
     private var sentCellWidthPixels = 0

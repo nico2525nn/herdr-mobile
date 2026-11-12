@@ -61,9 +61,14 @@ class SettingsViewModel(
         }
     }
 
+    private fun clearSaveError() {
+        if (_ui.value.error != null) _ui.value = _ui.value.copy(error = null)
+    }
+
     private fun edit(transform: (AppSettings) -> AppSettings) {
         viewModelScope.launch {
             runCatching { repository.update(transform) }
+                .onSuccess { clearSaveError() }
                 .onFailure { _ui.value = _ui.value.copy(error = saveFailed(it)) }
         }
     }
@@ -93,7 +98,11 @@ class SettingsViewModel(
     }
     fun setDirectUrl(url: String) = edit { it.copy(directUrl = url.trim()) }
     fun setActiveProfile(id: String?) {
-        viewModelScope.launch { runCatching { repository.setActiveProfile(id) } }
+        viewModelScope.launch {
+            runCatching { repository.setActiveProfile(id) }
+                .onSuccess { clearSaveError() }
+                .onFailure { _ui.value = _ui.value.copy(error = saveFailed(it)) }
+        }
     }
 
     fun saveProfile(profile: HostProfile) {
@@ -104,12 +113,17 @@ class SettingsViewModel(
                 } else {
                     repository.addProfile(profile)
                 }
-            }.onFailure { _ui.value = _ui.value.copy(error = saveFailed(it)) }
+            }.onSuccess { clearSaveError() }
+                .onFailure { _ui.value = _ui.value.copy(error = saveFailed(it)) }
         }
     }
 
     fun removeProfile(id: String) {
-        viewModelScope.launch { runCatching { repository.removeProfile(id) } }
+        viewModelScope.launch {
+            runCatching { repository.removeProfile(id) }
+                .onSuccess { clearSaveError() }
+                .onFailure { _ui.value = _ui.value.copy(error = saveFailed(it)) }
+        }
     }
 
     fun newProfileId(): String = UUID.randomUUID().toString()
@@ -167,7 +181,8 @@ class SettingsViewModel(
                 } else {
                     repository.addProfile(merged)
                 }
-            }.onFailure { _ui.value = _ui.value.copy(error = saveFailed(it)) }
+            }.onSuccess { clearSaveError() }
+                .onFailure { _ui.value = _ui.value.copy(error = saveFailed(it)) }
         }
     }
 
@@ -178,7 +193,8 @@ class SettingsViewModel(
                 val alias = repository.storePrivateKey(current?.privateKeyAlias, pem, label)
                 val base = current ?: HostProfile(id = profileId, label = label, host = "", username = "")
                 repository.updateProfile(base.copy(privateKeyAlias = alias, privateKeyLabel = label))
-            }.onFailure { _ui.value = _ui.value.copy(error = saveFailed(it)) }
+            }.onSuccess { clearSaveError() }
+                .onFailure { _ui.value = _ui.value.copy(error = saveFailed(it)) }
         }
     }
 
@@ -189,7 +205,8 @@ class SettingsViewModel(
                 val alias = repository.storeBearerToken(current?.bearerTokenAlias, token)
                 val base = current ?: HostProfile(id = profileId, label = profileId, host = "", username = "")
                 repository.updateProfile(base.copy(bearerTokenAlias = alias))
-            }.onFailure { _ui.value = _ui.value.copy(error = saveFailed(it)) }
+            }.onSuccess { clearSaveError() }
+                .onFailure { _ui.value = _ui.value.copy(error = saveFailed(it)) }
         }
     }
 
@@ -205,7 +222,8 @@ class SettingsViewModel(
                 val alias = repository.storeSshPassword(current?.passwordAlias, password)
                 val base = current ?: HostProfile(id = profileId, label = profileId, host = "", username = "")
                 repository.updateProfile(base.copy(passwordAlias = alias))
-            }.onFailure { _ui.value = _ui.value.copy(error = saveFailed(it)) }
+            }.onSuccess { clearSaveError() }
+                .onFailure { _ui.value = _ui.value.copy(error = saveFailed(it)) }
         }
     }
 

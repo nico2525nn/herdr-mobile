@@ -54,6 +54,8 @@ private data object SettingsRoute
 private data class TerminalRoute(val workspaceId: String? = null, val tabId: String? = null, val paneId: String? = null)
 
 private const val DEEP_LINK_STATE = "handled_deep_link"
+private const val UI_PREFS = "herdr_ui"
+private const val KEY_NOTIFICATION_ASKED = "notification_permission_asked"
 
 class MainActivity : ComponentActivity() {
 
@@ -117,11 +119,16 @@ class MainActivity : ComponentActivity() {
         // Skipped on notification-tap landings: the prompt would cover the
         // deep-link target the user explicitly asked to see (grant state is
         // also surfaced in Settings with a system link).
+        val uiPrefs = getSharedPreferences(UI_PREFS, MODE_PRIVATE)
         if (!restoring && routeFromIntent(intent) == null &&
             Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
             checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) !=
-                PackageManager.PERMISSION_GRANTED
+                PackageManager.PERMISSION_GRANTED &&
+            !uiPrefs.getBoolean(KEY_NOTIFICATION_ASKED, false)
         ) {
+            // Record before launching: a denial otherwise asks again on every
+            // process restart, which Android eventually suppresses silently.
+            uiPrefs.edit().putBoolean(KEY_NOTIFICATION_ASKED, true).apply()
             notificationPermission.launch(Manifest.permission.POST_NOTIFICATIONS)
         }
         val container = (application as HerdrApp).container

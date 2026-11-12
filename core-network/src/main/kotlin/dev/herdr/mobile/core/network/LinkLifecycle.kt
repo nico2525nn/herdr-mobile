@@ -40,6 +40,9 @@ internal class LinkLifecycle(
 
     private var loop: Job? = null
 
+    /** Distinguishes an explicit stop from a transient disconnect. */
+    @Volatile private var stopped = false
+
     init {
         // Stream watchdog: ticks arrive every 60s on a healthy link, so silence past the
         // policy threshold means a wedged stream (half-open TCP that neither side detects —
@@ -83,10 +86,14 @@ internal class LinkLifecycle(
     }
 
     /** Start (or restart) the link. Safe to call repeatedly; replaces any running loop. */
-    fun start() = restart()
+    fun start() {
+        stopped = false
+        restart()
+    }
 
     /** Stop retrying and close the transport. State keeps the last snapshot for offline reading. */
     fun stop() {
+        stopped = true
         state.beginStop()
         commands.trySend(LoopCommand.Stop)
     }
@@ -97,7 +104,9 @@ internal class LinkLifecycle(
      * (transient STALE, resubscribe gap, extra SSH dials).
      */
     fun kick() {
-        if (state.targetInvalidated || state.state.value.connection == ConnectionState.CONNECTED) return
+        if (stopped || state.targetInvalidated ||
+            state.state.value.connection == ConnectionState.CONNECTED
+        ) return
         restart()
     }
 
@@ -106,6 +115,7 @@ internal class LinkLifecycle(
 
     /** Forced full redial, even when connected (transport or backend settings changed). */
     fun restart(clearCachedSnapshot: Boolean = false) {
+        stopped = false
         state.beginRedial(clearCachedSnapshot)
         commands.trySend(LoopCommand.Restart)
     }
@@ -116,6 +126,7 @@ internal class LinkLifecycle(
      * freshness, post-createTab waits).
      */
     fun refresh() {
+        if (stopped) return
         val generation = state.linkGeneration
         if (state.state.value.connection != ConnectionState.CONNECTED) {
             kick()
@@ -165,9 +176,17 @@ internal class LinkLifecycle(
                         lastSyncAt = clock.now(),
                     )
                 }
-                backoff.reset()
-
-                sync.consume(generation)
+                // Do not reset on bootstrap alone: an endpoint that accepts
+                // then immediately closes the event stream would redial at
+                // the initial 500ms forever. Only a delivered event proves the
+                // long-lived stream is healthy.
+                var streamProven = false
+                sync.consume(generation) {
+                    if (!streamProven) {
+                        streamProven = true
+                        backoff.reset()
+                    }
+                }
 
                 // Stream ended without an exception: reconnect, the daemon went quiet.
                 throw DaemonException("stream_closed", "Event stream closed")

@@ -130,9 +130,11 @@ internal fun TerminalSurface(
     ) { scrollRoutingFor(settings.scrollMode, state.pane) }
     LaunchedEffect(controller, routing, state.pane?.agent, state.pane?.wheelRowsPerEvent) {
         controller.view.scrollRouting = routing
+        // Raw SGR wheel bytes are typed input. An explicit "Mouse wheel"
+        // mode must not make a shell echo them; only verified wheel agents
+        // or apps that enabled mouse tracking may take this path.
         controller.view.allowRawWheel =
-            settings.scrollMode == dev.herdr.mobile.core.model.ScrollMode.WHEEL ||
-                dev.herdr.mobile.core.model.AgentMatrix.useWheelScroll(state.pane?.agent)
+            dev.herdr.mobile.core.model.AgentMatrix.useWheelScroll(state.pane?.agent)
         controller.view.wheelRowsPerEvent =
             state.pane?.wheelRowsPerEvent?.toFloat()
                 ?: dev.herdr.mobile.core.model.AgentMatrix
@@ -303,11 +305,22 @@ internal fun TerminalSurface(
     // AndroidView captures `factory` on first composition; without this key a
     // tab/workspace switch (new backend → new controller) kept the OLD view,
     // still bound to the closed session, so the terminal looked dead.
-    key(controller) {
-        AndroidView(
-            factory = { controller.view },
-            modifier = modifier.fillMaxSize(),
-        )
+    androidx.compose.foundation.layout.Box(modifier = modifier.fillMaxSize()) {
+        key(controller) {
+            AndroidView(
+                factory = { controller.view },
+                modifier = Modifier.fillMaxSize(),
+            )
+        }
+        if (detached != null) {
+            ReconnectOverlay(
+                reason = detached.reason,
+                onRetry = onRetry,
+                modifier = Modifier
+                    .align(Alignment.Center)
+                    .padding(16.dp),
+            )
+        }
     }
 
     DisposableEffect(controller) {

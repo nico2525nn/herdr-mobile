@@ -22,15 +22,16 @@ remote host). Kotlin/Compose app + Rust daemon in `daemon/`.
 - **Scroll routing follows the pane report.** The attach prelude carries no
   modes; choose host/wheel/page/local from the snapshot (`scrollRoutingFor`).
 - Release convention: bump `versionCode`/`versionName`, commit, annotated tag, push
-  main + tag, `gh release create` with **two per-ABI signed APKs** (arm64-v8a
-  default, `-Pabi=armeabi-v7a` for 32-bit devices); never attach a universal
-  APK.
+  main + tag, build with `-PrequireSigning` and
+  `HERDR_RELEASE_KEYSTORE_PASSWORD`, verify with `apksigner`, then
+  `gh release create` with **two per-ABI signed APKs** (arm64-v8a default,
+  `-Pabi=armeabi-v7a` for 32-bit devices); never attach a universal APK.
 
 ## Layout
 
 | Module | Responsibility |
 |---|---|
-| `terminal-ghostty` | Vendored libghostty-vt 1.0 engine + Android view/session (MIT, `LICENSE-sagernet`), JNI in `src/main/cpp` |
+| `terminal-ghostty` | Vendored libghostty-vt 1.0.1 engine + Android view/session (MIT, `LICENSE-sagernet`), JNI in `src/main/cpp` |
 | `feature-terminal` | `TerminalScreen` (chrome), `TerminalSurface` + `GhosttyTerminalController` (engine hosting), `PaneSessionController` → `TerminalAttach`/`TargetResolution`/`PendingInput`, `ScrollRoutingPolicy`, `UiMessage` |
 | `core-network` | `HerdrSession` contract, `TerminalControl` (record parsing), link lifecycle, snapshot sync, transport |
 | `testing` | Shared fakes for tests (`FakeHerdrSession`, `FakeTerminalConnection`); test-only, never imported by app code |
@@ -45,7 +46,8 @@ remote host). Kotlin/Compose app + Rust daemon in `daemon/`.
   `SettingsCodec`.
 - Compose/Android wiring lives in `src/androidTest` and needs a device.
 - Android framework seams that are not Compose (hardware keys, views) use
-  Robolectric on the JVM (`terminal-view` `TermuxViewClientKeyTest`).
+  Robolectric on the JVM where a framework seam remains; the old
+  `terminal-view`/`terminal-emulator` modules are gone.
 - Fakes shared by more than one module belong in `:testing`, not copied.
 - Coverage is opt-in (`-Pcoverage`), so `./gradlew test --offline` never needs
   the JaCoCo agent; reports land in `<module>/build/reports/jacoco/`.

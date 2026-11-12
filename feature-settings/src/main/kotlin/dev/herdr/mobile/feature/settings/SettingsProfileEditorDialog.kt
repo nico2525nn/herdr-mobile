@@ -36,6 +36,10 @@ internal fun ProfileEditorDialog(
     var token by remember { mutableStateOf("") }
     var keyPem by remember { mutableStateOf("") }
     val hasKey = profile.privateKeyAlias != null
+    val portValue = port.toIntOrNull()?.takeIf { it in 1..65535 }
+    val daemonPortValue = daemonPort.toIntOrNull()?.takeIf { it in 1..65535 }
+    val canSave = host.isNotBlank() && username.isNotBlank() &&
+        portValue != null && daemonPortValue != null
 
     AlertDialog(
         onDismissRequest = onDismiss,
@@ -49,7 +53,17 @@ internal fun ProfileEditorDialog(
                     OutlinedTextField(value = host, onValueChange = { host = it }, label = { Text("Hostname") })
                 }
                 item(key = "port") {
-                    OutlinedTextField(value = port, onValueChange = { port = it }, label = { Text("SSH port") })
+                    OutlinedTextField(
+                        value = port,
+                        onValueChange = { port = it },
+                        label = { Text("SSH port") },
+                        isError = portValue == null,
+                        supportingText = if (portValue == null) {
+                            { Text("1–65535") }
+                        } else {
+                            null
+                        },
+                    )
                 }
                 item(key = "user") {
                     OutlinedTextField(value = username, onValueChange = { username = it }, label = { Text("Username") })
@@ -59,6 +73,12 @@ internal fun ProfileEditorDialog(
                         value = daemonPort,
                         onValueChange = { daemonPort = it },
                         label = { Text("Daemon port on host") },
+                        isError = daemonPortValue == null,
+                        supportingText = if (daemonPortValue == null) {
+                            { Text("1–65535") }
+                        } else {
+                            null
+                        },
                     )
                 }
                 item(key = "password") {
@@ -113,26 +133,29 @@ internal fun ProfileEditorDialog(
             }
         },
         confirmButton = {
-            TextButton(onClick = {
-                // Untouched password field = leave the stored secret alone.
-                // Editing label/host/ports must never wipe it.
-                val pw = if (passwordTouched) password else null
-                val tok = token.ifBlank { null }
-                val pem = keyPem.ifBlank { null }
-                onSave(
-                    profile.copy(
-                        label = label.ifBlank { profile.label },
-                        host = host.trim(),
-                        port = port.toIntOrNull() ?: 22,
-                        username = username.trim(),
-                        daemonPort = daemonPort.toIntOrNull() ?: 8765,
-                    ),
-                    pw,
-                    tok,
-                    pem,
-                    label.ifBlank { profile.label },
-                )
-            }) {
+            TextButton(
+                enabled = canSave,
+                onClick = {
+                    // Untouched password field = leave the stored secret alone.
+                    // Editing label/host/ports must never wipe it.
+                    val pw = if (passwordTouched) password else null
+                    val tok = token.ifBlank { null }
+                    val pem = keyPem.ifBlank { null }
+                    onSave(
+                        profile.copy(
+                            label = label.ifBlank { profile.label },
+                            host = host.trim(),
+                            port = requireNotNull(portValue),
+                            username = username.trim(),
+                            daemonPort = requireNotNull(daemonPortValue),
+                        ),
+                        pw,
+                        tok,
+                        pem,
+                        label.ifBlank { profile.label },
+                    )
+                },
+            ) {
                 Text("Save")
             }
         },

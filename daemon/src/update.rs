@@ -97,7 +97,18 @@ impl Updater {
             Err(e) => {
                 let msg = format!("{e:#}");
                 warn!("herdr update check failed: {msg}");
-                self.cache.set_update(HerdrManifest::default(), Some(msg.clone())).await;
+                // A transient fetch failure must not erase the update/notes we
+                // already know about; keep them and only publish the error.
+                let previous = self.cache.snapshot().map(|s| s.update).unwrap_or_default();
+                self.cache
+                    .set_update(
+                        HerdrManifest {
+                            version: previous.latest_version,
+                            notes: previous.notes,
+                        },
+                        Some(msg.clone()),
+                    )
+                    .await;
                 UpdateStatus {
                     latest_version: None,
                     current_version: current,
@@ -201,11 +212,14 @@ impl UpdateWatcher {
         for key in HERDR_ENV_KEYS {
             cmd.env_remove(key);
         }
-        let out = cmd
-            .stdin(std::process::Stdio::null())
-            .output()
-            .await
-            .with_context(|| format!("failed to execute {bin} update"))?;
+        cmd.kill_on_drop(true);
+        let out = tokio::time::timeout(
+            std::time::Duration::from_secs(600),
+            cmd.stdin(std::process::Stdio::null()).output(),
+        )
+        .await
+        .context("herdr update timed out after 600s")?
+        .with_context(|| format!("failed to execute {bin} update"))?;
         let combined = format!(
             "{}{}",
             String::from_utf8_lossy(&out.stdout),
@@ -214,8 +228,9 @@ impl UpdateWatcher {
         if !out.status.success() {
             anyhow::bail!("herdr update failed: {}", combined.trim());
         }
-        // Re-check so the pill reflects the just-installed version without
-        // waiting for the next tick (also heals a post-restart version jump).
+        // Re-read the running binary version before comparing the manifest;
+        // the cached ping version otherwise keeps the pill stuck on "update".
+        let _ = self.updater.cache.refresh_from_herdr().await;
         self.updater.refresh(true).await;
         Ok(combined.trim().to_string())
     }

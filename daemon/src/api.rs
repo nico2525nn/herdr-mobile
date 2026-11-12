@@ -93,7 +93,9 @@ fn core_error(error: anyhow::Error) -> Response {
     let message = format!("{error:#}");
     if message.contains("not_found") {
         api_error(StatusCode::NOT_FOUND, "not_found", message)
-    } else if message.contains("finished") || message.contains("live") {
+    } else if message.contains("finished")
+        || message.split(|ch: char| !ch.is_alphanumeric() && ch != '_').any(|word| word == "live")
+    {
         api_error(StatusCode::CONFLICT, "terminal_state", message)
     } else if message.contains("unavailable") {
         api_error(StatusCode::NOT_IMPLEMENTED, "unavailable", message)
@@ -162,8 +164,7 @@ async fn health(State(state): State<AppState>, headers: HeaderMap) -> Response {
         };
     }
     let (connected, error, version, protocol) = state.cache.health_parts();
-    let snapshot = state.cache.snapshot();
-    let ok = connected && snapshot.is_some();
+    let ok = connected && state.cache.has_snapshot();
     (
         StatusCode::OK,
         Json(json!({
@@ -400,10 +401,16 @@ async fn pane_resize(
         let landed = tokio::time::timeout(std::time::Duration::from_secs(5), child.next_record()).await;
         child.send_release().await?;
         child.kill().await;
-        landed
+        match landed
             .map_err(|_| anyhow::anyhow!("timed out waiting for the resized frame"))?
-            .map_err(|e| anyhow::anyhow!("resize attach failed: {e:#}"))?;
-        Ok::<(), anyhow::Error>(())
+            .map_err(|e| anyhow::anyhow!("resize attach failed: {e:#}"))?
+        {
+            Some(crate::herdr::terminal::ChildRecord::Frame(_)) => Ok::<(), anyhow::Error>(()),
+            Some(crate::herdr::terminal::ChildRecord::Closed(reason)) => {
+                anyhow::bail!("resize attach closed: {reason}")
+            }
+            None => anyhow::bail!("resize attach ended without a frame"),
+        }
     });
     match task.await {
         Ok(Ok(())) => (StatusCode::OK, Json(json!({"ok": true}))).into_response(),
@@ -522,7 +529,7 @@ async fn tab_focus(
         let focus = terminals
             .iter()
             .find(|terminal| {
-                terminal.pointer("/labels/herdr.tab").and_then(|v| v.as_str()) == Some(tab_id.as_str())
+                crate::herdrcore::tab_id_of(terminal).as_deref() == Some(tab_id.as_str())
             })
             .and_then(crate::herdrcore::CoreFocus::from_terminal);
         let Some(focus) = focus else {
@@ -988,6 +995,14 @@ async fn terminal_ws(
 #[cfg(test)]
 mod core_unavailable_tests {
     use super::*;
+
+    #[tokio::test]
+    async fn core_error_live_substring_does_not_mean_terminal_is_live() {
+        // "deliver" contains "live"; free-text substring matching turned a
+        // transport failure into HTTP 409 and the client retried it wrongly.
+        let response = core_error(anyhow::anyhow!("failed to deliver input"));
+        assert_eq!(response.status(), StatusCode::BAD_GATEWAY);
+    }
 
     #[tokio::test]
     async fn core_unavailable_is_a_typed_501_response() {

@@ -37,10 +37,10 @@ internal sealed interface OutboundFrame {
  */
 internal fun mergeOutbound(values: List<OutboundFrame>): List<OutboundFrame> {
     val out = ArrayList<OutboundFrame>(values.size)
-    var bytes: ByteArray? = null
+    var bytes: java.io.ByteArrayOutputStream? = null
     var text: StringBuilder? = null
     fun flush() {
-        bytes?.let { out += OutboundFrame.Binary(it) }
+        bytes?.let { out += OutboundFrame.Binary(it.toByteArray()) }
         bytes = null
         text?.let { out += OutboundFrame.TextInput(it.toString()) }
         text = null
@@ -49,7 +49,11 @@ internal fun mergeOutbound(values: List<OutboundFrame>): List<OutboundFrame> {
         when (value) {
             is OutboundFrame.Binary -> {
                 if (text != null) flush()
-                bytes = bytes?.plus(value.data) ?: value.data
+                // `plus` copied the whole accumulator for every frame; a
+                // fling of 100 binary frames was O(n²). Append once here and
+                // materialize on flush.
+                (bytes ?: java.io.ByteArrayOutputStream(value.data.size * 2).also { bytes = it })
+                    .write(value.data)
             }
             is OutboundFrame.TextInput -> {
                 if (bytes != null) flush()
@@ -329,8 +333,9 @@ class TerminalSocket(
                 if (!ws.send(record)) {
                     runCatching { outbound.send(OutboundFrame.Text(record)) }
                 }
-                // Give OkHttp one flush cycle before the close frame.
-                kotlinx.coroutines.delay(150)
+                // OkHttp queues the close behind already-queued frames, so
+                // the direct release send is ordered without a fixed 150ms
+                // sleep. That sleep was on every same-pane reattach.`
             } else {
                 outbound.send(OutboundFrame.Text(record))
             }

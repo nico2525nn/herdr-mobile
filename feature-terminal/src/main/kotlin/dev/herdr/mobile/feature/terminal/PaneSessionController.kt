@@ -70,7 +70,7 @@ class PaneSessionController(
     private var pendingFlushJob: Job? = null
 
     private var attachJob: Job? = null
-    private var lastScrollRefreshAt = 0L
+    private var ackJob: Job? = null
 
     /** Pane the live backend belongs to (release ordering needs it). */
     private var backendPaneId: String? = null
@@ -136,6 +136,8 @@ class PaneSessionController(
     private fun onTargetGenerationChanged(snapshot: SessionSnapshot?) {
         targetOwnerGeneration = null
         attachJob?.cancel()
+        ackJob?.cancel()
+        ackJob = null
         pendingFlushJob?.cancel()
         pendingFlushJob = null
         val keep = targetFlow.value
@@ -227,28 +229,26 @@ class PaneSessionController(
      */
     fun scrollRemote(rows: Int) {
         if (rows == 0) return
-        // Herdr does not push scroll-max changes with status events. If this
-        // agent pane started with max=0 (OMP landing) and has since gained
-        // host scrollback, refresh the facts; the next gesture routes to the
-        // host instead of typing keys the app ignores.
-        val now = System.currentTimeMillis()
-        if (now - lastScrollRefreshAt > 2_000) {
-            val pane = targetFlow.value?.let { session.state.value.snapshot?.pane(it.paneId) }
-            if (pane?.agent != null && pane.scroll != null && !pane.hostScrollable) {
-                lastScrollRefreshAt = now
-                session.refresh()
-            }
+        val backend = backendFlow.value
+        if (backend == null) {
+            // No stream: a queued delta would be replayed on the next gesture
+            // after attach and jump far more rows than the finger moved.
+            pendingScrollRows = 0
+            return
         }
+        // Routing follows the pane report (AGENTS.md): do not issue a full
+        // snapshot GET every 2s mid-drag just to guess that scrollback appeared.
         pendingScrollRows += rows
         if (scrollFlushJob?.isActive == true) return
-        val backend = backendFlow.value ?: return
-        val generation = targetOwnerGeneration ?: return
+        targetOwnerGeneration ?: return
         scrollFlushJob = scope.launch {
             delay(SCROLL_COALESCE_MS)
             val delta = pendingScrollRows
             pendingScrollRows = 0
-            if (delta == 0 || !isCurrent(backend, generation)) return@launch
-            runCatching { backend.scrollRemote(delta, "rows") }
+            val current = backendFlow.value ?: return@launch
+            val currentGeneration = targetOwnerGeneration ?: return@launch
+            if (delta == 0 || !isCurrent(current, currentGeneration)) return@launch
+            runCatching { current.scrollRemote(delta, "rows") }
         }
     }
 
@@ -321,8 +321,12 @@ class PaneSessionController(
         // Read-ack: opening a DONE pane focuses its tab server-side, which
         // transitions done -> idle everywhere. Never steal focus for
         // working/idle opens, and never let a stale ack overwrite a message.
+        // A rapid A->B switch must also cancel A's in-flight focus call: it
+        // would otherwise steal desktop focus back to A after B is visible.
+        ackJob?.cancel()
+        ackJob = null
         if (pane.status == dev.herdr.mobile.core.model.AgentStatus.DONE) {
-            scope.launch {
+            ackJob = scope.launch {
                 focusTabForReadAck(session, target.tabId) { detail ->
                     if (session.targetGeneration == generation) {
                         onMessage(UiMessage.CommandFailed(UiMessage.CommandFailed.Command.READ_ACK, detail))
@@ -332,6 +336,11 @@ class PaneSessionController(
         }
 
         if (targetFlow.value != target) pendingInput.clear()
+        // A coalescing job from the old pane must not steal the new pane's
+        // first gesture: it captures the old backend and drops the merged sum.
+        scrollFlushJob?.cancel()
+        scrollFlushJob = null
+        pendingScrollRows = 0
         attachJob?.cancel()
         pendingFlushJob?.cancel()
         pendingFlushJob = null
@@ -420,6 +429,16 @@ class PaneSessionController(
     private fun dispatch(op: suspend (ConnectionTerminalBackend) -> Unit) {
         val backend = backendFlow.value
         if (backend != null) {
+            // A detached stream keeps the backend in the flow so the last
+            // frame stays visible, but its socket is already closed. Queue
+            // input instead of silently discarding it in ws.send().
+            when (backend.state.value) {
+                is BackendState.Detached, is BackendState.Failed -> {
+                    pendingInput.enqueue(op)
+                    return
+                }
+                else -> Unit
+            }
             val generation = targetOwnerGeneration ?: return
             if (generation != session.targetGeneration) return
             scope.launch {
@@ -470,6 +489,8 @@ class PaneSessionController(
         retryJob?.cancel()
         retryJob = null
         attachJob?.cancel()
+        ackJob?.cancel()
+        ackJob = null
         scrollFlushJob?.cancel()
         pendingScrollRows = 0
         val backend = backendFlow.value ?: return
@@ -505,6 +526,8 @@ class PaneSessionController(
         pendingResize = null
         retryJob?.cancel()
         attachJob?.cancel()
+        ackJob?.cancel()
+        ackJob = null
         pendingFlushJob?.cancel()
         scrollFlushJob?.cancel()
         pendingScrollRows = 0

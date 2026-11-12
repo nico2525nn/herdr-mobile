@@ -18,6 +18,7 @@ import androidx.compose.material3.TextButton
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.input.ImeAction
@@ -69,7 +70,7 @@ internal fun LazyListScope.settingsConnectionSection(
                 showDivider = true,
             )
             if (settings.transportMode == TransportMode.DIRECT) {
-                var editingUrl by remember(settings.directUrl) {
+                var editingUrl by rememberSaveable(settings.directUrl) {
                     mutableStateOf(settings.directUrl)
                 }
                 SettingsRow(

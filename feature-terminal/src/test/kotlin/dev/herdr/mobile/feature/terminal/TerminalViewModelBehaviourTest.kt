@@ -171,6 +171,24 @@ class TerminalViewModelBehaviourTest {
     }
 
     @Test
+    fun `typing while the visible stream is detached waits for the reattach`() = runTest(dispatcher) {
+        val session = FakeHerdrSession(snapshot(oneWorkspace()))
+        val vm = TerminalViewModel(session, null, null, null, settings())
+        advanceUntilIdle()
+        val first = session.connections.single()
+        first.detach("closed")
+        runCurrent()
+
+        vm.sendText("x")
+        advanceUntilIdle()
+
+        val second = session.connections.last()
+        assertTrue(second !== first)
+        assertEquals(emptyList<String>(), first.sentText)
+        assertEquals(listOf("x"), second.sentText)
+    }
+
+    @Test
     fun `switching to another pane of the same tab attaches that pane`() = runTest(dispatcher) {
         // A tab can hold several panes (Herdr splits); the pane rail offers
         // them, and choosing one must re-attach the stream, not just repaint.

@@ -62,6 +62,12 @@ impl SessionCache {
         self.inner.read().expect("cache lock").snapshot.clone()
     }
 
+    /// Cheap health check: do not deep-clone the workspace tree just to ask
+    /// whether one exists (health is polled far more often than snapshots are read).
+    pub fn has_snapshot(&self) -> bool {
+        self.inner.read().expect("cache lock").snapshot.is_some()
+    }
+
     /// Herdr's last-reported host-scroll state for `pane_id`, if the cached
     /// snapshot carries it. Snapshot-time data: the cache does not subscribe to
     /// `pane.updated`/scroll events, so treat this as a cheap hint and refresh
@@ -117,7 +123,7 @@ impl SessionCache {
             .unwrap_or(0);
         let latest = manifest.version.clone();
         let notes = manifest.notes.clone();
-        self.mutate(|snapshot| {
+        let _ = self.mutate(|snapshot| {
             snapshot.update.latest_version = latest;
             snapshot.update.error = error;
             snapshot.update.last_checked_at = now;
@@ -131,9 +137,15 @@ impl SessionCache {
 
     /// Rebuild the whole cache from Herdr. Returns the new summary.
     pub async fn refresh_from_herdr(&self) -> Result<CacheSummary> {
-        let raw = self.herdr.snapshot().await?;
-        // Best effort: version metadata for health/diagnostics.
-        let info = self.herdr.ping().await.ok();
+        // Independent requests: overlap them instead of paying both RTTs on
+        // every refresh. Ping is best-effort version metadata.
+        let ping = tokio::time::timeout(
+            std::time::Duration::from_secs(2),
+            self.herdr.ping(),
+        );
+        let (raw, info) = tokio::join!(self.herdr.snapshot(), ping);
+        let raw = raw?;
+        let info = info.ok().and_then(Result::ok);
         let update = self
             .inner
             .read()
@@ -200,32 +212,31 @@ impl SessionCache {
         self.seq.fetch_add(1, Ordering::SeqCst) + 1
     }
 
-    /// Reserve sequence numbers consumed outside `emit` (the `snapshot.required` path).
-    /// Loop on CAS failure: a single compare_exchange lets two racers mint the
-    /// same seq (client drops the duplicate as history and loses a change).
-    pub fn next_seq_for_broadcast(&self, at_least: i64) {
+    /// Reserve a unique sequence number for a synthetic broadcast
+    /// (`snapshot.required`, update availability). The old "at least" loop
+    /// returned the current number when another producer had already reached
+    /// it, so two events could share a seq; the client then dropped one.
+    pub fn next_seq_for_broadcast(&self, at_least: i64) -> i64 {
         loop {
             let current = self.seq.load(Ordering::SeqCst);
-            if at_least <= current {
-                return;
-            }
+            let target = at_least.max(current + 1);
             if self
                 .seq
-                .compare_exchange(current, at_least, Ordering::SeqCst, Ordering::SeqCst)
+                .compare_exchange(current, target, Ordering::SeqCst, Ordering::SeqCst)
                 .is_ok()
             {
-                return;
+                return target;
             }
         }
     }
 
-    fn mutate(&self, f: impl FnOnce(&mut SessionSnapshot)) -> Option<(i64, SessionSnapshot)> {
+    fn mutate<R>(&self, f: impl FnOnce(&mut SessionSnapshot) -> R) -> Option<(i64, R)> {
         let mut inner = self.inner.write().expect("cache lock");
         let snapshot = inner.snapshot.as_mut()?;
-        f(snapshot);
+        let result = f(snapshot);
         let revision = self.revision.fetch_add(1, Ordering::SeqCst) + 1;
         snapshot.revision = revision;
-        Some((revision, snapshot.clone()))
+        Some((revision, result))
     }
 
     /// Bring the stored snapshot's seq up to the global cursor AFTER emitting
@@ -297,7 +308,7 @@ impl SessionCache {
             .and_then(|v| v.as_str())
             .map(str::to_string);
         let mut out = vec![];
-        let Some((revision, snapshot)) = self.mutate(|snapshot| {
+        let Some((revision, aggregates)) = self.mutate(|snapshot| {
             for workspace in &mut snapshot.workspaces {
                 if workspace.id != workspace_id {
                     continue;
@@ -321,24 +332,21 @@ impl SessionCache {
                 workspace.status = AgentStatus::roll_up(workspace.tabs.iter().map(|t| t.status))
                     .unwrap_or(AgentStatus::Unknown);
             }
+            // Return the aggregates while the write lock is held: the old
+            // code cloned the entire snapshot just to read three fields.
+            snapshot
+                .workspaces
+                .iter()
+                .find(|w| w.id == workspace_id)
+                .and_then(|w| {
+                    w.tabs.iter().find(|t| t.panes.iter().any(|p| p.id == pane_id)).map(|t| {
+                        (t.id.clone(), t.status, w.status)
+                    })
+                })
         }) else {
             return out;
         };
-        // Re-read the aggregates to decide which level events to emit.
-        let Some((tab_id, tab_status, workspace_status)) = snapshot
-            .workspaces
-            .iter()
-            .find(|w| w.id == workspace_id)
-            .and_then(|w| {
-                w.tabs.iter().find(|t| t.panes.iter().any(|p| p.id == pane_id)).map(|t| {
-                    (
-                        t.id.clone(),
-                        t.status,
-                        w.status,
-                    )
-                })
-            })
-        else {
+        let Some((tab_id, tab_status, workspace_status)) = aggregates else {
             // The pane is not in the cached tree (moved across workspaces or a
             // close race); emitting Unknown here erased the real status.
             return out;
@@ -510,7 +518,7 @@ impl SessionCache {
         if ordered_ids.is_empty() {
             return;
         }
-        self.mutate(|snapshot| {
+        let _ = self.mutate(|snapshot| {
             for workspace in &mut snapshot.workspaces {
                 if !workspace.tabs.iter().any(|t| t.id == tab_id) {
                     continue;
@@ -534,7 +542,7 @@ impl SessionCache {
         if ordered.is_empty() {
             return;
         }
-        self.mutate(|snapshot| {
+        let _ = self.mutate(|snapshot| {
             let rank: std::collections::HashMap<&str, (usize, i64)> = ordered
                 .iter()
                 .enumerate()
@@ -837,16 +845,23 @@ fn diff_closed(before: &SessionSnapshot, after: &SessionSnapshot) -> Vec<ClosedE
 pub async fn run_resync_loop(cache: Arc<SessionCache>, bus: Arc<EventBus>) {
     let mut backoff = std::time::Duration::from_millis(500);
     const MAX_BACKOFF: std::time::Duration = std::time::Duration::from_secs(15);
+    // A structural event already rebuilt the cache; the resubscribe path must
+    // not rebuild it a second time just to list the new pane set.
+    let mut skip_refresh = false;
     loop {
-        // Refresh first so the subscription below covers exactly the panes we know about.
-        match cache.refresh_from_herdr().await {
-            Ok(summary) => info!(revision = summary.revision, "resynced session cache from herdr"),
-            Err(e) => {
-                cache.mark_herdr_down(format!("{e:#}"));
-                warn!("resync failed ({e:#}); retrying in {}ms", backoff.as_millis());
-                tokio::time::sleep(backoff).await;
-                backoff = (backoff * 2).min(MAX_BACKOFF);
-                continue;
+        if skip_refresh {
+            skip_refresh = false;
+        } else {
+            // Refresh first so the subscription below covers exactly the panes we know about.
+            match cache.refresh_from_herdr().await {
+                Ok(summary) => info!(revision = summary.revision, "resynced session cache from herdr"),
+                Err(e) => {
+                    cache.mark_herdr_down(format!("{e:#}"));
+                    warn!("resync failed ({e:#}); retrying in {}ms", backoff.as_millis());
+                    tokio::time::sleep(backoff).await;
+                    backoff = (backoff * 2).min(MAX_BACKOFF);
+                    continue;
+                }
             }
         }
         let subscriptions = all_subscriptions(&cache.pane_ids());
@@ -870,8 +885,12 @@ pub async fn run_resync_loop(cache: Arc<SessionCache>, bus: Arc<EventBus>) {
             StreamBroken,
         }
         let mut break_reason = BreakReason::StreamBroken;
-        let mut reconcile_tick =
-            tokio::time::interval(std::time::Duration::from_secs(60));
+        // Tokio's first interval tick is immediate; don't run a third full
+        // reconcile right after subscribe and the structural refresh.
+        let mut reconcile_tick = tokio::time::interval_at(
+            tokio::time::Instant::now() + std::time::Duration::from_secs(60),
+            std::time::Duration::from_secs(60),
+        );
         reconcile_tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
         loop {
             tokio::select! {
@@ -964,6 +983,7 @@ pub async fn run_resync_loop(cache: Arc<SessionCache>, bus: Arc<EventBus>) {
             tokio::time::sleep(backoff).await;
             backoff = (backoff * 2).min(MAX_BACKOFF);
         } else {
+            skip_refresh = true;
             backoff = std::time::Duration::from_millis(500);
         }
     }
@@ -1418,9 +1438,10 @@ mod tests {
         assert_eq!(cache.revision(), 0);
         assert_eq!(cache.seq(), 0);
         // next_seq is private; the broadcast reservation path exercises the same counter.
-        cache.next_seq_for_broadcast(2);
+        assert_eq!(cache.next_seq_for_broadcast(2), 2);
         assert_eq!(cache.seq(), 2);
-        cache.next_seq_for_broadcast(1);
-        assert_eq!(cache.seq(), 2);
+        // A later reservation is unique even when it asks for an older number.
+        assert_eq!(cache.next_seq_for_broadcast(1), 3);
+        assert_eq!(cache.seq(), 3);
     }
 }

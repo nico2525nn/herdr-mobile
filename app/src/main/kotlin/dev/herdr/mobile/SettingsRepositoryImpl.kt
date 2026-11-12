@@ -54,10 +54,10 @@ class SettingsRepositoryImpl(
      */
     private val updateMutex = kotlinx.coroutines.sync.Mutex()
 
-    init {
-        scope.launch { load() }
-    }
-
+    // These MUST be declared before init: property initializers run in source
+    // order, and load() runs on another dispatcher. Launching it first let a
+    // fast load complete a null `loaded` (NPE) or get its preserved raw
+    // overwritten by the later null initializer.
     /**
      * Completes when the initial DataStore load lands. update() waits on it:
      * without the gate, a startup write persists default empty hostProfiles
@@ -73,22 +73,32 @@ class SettingsRepositoryImpl(
     @Volatile
     private var preservedProfilesRaw: String? = null
 
-    private suspend fun load() {
+    /** The initial read failed; updates retry it before overwriting the file. */
+    @Volatile
+    private var loadFailed = false
+
+    init {
+        scope.launch { load() }
+    }
+
+    private suspend fun load(): Boolean {
         val prefs = try {
             context.dataStore.data.first()
         } catch (e: Exception) {
-            // Corrupt/unreadable prefs: keep defaults but still complete the
-            // gate — otherwise every update() hangs on await() forever and the
-            // app is bricked until reinstall. Defaults are safe; the next
-            // successful edit rewrites clean prefs.
+            // Keep the app usable, but do not let later edits persist defaults
+            // over data that was merely unreadable this instant. update()
+            // retries before its first write.
             android.util.Log.w("Settings", "DataStore load failed, using defaults: " + e.message)
+            loadFailed = true
             loaded.complete(Unit)
-            return
+            return false
         }
         val storedProfiles = decodeStoredProfiles(prefs[SettingsKeys.PROFILES])
         preservedProfilesRaw = storedProfiles.corruptRaw
         _settings.value = decodeSettings(prefs, storedProfiles)
+        loadFailed = false
         loaded.complete(Unit)
+        return true
     }
 
     suspend fun loadNotified(): Map<String, String> {
@@ -105,9 +115,15 @@ class SettingsRepositoryImpl(
     override suspend fun update(transform: (AppSettings) -> AppSettings) {
         loaded.await()
         updateMutex.withLock {
+            if (loadFailed) {
+                if (load()) loadFailed = false
+                else throw IllegalStateException("Settings storage is temporarily unreadable")
+            }
             val next = transform(_settings.value)
-            _settings.value = next
+            // Persist first: publishing before a failed write left the UI and
+            // the transport on values that will vanish on restart.
             persist(next)
+            _settings.value = next
         }
     }
 
@@ -192,10 +208,13 @@ class SettingsRepositoryImpl(
         val passwordSecretAlias = current?.passwordAlias
         if (passwordSecretAlias != null) deleteSshPassword(passwordSecretAlias)
         update { s ->
+            val remaining = s.hostProfiles.filterNot { it.id == profileId }
             val active = s.activeProfileId
             s.copy(
-                hostProfiles = s.hostProfiles.filterNot { it.id == profileId },
-                activeProfileId = if (active == profileId) null else active,
+                hostProfiles = remaining,
+                // Show (and use) the survivor instead of a null selection that
+                // silently falls back to hostProfiles.first() elsewhere.
+                activeProfileId = if (active == profileId) remaining.firstOrNull()?.id else active,
             )
         }
     }
@@ -265,10 +284,16 @@ class SettingsRepositoryImpl(
                 }
             }
         } finally {
-            probeScope.launch {
-                runCatching { provider.close() }
-            }.join()
-            probeScope.cancel()
+            // Cancel first: if the caller was cancelled, join() throws and
+            // the old order skipped cancel(), leaking the probe's OkHttp
+            // clients and two infinite watchdog coroutines.
+            withContext(kotlinx.coroutines.NonCancellable) {
+                probeScope.cancel()
+                val closeJob = kotlinx.coroutines.CoroutineScope(
+                    kotlinx.coroutines.SupervisorJob() + kotlinx.coroutines.Dispatchers.IO,
+                ).launch { runCatching { provider.close() } }
+                closeJob.join()
+            }
         }
     }
 

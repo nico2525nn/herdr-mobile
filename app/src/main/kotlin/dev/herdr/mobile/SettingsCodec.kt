@@ -12,6 +12,7 @@ import dev.herdr.mobile.core.model.CursorStyle
 import dev.herdr.mobile.core.model.HostProfile
 import dev.herdr.mobile.core.model.SwipeBehavior
 import dev.herdr.mobile.core.model.TerminalColorScheme
+import dev.herdr.mobile.core.model.ScrollMode
 import dev.herdr.mobile.core.model.TerminalFont
 import dev.herdr.mobile.core.model.ThemeMode
 import dev.herdr.mobile.core.model.TransportMode
@@ -46,6 +47,7 @@ internal object SettingsKeys {
     val NOTIFY_BLOCKED = booleanPreferencesKey("notify_blocked")
     val NOTIFIED_MAP = stringPreferencesKey("notified_map")
     val SHOW_SCROLL_DIAG = booleanPreferencesKey("show_scroll_diagnostics")
+    val SCROLL_MODE = stringPreferencesKey("scroll_mode")
     val BG_MONITOR = booleanPreferencesKey("bg_monitor")
 }
 
@@ -93,6 +95,7 @@ internal fun decodeSettings(
         },
     terminalFontSizeSp = prefs[SettingsKeys.FONT_SIZE] ?: 12,
     terminalLineHeight = prefs[SettingsKeys.LINE_HEIGHT] ?: 1.15f,
+    scrollMode = ScrollMode.fromWire(prefs[SettingsKeys.SCROLL_MODE]),
     cursorStyle = CursorStyle.fromWire(prefs[SettingsKeys.CURSOR_STYLE]),
     boldIsBright = prefs[SettingsKeys.BOLD_BRIGHT] ?: true,
     transportMode = TransportMode.fromWire(prefs[SettingsKeys.TRANSPORT_MODE]),
@@ -117,8 +120,8 @@ internal fun decodeSettings(
  * profiles JSON is written back verbatim instead of re-encoded from
  * [next], whose host list is only the empty decode fallback.
  *
- * [AppSettings.scrollMode] and [AppSettings.extraKeysLayoutId] have no key:
- * they are transient and are never persisted.
+ * [AppSettings.extraKeysLayoutId] has no key: it is transient and is never
+ * persisted.
  */
 internal fun MutablePreferences.writeSettings(
     next: AppSettings,
@@ -130,6 +133,7 @@ internal fun MutablePreferences.writeSettings(
     this[SettingsKeys.TERMINAL_FONT] = next.terminalFont.wire
     this[SettingsKeys.FONT_SIZE] = next.terminalFontSizeSp
     this[SettingsKeys.LINE_HEIGHT] = next.terminalLineHeight
+    this[SettingsKeys.SCROLL_MODE] = next.scrollMode.wire
     this[SettingsKeys.CURSOR_STYLE] = next.cursorStyle.wire
     this[SettingsKeys.BOLD_BRIGHT] = next.boldIsBright
     this[SettingsKeys.TRANSPORT_MODE] = next.transportMode.wire

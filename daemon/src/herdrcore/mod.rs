@@ -300,7 +300,8 @@ impl CoreClient {
         let tab_id = format!("core-tab-{:016x}", rand::random::<u64>());
         let tab_label = label.filter(|value| !value.trim().is_empty())
             .map(str::to_owned)
-            .unwrap_or_else(|| (workspace.tabs.len() + 1).to_string());
+            .unwrap_or_else(|| (workspace.tabs.iter().map(|tab| tab.number).max().unwrap_or(0) + 1)
+                .to_string());
         let labels = json!({
             "herdr.space":workspace_id,
             "herdr.space_label":workspace_label,
@@ -375,7 +376,6 @@ impl CoreClient {
 
     pub async fn close_workspace(&self, workspace_id: &str) -> Result<()> {
         let terminals = self.list(true).await?;
-        let locations = locations(&terminals);
         let selected = terminals.iter().filter(|terminal| {
             workspace_id_of(terminal).as_deref() == Some(workspace_id)
         }).cloned().collect::<Vec<_>>();
@@ -438,7 +438,6 @@ impl CoreClient {
 
     pub async fn rename_workspace(&self, workspace_id: &str, label: &str) -> Result<()> {
         let terminals = self.list(false).await?;
-        let locations = locations(&terminals);
         let matched: Vec<_> = terminals.into_iter().filter(|terminal| {
             workspace_id_of(terminal).as_deref() == Some(workspace_id)
         }).collect();
@@ -613,7 +612,7 @@ fn workspace_id_of(terminal: &Value) -> Option<String> {
         .or_else(|| field_string(terminal, "address").map(|address| format!("core:{address}")))
 }
 
-fn tab_id_of(terminal: &Value) -> Option<String> {
+pub(crate) fn tab_id_of(terminal: &Value) -> Option<String> {
     let labels = terminal.get("labels").unwrap_or(&Value::Null);
     field_string(labels, "herdr.tab")
         .map(str::to_owned)
@@ -817,7 +816,6 @@ pub fn translate_snapshot(
 pub fn locations(terminals: &[Value]) -> HashMap<String, (String, String)> {
     terminals.iter().filter_map(|terminal| {
         let address = field_string(terminal, "address")?;
-        let labels = terminal.get("labels").unwrap_or(&Value::Null);
         let workspace = workspace_id_of(terminal).unwrap_or_else(|| format!("core:{address}"));
         let tab = tab_id_of(terminal).unwrap_or_else(|| address.to_owned());
         Some((address.to_owned(), (workspace, tab)))

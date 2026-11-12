@@ -75,6 +75,8 @@ RESTORE_STATUS=0
 INSTALLED=0
 REVERSE_SET=0
 OLD_REVERSE=""
+OLD_SHOW_IME=""
+SHOW_IME_SAVED=0
 
 mkdir -p "$LOG_DIR" "$ARTIFACTS"
 
@@ -351,6 +353,14 @@ cleanup() {
     fi
   fi
 
+  if (( SHOW_IME_SAVED )); then
+    if [[ -z "$OLD_SHOW_IME" || "$OLD_SHOW_IME" == "null" ]]; then
+      adb_ shell settings delete secure show_ime_with_hard_keyboard >/dev/null 2>&1
+    else
+      adb_ shell settings put secure show_ime_with_hard_keyboard "$OLD_SHOW_IME" >/dev/null 2>&1
+    fi
+  fi
+
   ( stop_private_daemon ) >/dev/null 2>&1 || true
   ( stop_private_session ) >/dev/null 2>&1 || true
   if [[ -n "${STARTED_EMULATOR:-}" && -n "${SERIAL:-}" && "${KEEP_EMULATOR:-0}" != "1" ]]; then
@@ -420,6 +430,8 @@ done
   die "device '$SERIAL' did not finish booting (sys.boot_completed != 1)"
 
 # The keyboard checks need the IME to show while a hardware keyboard is present.
+OLD_SHOW_IME="$(adb_ shell settings get secure show_ime_with_hard_keyboard 2>/dev/null | tr -d '\r')"
+SHOW_IME_SAVED=1
 adb_ shell settings put secure show_ime_with_hard_keyboard 1 >/dev/null 2>&1 || true
 
 if [[ "${SKIP_BUILD:-0}" != "1" ]]; then
@@ -522,9 +534,12 @@ PRIVATE_LABELS="$(daemon_json "$PRIVATE_URL" /v1/snapshot 2>/dev/null |
 # -------------------------------------------------------------- device wiring
 say "installing $APK"
 # The cached AVD snapshot may carry a build signed by a previous runner's
-# debug keystore; `install -r` then fails with a signature mismatch. Uninstall
-# first (CI owns this throwaway device).
-adb_ uninstall "$PKG" >/dev/null 2>&1 || true
+# debug keystore; `install -r` then fails with a signature mismatch. Only CI
+# owns that throwaway device: uninstalling on a developer device would erase
+# their profiles and keystore aliases.
+if [[ "${CI:-}" == "true" ]]; then
+  adb_ uninstall "$PKG" >/dev/null 2>&1 || true
+fi
 adb_ install -r "$APK" >/dev/null || die "APK install failed"
 INSTALLED=1
 # A fresh install shows the POST_NOTIFICATIONS dialog above Home, so the smoke
