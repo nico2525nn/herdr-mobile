@@ -718,6 +718,7 @@ pub fn translate_snapshot(
             .filter(|app| !app.is_empty())
             .map(str::to_owned);
         let title = field_string(terminal, "title").map(str::to_owned);
+        let wheel_rows_per_event = crate::agent_config::wheel_rows_per_event(agent.as_deref());
         let pane = Pane {
             id: address.to_owned(),
             tab_id: tab_id.clone(),
@@ -734,6 +735,7 @@ pub fn translate_snapshot(
             // The core protocol exposes PTY data only: there is no host
             // scrollback offset to report.
             scroll: None,
+            wheel_rows_per_event,
         };
 
         let workspace_index = *workspace_indices.entry(workspace_id.clone()).or_insert_with(|| {

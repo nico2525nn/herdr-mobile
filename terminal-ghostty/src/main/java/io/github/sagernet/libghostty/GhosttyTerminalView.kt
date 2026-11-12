@@ -106,17 +106,17 @@ public class GhosttyTerminalView @JvmOverloads constructor(
             if (field != value) {
                 field = value
                 pageAccumulator = 0
-                wheelRowAccumulator = 0
+                wheelRowAccumulator = 0f
                 mouseWheelAccumulator = 0
             }
         }
 
     /** Rows of finger travel per wheel notch for the pane's agent. */
-    public var wheelRowsPerEvent: Int = 1
+    public var wheelRowsPerEvent: Float = 1f
         set(value) {
             if (field != value) {
                 field = value
-                wheelRowAccumulator = 0
+                wheelRowAccumulator = 0f
             }
         }
 
@@ -575,14 +575,14 @@ public class GhosttyTerminalView @JvmOverloads constructor(
                     // Agents differ in rows per wheel notch (pi 2, qwen 3);
                     // sending one notch per gesture made them scroll 2-3x too
                     // fast. Accumulate the remainder across gestures.
-                    val stride = wheelRowsPerEvent.coerceAtLeast(1)
+                    val stride = wheelRowsPerEvent.coerceAtLeast(0.01f)
                     wheelRowAccumulator += deltaRows
-                    val notches = wheelRowAccumulator / stride
+                    val notches = (wheelRowAccumulator / stride).toInt()
                     if (notches != 0) {
                         // Keep the sub-notch remainder, but drop a fling's
                         // excess instead of queuing a notch per row: flooded
                         // agents kept scrolling long after the finger stopped.
-                        wheelRowAccumulator = 0
+                        wheelRowAccumulator = 0f
                         val capped = notches.coerceIn(
                             -MAX_WHEEL_NOTCHES_PER_EVENT,
                             MAX_WHEEL_NOTCHES_PER_EVENT,
@@ -646,7 +646,7 @@ public class GhosttyTerminalView @JvmOverloads constructor(
     }
 
     private var pageAccumulator = 0
-    private var wheelRowAccumulator = 0
+    private var wheelRowAccumulator = 0f
     private var mouseWheelAccumulator = 0
 
 
@@ -1918,7 +1918,7 @@ public class GhosttyTerminalView @JvmOverloads constructor(
         }
         if (event.actionMasked == MotionEvent.ACTION_DOWN) {
             scroller.abortAnimation()
-            wheelRowAccumulator = 0
+            wheelRowAccumulator = 0f
             mouseWheelAccumulator = 0
             gestureDownCol = (event.x / cellWidth).toInt().coerceIn(0, cols - 1)
             gestureDownRow = rowAt(event.y)

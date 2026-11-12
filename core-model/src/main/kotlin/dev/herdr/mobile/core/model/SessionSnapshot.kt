@@ -25,6 +25,11 @@ data class Pane(
     val tokens: Map<String, String> = emptyMap(),
     /** Host scrollback state, when the daemon can report it. */
     val scroll: PaneScroll? = null,
+    /**
+     * Rows advanced by one SGR wheel notch when the host read a non-default
+     * agent config (OpenCode `scroll.speed`). Null uses [AgentMatrix].
+     */
+    val wheelRowsPerEvent: Double? = null,
 ) {
     /** True when the host can scroll this pane line-exactly (`pane.scroll`). */
     val hostScrollable: Boolean

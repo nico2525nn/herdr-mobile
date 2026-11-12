@@ -1,12 +1,15 @@
 # Changelog
 
-## Unreleased
+## 2.0.21 — 2026-11-12
 
 - OpenCode TUI scrolled 3x too fast: its `packages/tui/src/util/scroll.ts`
   defaults to `CustomSpeedScroll(3)`, so one SGR notch moves three dialog rows.
-  The wheel stride is now 3 (was 1) for both the client raw-wheel path and the
-  daemon fallback. A user `scroll.speed` override cannot be detected; Settings
-  → Scroll mode remains the escape hatch.
+  The daemon now reads OpenCode's global `cli.json` (XDG or
+  `OPENCODE_CONFIG_DIR`, JSONC comments/trailing commas supported) and stamps
+  `scroll.speed` onto the pane as `wheelRowsPerEvent`; the client sends one SGR
+  notch per that many rows. Missing config or `scroll.acceleration` falls back
+  to the matrix default (OpenCode 3). Fractional speeds are supported in the
+  view's wheel accumulator; Settings → Scroll mode remains the escape hatch.
 - CI: tool scripts are executable in git and the smoke uses `bash tools/ci.sh`;
   a fresh emulator gets POST_NOTIFICATIONS pre-granted so the dialog cannot
   cover Home.

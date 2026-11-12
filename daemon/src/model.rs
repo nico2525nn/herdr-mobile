@@ -89,6 +89,11 @@ pub struct Pane {
     /// none) and for the herdr-core backend, which exposes no such state.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub scroll: Option<ScrollInfo>,
+    /// Rows advanced by one SGR wheel notch when the agent's host config
+    /// overrides the client's audited default (currently OpenCode's
+    /// `scroll.speed`). Absent means "use the built-in matrix".
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub wheel_rows_per_event: Option<f64>,
 }
 
 /// Absolute host-scroll position, in rows from the live bottom.
@@ -428,6 +433,7 @@ mod tests {
             revision: 3,
             tokens: Default::default(),
             scroll: None,
+            wheel_rows_per_event: None,
         };
         let v = serde_json::to_value(&pane).unwrap();
         assert_eq!(v["tabId"], "w1:t1");
@@ -459,6 +465,7 @@ mod tests {
                 max_offset_from_bottom: 400,
                 viewport_rows: 52,
             }),
+            wheel_rows_per_event: None,
         };
         let v = serde_json::to_value(&pane).unwrap();
         assert_eq!(v["scroll"]["offsetFromBottom"], 12);

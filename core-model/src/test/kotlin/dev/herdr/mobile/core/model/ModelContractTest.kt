@@ -332,6 +332,19 @@ class ModelContractTest {
     }
 
     @Test
+    fun `pane decodes a host wheel stride override`() {
+        val json = kotlinx.serialization.json.Json
+        val pane = json.decodeFromString<Pane>(
+            """{"id":"w1:p1","tabId":"w1:t1","workspaceId":"w1","wheelRowsPerEvent":2.5}"""
+        )
+        assertEquals(2.5, pane.wheelRowsPerEvent)
+        val plain = json.decodeFromString<Pane>(
+            """{"id":"w1:p1","tabId":"w1:t1","workspaceId":"w1"}"""
+        )
+        assertNull(plain.wheelRowsPerEvent)
+    }
+
+    @Test
     fun `agent matrix brackets paste by kind`() {
         // Existing server-side-rendered TUIs whose local emulator cannot
         // observe the app's bracketed-paste mode.

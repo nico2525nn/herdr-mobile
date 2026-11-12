@@ -52,9 +52,13 @@ Core snapshot ordering has no native RPC: workspaces/tabs are reordered by
 group and sorted when translating the core snapshot.
 
 Wheel agents differ in transcript rows per SGR notch, so the client sends one
-notch per measured stride: Codex 1, Pi 2, OpenCode 3 (`packages/tui/src/util/scroll.ts`
-defaults `scroll.speed` to 3), Qwen 3. OpenCode users can override `scroll.speed`,
-so `Mouse wheel`/`Page keys` remain the escape hatch for a non-default config.
+notch per measured stride: Codex 1, Pi 2, OpenCode 3, Qwen 3. OpenCode's TUI
+defaults to `scroll.speed = 3` (`packages/tui/src/util/scroll.ts`), but the
+daemon reads its global `cli.json` (XDG/`OPENCODE_CONFIG_DIR`, JSONC allowed)
+and stamps the effective value onto each OpenCode pane as `wheelRowsPerEvent`;
+the client prefers that over the matrix. A missing/malformed file or
+`scroll.acceleration` falls back to the table default. `Mouse wheel`/`Page keys`
+remain the escape hatch when the value cannot be inferred.
 
 Explicit settings (`Local`, `Mouse wheel`, `Page keys`) override the table,
 except that a pane with host scrollback keeps the host's row-accurate scroll.

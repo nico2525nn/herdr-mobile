@@ -1154,6 +1154,7 @@ fn to_pane(p: &HerdrPane) -> Pane {
         revision: p.revision,
         tokens: p.tokens.clone(),
         scroll: p.scroll.map(ScrollInfo::from),
+        wheel_rows_per_event: crate::agent_config::wheel_rows_per_event(p.agent.as_deref()),
     }
 }
 
@@ -1397,6 +1398,7 @@ mod tests {
                             revision: 0,
                             tokens: Default::default(),
                             scroll: None,
+                            wheel_rows_per_event: None,
                         })
                         .collect(),
                 }],

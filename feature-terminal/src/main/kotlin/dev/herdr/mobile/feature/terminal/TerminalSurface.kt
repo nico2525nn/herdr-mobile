@@ -128,13 +128,16 @@ internal fun TerminalSurface(
         state.pane?.agent,
         state.pane?.hostScrollable,
     ) { scrollRoutingFor(settings.scrollMode, state.pane) }
-    LaunchedEffect(controller, routing, state.pane?.agent) {
+    LaunchedEffect(controller, routing, state.pane?.agent, state.pane?.wheelRowsPerEvent) {
         controller.view.scrollRouting = routing
         controller.view.allowRawWheel =
             settings.scrollMode == dev.herdr.mobile.core.model.ScrollMode.WHEEL ||
                 dev.herdr.mobile.core.model.AgentMatrix.useWheelScroll(state.pane?.agent)
         controller.view.wheelRowsPerEvent =
-            dev.herdr.mobile.core.model.AgentMatrix.wheelRowsPerEvent(state.pane?.agent)
+            state.pane?.wheelRowsPerEvent?.toFloat()
+                ?: dev.herdr.mobile.core.model.AgentMatrix
+                    .wheelRowsPerEvent(state.pane?.agent)
+                    .toFloat()
     }
     LaunchedEffect(controller) {
         controller.view.onRemoteScroll = { rows -> viewModel.scrollRemote(rows) }
