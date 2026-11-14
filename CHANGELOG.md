@@ -1,5 +1,12 @@
 # Changelog
 
+## 2.0.25 — 2026-11-14
+
+- Terminal cell backgrounds are coalesced into contiguous runs instead of one
+  `drawRect` per colored cell per frame. The pixels are unchanged; a colored TUI
+  region now costs one rectangle per run rather than hundreds per repaint.
+  Verified with the on-device scroll/tab smoke.
+
 ## 2.0.24 — 2026-11-14
 
 - TUI event sequencing now has one sequencer. `EventBus::publish` allocates the

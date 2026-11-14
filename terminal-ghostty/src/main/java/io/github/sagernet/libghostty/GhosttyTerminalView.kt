@@ -1153,14 +1153,36 @@ public class GhosttyTerminalView @JvmOverloads constructor(
                 fillPaint.color = defaultBackground
                 canvas.drawRect(0f, top, canvas.width.toFloat(), bottom, fillPaint)
             }
+            // Coalesce adjacent cells with the same background into one
+            // rectangle. A colored TUI region used to cost one drawRect per
+            // cell per frame; runs keep the same pixels with far fewer calls.
+            var runStart = -1
+            var runColor = 0
+            var runEnd = -1
+            fun flushBackgroundRun() {
+                if (runStart < 0) return
+                fillPaint.color = runColor
+                canvas.drawRect(runStart * cellWidth, top, runEnd * cellWidth, bottom, fillPaint)
+                runStart = -1
+                runEnd = -1
+            }
             for (col in 0 until colCount) {
                 val background = gridBackground[gridBase + col]
-                if (background == defaultBackground) continue
-                val cellSpan = if (gridFlags[gridBase + col] and FLAG_WIDE != 0) cellWidth * 2 else cellWidth
-                val x = col * cellWidth
-                fillPaint.color = background
-                canvas.drawRect(x, top, x + cellSpan, bottom, fillPaint)
+                if (background == defaultBackground) {
+                    flushBackgroundRun()
+                    continue
+                }
+                val span = if (gridFlags[gridBase + col] and FLAG_WIDE != 0) 2 else 1
+                if (runStart >= 0 && background == runColor && col == runEnd) {
+                    runEnd = col + span
+                } else {
+                    flushBackgroundRun()
+                    runStart = col
+                    runEnd = col + span
+                    runColor = background
+                }
             }
+            flushBackgroundRun()
         }
         if (!drawText) return
 
