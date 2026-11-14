@@ -233,6 +233,11 @@ public class GhosttyTerminalView @JvmOverloads constructor(
     private var cursorColor = 0
     private var cursorX = -1
     private var cursorY = -1
+    private var previousCursorY = -1
+    private var dirtyMinRow = -1
+    private var dirtyMaxRow = -1
+    private var lastDrawnCellHeight = 0
+    private var lastDrawnGridWidth = 0
     private var cursorStyle = CURSOR_STYLE_BLOCK
     private var cursorVisible = false
     private var cursorBlinks = false
@@ -955,8 +960,11 @@ public class GhosttyTerminalView @JvmOverloads constructor(
             buffer.int
             defaultBackground = buffer.int
             defaultForeground = buffer.int
+            previousCursorY = cursorY
             cursorX = buffer.int
             cursorY = buffer.int
+            dirtyMinRow = -1
+            dirtyMaxRow = -1
             cursorStyle = buffer.int
             cursorVisible = buffer.int != 0
             buffer.int
@@ -1018,7 +1026,35 @@ public class GhosttyTerminalView @JvmOverloads constructor(
             if (selectionActive) {
                 if (selectionBounds() == null) clearSelection() else invalidateActionModeContentRect()
             }
-            invalidate()
+            // Paint only the rows the engine marked dirty. The persistent
+            // bitmap still holds every other row, so a full-surface blit was
+            // pure fill cost on an echoed keystroke. Selection handles, kitty
+            // layers, smooth transitions and geometry changes need the whole
+            // view, so they keep the old full invalidate path.
+            val canPartial = dirtyKind != DIRTY_FULL && rowCount > 0 &&
+                kittyImages.isEmpty() && !selectionActive &&
+                scrollbarOffset + scrollbarLen >= scrollbarTotal &&
+                transitionShiftPx == 0f &&
+                lastDrawnCellHeight == cellHeight && lastDrawnGridWidth == gridWidthPx
+            if (canPartial) {
+                val offset = gridOffsetY - bitmapGridOffsetY
+                val band = dirtyPaintBand(
+                    full = false,
+                    rowCount = rowCount,
+                    dirtyMinRow = dirtyMinRow,
+                    dirtyMaxRow = dirtyMaxRow,
+                    cursorY = cursorY,
+                    previousCursorY = previousCursorY,
+                    cellHeight = cellHeight,
+                    gridOffsetY = offset,
+                    viewHeight = height,
+                )
+                if (band != null) invalidate(0, band.top, width, band.bottom) else invalidate()
+            } else {
+                invalidate()
+            }
+            lastDrawnCellHeight = cellHeight
+            lastDrawnGridWidth = gridWidthPx
 
             if (accessibilityManager.isEnabled && rowCount > 0 && !accessibilityTextPending) {
                 accessibilityTextPending = true
@@ -1047,6 +1083,8 @@ public class GhosttyTerminalView @JvmOverloads constructor(
         val textUnits = buffer.int
         val rowInGrid = rowIndex < rows
         if (rowInGrid) {
+            if (dirtyMinRow < 0 || rowIndex < dirtyMinRow) dirtyMinRow = rowIndex
+            if (rowIndex > dirtyMaxRow) dirtyMaxRow = rowIndex
             rowSelectionStart[rowIndex] = selectionStart
             rowSelectionEnd[rowIndex] = selectionEnd
             rowSelectionEndWide[rowIndex] = false

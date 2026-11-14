@@ -135,15 +135,10 @@ class PaneSessionController(
      */
     private fun onTargetGenerationChanged(snapshot: SessionSnapshot?) {
         targetOwnerGeneration = null
-        attachJob?.cancel()
-        ackJob?.cancel()
-        ackJob = null
-        pendingFlushJob?.cancel()
-        pendingFlushJob = null
+        cancelAttachmentWork(clearInput = true)
         val keep = targetFlow.value
         val old = backendFlow.value
         backendFlow.value = null
-        pendingInput.clear()
         if (old != null) releaseInBackground(old)
 
         val reopen = keep?.takeIf { snapshot?.pane(it.paneId) != null }
@@ -335,15 +330,10 @@ class PaneSessionController(
             }
         }
 
-        if (targetFlow.value != target) pendingInput.clear()
+        val targetChanged = targetFlow.value != target
         // A coalescing job from the old pane must not steal the new pane's
         // first gesture: it captures the old backend and drops the merged sum.
-        scrollFlushJob?.cancel()
-        scrollFlushJob = null
-        pendingScrollRows = 0
-        attachJob?.cancel()
-        pendingFlushJob?.cancel()
-        pendingFlushJob = null
+        cancelAttachmentWork(clearInput = targetChanged)
         targetFlow.value = target
         targetOwnerGeneration = generation
         attachJob = scope.launch { attach(target, generation) }
@@ -483,16 +473,34 @@ class PaneSessionController(
 
     // ---- lifecycle -----------------------------------------------------
 
+    /**
+     * One place that cancels every attachment-scoped job. These jobs form the
+     * controller's real state machine (target + generation + backend + queued
+     * input); scheduling them independently is how a stale ack, scroll or
+     * resize used to outlive its pane.
+     */
+    private fun cancelAttachmentWork(clearInput: Boolean) {
+        attachJob?.cancel()
+        attachJob = null
+        ackJob?.cancel()
+        ackJob = null
+        pendingFlushJob?.cancel()
+        pendingFlushJob = null
+        retryJob?.cancel()
+        retryJob = null
+        scrollFlushJob?.cancel()
+        scrollFlushJob = null
+        pendingScrollRows = 0
+        resizeJob?.cancel()
+        resizeJob = null
+        pendingResize = null
+        if (clearInput) pendingInput.clear()
+    }
+
     /** Activity ON_STOP keeps the Compose tree alive: release the stream. */
     fun releaseForBackground() {
         backgrounded = true
-        retryJob?.cancel()
-        retryJob = null
-        attachJob?.cancel()
-        ackJob?.cancel()
-        ackJob = null
-        scrollFlushJob?.cancel()
-        pendingScrollRows = 0
+        cancelAttachmentWork(clearInput = false)
         val backend = backendFlow.value ?: return
         backendFlow.value = null
         backendPaneId = null
@@ -522,15 +530,7 @@ class PaneSessionController(
 
     fun shutdown() {
         backgrounded = true
-        resizeJob?.cancel()
-        pendingResize = null
-        retryJob?.cancel()
-        attachJob?.cancel()
-        ackJob?.cancel()
-        ackJob = null
-        pendingFlushJob?.cancel()
-        scrollFlushJob?.cancel()
-        pendingScrollRows = 0
+        cancelAttachmentWork(clearInput = false)
         val backend = backendFlow.value
         backendFlow.value = null
         backendPaneId = null

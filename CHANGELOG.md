@@ -1,5 +1,23 @@
 # Changelog
 
+## 2.0.24 — 2026-11-14
+
+- TUI event sequencing now has one sequencer. `EventBus::publish` allocates the
+  seq, updates the cursor, broadcasts and stamps the snapshot under one mutex;
+  concurrent update/structural producers can no longer publish duplicate or
+  out-of-order numbers. `snapshot.required` still deliberately does not stamp
+  the stale snapshot. Added a 32-producer concurrency test.
+- The terminal view paints only the engine's dirty rows (union of the previous
+  and current cursor row), instead of re-blitting every pixel for an echoed
+  keystroke. Full repaint is retained for selection, images, smooth transitions,
+  scrollback and geometry changes. Bounds are extracted and unit-tested.
+- Attachment-scoped jobs (attach, read-ack, queued flush, reconnect retry,
+  scroll coalescing, resize settle) are cancelled through one lifecycle helper,
+  so a stale ack/scroll/resize can no longer outlive the pane transition.
+- CI adds a runtime compatibility matrix for API 29 and API 33 (notification
+  permission and ServiceCompat/foreground-service paths) and verifies the
+  32-bit release APK contains the armeabi-v7a native library.
+
 ## 2.0.23 — 2026-11-12
 
 - The terminal inbound lane is bounded (1024 records). OkHttp callbacks cannot

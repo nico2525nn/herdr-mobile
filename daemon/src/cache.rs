@@ -208,7 +208,9 @@ impl SessionCache {
         }
     }
 
-    fn next_seq(&self) -> i64 {
+    /// Allocate a unique sequence number. EventBus::publish is the only
+    /// intended caller; holding its publish lock makes allocation+send atomic.
+    pub(crate) fn allocate_seq(&self) -> i64 {
         self.seq.fetch_add(1, Ordering::SeqCst) + 1
     }
 
@@ -242,10 +244,22 @@ impl SessionCache {
     /// Bring the stored snapshot's seq up to the global cursor AFTER emitting
     /// the events for a mutation. mutate() runs before emit() mints seqs, so
     /// reading the cursor there always lags; call this once per mutation batch.
-    pub(crate) fn sync_snapshot_seq(&self) {
+    pub(crate) fn stamp_snapshot_seq(&self, seq: i64) {
         let mut inner = self.inner.write().expect("cache lock");
         if let Some(snapshot) = inner.snapshot.as_mut() {
-            snapshot.seq = self.seq.load(Ordering::SeqCst);
+            if seq > snapshot.seq {
+                snapshot.seq = seq;
+            }
+        }
+    }
+
+    pub(crate) fn sync_snapshot_seq(&self) {
+        let seq = self.seq.load(Ordering::SeqCst);
+        let mut inner = self.inner.write().expect("cache lock");
+        if let Some(snapshot) = inner.snapshot.as_mut() {
+            if seq > snapshot.seq {
+                snapshot.seq = seq;
+            }
         }
     }
 
@@ -262,7 +276,7 @@ impl SessionCache {
         message: Option<String>,
     ) -> SemanticEvent {
         SemanticEvent {
-            seq: self.next_seq(),
+            seq: 0,
             kind: kind.to_string(),
             at: Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, false),
             workspace_id,
@@ -899,11 +913,11 @@ pub async fn run_resync_loop(cache: Arc<SessionCache>, bus: Arc<EventBus>) {
                     match cache.reconcile().await {
                         Ok(events) => {
                             for e in events {
-                                bus.broadcast(e);
+                                bus.publish(&cache, e);
                             }
                             // Consistency tick last: the hash covers the
                             // catch-up events above (if any).
-                            bus.broadcast(cache.tick_event());
+                            bus.publish(&cache, cache.tick_event());
                         }
                         Err(e) => {
                             warn!("reconcile failed ({e:#}); breaking to resubscribe");
@@ -937,7 +951,7 @@ pub async fn run_resync_loop(cache: Arc<SessionCache>, bus: Arc<EventBus>) {
                     match cache.apply_herdr_event(&event).await {
                         Ok(events) => {
                             for e in events {
-                                bus.broadcast(e);
+                                bus.publish(&cache, e);
                             }
                             if is_structural {
                                 // pane.agent_status_changed needs concrete pane ids:
