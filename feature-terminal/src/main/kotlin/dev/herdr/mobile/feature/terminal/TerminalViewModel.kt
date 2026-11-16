@@ -64,27 +64,28 @@ data class TerminalUiState(
  * transitions done -> idle everywhere. [onFailure] receives the *reason* only;
  * the UI decides how to present it ([UiMessage.CommandFailed]).
  */
-internal suspend fun focusTabForReadAck(
+internal suspend fun focusPaneForReadAck(
     client: dev.herdr.mobile.core.network.HerdrSession,
-    tabId: String,
+    paneId: String,
     onFailure: (String) -> Unit,
-) {
-    try {
-        client.focusTab(tabId)
-        // Core has no server-side focus/seen transition; its snapshot maps a
-        // focused done pane to idle. Refetch so the relay retracts the alert
-        // and the status dot clears.
+): Boolean {
+    return try {
+        // `tab.focus` activates the tab's last pane; a split pane that finished
+        // in the background stays unseen. Focus the exact pane Herdr reports
+        // done, then refetch so the dot/notification clear deterministically.
+        client.focusPane(paneId)
         client.refresh()
+        true
     } catch (e: CancellationException) {
         throw e
     } catch (e: Exception) {
         val detail = e.message ?: "unknown error"
-        // The core backend has no focus RPC (501 unavailable); it cannot clear
-        // DONE, so reporting a persistent read-ack error on every open is
-        // noise. Real link failures still surface.
-        if (detail.contains("unavailable") || detail.contains("501")) return
+        // Older daemons/core lack the pane focus RPC; it cannot clear DONE, so
+        // a recurring error would be noise. Real link failures still surface.
+        if (detail.contains("unavailable") || detail.contains("501")) return false
         // Detail only: the UI renderer owns the sentence and its category.
         onFailure(detail)
+        false
     }
 }
 

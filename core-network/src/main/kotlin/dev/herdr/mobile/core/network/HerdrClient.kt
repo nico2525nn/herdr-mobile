@@ -125,6 +125,8 @@ class HerdrClient(
 
     override suspend fun focusTab(tabId: String) = commands.focusTab(tabId)
 
+    override suspend fun focusPane(paneId: String) = commands.focusPane(paneId)
+
     override suspend fun renameTab(tabId: String, label: String) = commands.renameTab(tabId, label)
 
     /** [focus] = false creates a workspace without moving the desktop's focus. */

@@ -35,6 +35,7 @@ class FakeHerdrSession(
     /** Snapshots of the arguments of each call, in order. */
     val openedPanes = mutableListOf<String>()
     val focusCalls = mutableListOf<String>()
+    val paneFocusCalls = mutableListOf<String>()
     val interruptCalls = mutableListOf<String>()
     val closeTabCalls = mutableListOf<String>()
     val closeWorkspaceCalls = mutableListOf<String>()
@@ -89,6 +90,11 @@ class FakeHerdrSession(
     override suspend fun focusTab(tabId: String) {
         failIfScripted()
         focusCalls += tabId
+    }
+
+    override suspend fun focusPane(paneId: String) {
+        failIfScripted()
+        paneFocusCalls += paneId
     }
 
     override suspend fun createTab(workspaceId: String, label: String?, focus: Boolean): String {

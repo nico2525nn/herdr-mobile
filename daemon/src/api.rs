@@ -27,6 +27,7 @@ pub fn router(state: AppState) -> Router {
         .route("/v1/events", get(events_ws))
         .route("/v1/terminal/{pane_id}", get(terminal_ws))
         .route("/v1/pane/{pane_id}/input", post(pane_input))
+        .route("/v1/pane/{pane_id}/focus", post(pane_focus))
         .route("/v1/pane/{pane_id}/interrupt", post(pane_interrupt))
         .route("/v1/pane/{pane_id}/resize", post(pane_resize))
         .route("/v1/agent/report", post(agent_report))
@@ -291,6 +292,55 @@ async fn panes(State(state): State<AppState>, headers: HeaderMap) -> Response {
     }
 }
 
+/// Focus/read-ack one pane. TUI `tab.focus` activates the tab's last pane,
+/// so a split sibling's done state would survive; pane focus targets exactly
+/// the pane the client is showing. The cache is refreshed before returning so
+/// the app's follow-up snapshot sees idle rather than a stale done.
+async fn pane_focus(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(pane_id): Path<String>,
+) -> Response {
+    if let Err(e) = check_auth(&state, &headers) {
+        return e;
+    }
+    if selected_backend(&state, &headers) == crate::config::Backend::Core {
+        let terminals = match state.core.list(false).await {
+            Ok(terminals) => terminals,
+            Err(error) => return core_error(error),
+        };
+        let focus = terminals
+            .iter()
+            .find(|terminal| terminal.get("address").and_then(Value::as_str) == Some(pane_id.as_str()))
+            .and_then(crate::herdrcore::CoreFocus::from_terminal);
+        let Some(focus) = focus else {
+            return api_error(StatusCode::NOT_FOUND, "not_found", format!("pane {pane_id} not found"));
+        };
+        if let Ok(mut read) = state.core_read.lock() {
+            read.insert(focus.pane_id.clone());
+        }
+        if let Ok(mut current) = state.core_focus.lock() {
+            *current = Some(focus);
+        }
+        return (StatusCode::OK, Json(json!({"ok":true}))).into_response();
+    }
+    if let Err(error) = state.cache.herdr_client().pane_focus(&pane_id).await {
+        return herdr_error(error);
+    }
+    // The focus RPC marks the server's seen state; refresh the cached snapshot
+    // so the app's immediate GET cannot race the status event and return done.
+    if tokio::time::timeout(
+        std::time::Duration::from_secs(3),
+        state.cache.refresh_from_herdr(),
+    )
+    .await
+    .is_err()
+    {
+        warn!("pane focus succeeded but cache refresh timed out");
+    }
+    (StatusCode::OK, Json(json!({"ok":true}))).into_response()
+}
+
 async fn pane_input(
     State(state): State<AppState>,
     headers: HeaderMap,
@@ -544,7 +594,14 @@ async fn tab_focus(
         return (StatusCode::OK, Json(json!({"ok":true}))).into_response();
     }
     match state.cache.herdr_client().tab_focus(&tab_id).await {
-        Ok(()) => (StatusCode::OK, Json(json!({"ok": true}))).into_response(),
+        Ok(()) => {
+            let _ = tokio::time::timeout(
+                std::time::Duration::from_secs(3),
+                state.cache.refresh_from_herdr(),
+            )
+            .await;
+            (StatusCode::OK, Json(json!({"ok": true}))).into_response()
+        }
         Err(e) => herdr_error(e),
     }
 }

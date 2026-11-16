@@ -1,5 +1,23 @@
 # Changelog
 
+## 2.0.26 — 2026-11-16
+
+- Read acknowledgment is now pane-scoped. The daemon exposes
+  `POST /v1/pane/{id}/focus` (Herdr `pane.focus`; core updates its local read
+  set) and refreshes the cached snapshot before returning. The app calls it
+  instead of `tab.focus`, which only activates the tab's last pane and leaves a
+  finished split sibling unseen.
+- A DONE transition for the pane already on screen now triggers read-ack
+  immediately. Previously the ack ran only in `openTarget`, so an agent that
+  finished while its terminal was open stayed DONE until the screen was
+  recreated; this matches the OMP "reopen" report.
+- Read-ack is deduplicated per done episode, throttled, cancelled on pane
+  transitions, and targets exactly the pane ID rather than the tab. Verified on
+  the emulator against a synthetic OpenCode done pane: opening and a visible
+  working→done transition both became idle.
+- Added regression tests asserting pane focus (not tab focus) on a visible done
+  transition and on the read-ack helper.
+
 ## 2.0.25 — 2026-11-14
 
 - Terminal cell backgrounds are coalesced into contiguous runs instead of one

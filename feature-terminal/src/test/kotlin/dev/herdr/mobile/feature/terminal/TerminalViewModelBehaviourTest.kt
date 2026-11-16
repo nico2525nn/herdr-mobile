@@ -1,6 +1,7 @@
 package dev.herdr.mobile.feature.terminal
 
 import dev.herdr.mobile.core.designsystem.text
+import dev.herdr.mobile.core.model.AgentStatus
 import dev.herdr.mobile.core.model.AppSettings
 import dev.herdr.mobile.core.model.ConnectionState
 import dev.herdr.mobile.core.model.Pane
@@ -146,6 +147,34 @@ class TerminalViewModelBehaviourTest {
             session.openedPanes,
         )
         assertEquals("w1", vm.uiState.value.target?.workspaceId)
+    }
+
+    @Test
+    fun `a done transition while the pane is visible focuses exactly that pane`() = runTest(dispatcher) {
+        val pane = pane("w1", "w1:t1", id = "w1:p1").copy(status = AgentStatus.IDLE)
+        val ws = workspace("w1", listOf(tab("w1:t1", "w1", listOf(pane))))
+        val session = FakeHerdrSession(snapshot(ws))
+        val vm = TerminalViewModel(session, null, null, null, settings())
+        advanceUntilIdle()
+        assertEquals(emptyList<String>(), session.paneFocusCalls)
+
+        // The agent finishes while the user is already looking at the pane.
+        session.publish(
+            HerdrClientState(
+                connection = ConnectionState.CONNECTED,
+                snapshot = snapshot(ws.copy(tabs = listOf(tab("w1:t1", "w1", listOf(pane.copy(status = AgentStatus.DONE))))))
+                    .copy(revision = 2, seq = 2),
+            ),
+        )
+        advanceUntilIdle()
+
+        assertEquals(
+            "read-ack must target the exact visible pane, not its tab",
+            listOf("w1:p1"),
+            session.paneFocusCalls,
+        )
+        assertEquals(emptyList<String>(), session.focusCalls)
+        assertTrue(session.refreshCalls > 0)
     }
 
     @Test

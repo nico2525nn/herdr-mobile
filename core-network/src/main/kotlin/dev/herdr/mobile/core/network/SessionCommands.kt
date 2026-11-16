@@ -38,6 +38,9 @@ internal class SessionCommands(
     suspend fun focusTab(tabId: String) =
         withContext(Dispatchers.IO) { api().focusTab(tabId) }
 
+    suspend fun focusPane(paneId: String) =
+        withContext(Dispatchers.IO) { api().focusPane(paneId) }
+
     suspend fun renameTab(tabId: String, label: String) =
         withContext(Dispatchers.IO) { api().renameTab(tabId, label) }
 

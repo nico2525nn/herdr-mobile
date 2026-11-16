@@ -357,6 +357,12 @@ impl HerdrClient {
         Ok(())
     }
 
+    /// Focus exactly one pane; unlike tab.focus this marks a split sibling seen.
+    pub async fn pane_focus(&self, pane_id: &str) -> Result<()> {
+        self.request("pane.focus", json!({"pane_id": pane_id})).await?;
+        Ok(())
+    }
+
     /// Returns the authoritative ordered tab ids (`tab_list` response).
     pub async fn tab_move(&self, tab_id: &str, insert_index: i64) -> Result<Vec<String>> {
         let result = self.request("tab.move", serde_json::json!({"tab_id": tab_id, "insert_index": insert_index})).await?;

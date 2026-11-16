@@ -158,6 +158,11 @@ class DaemonApi(
         post("v1/tab/${tabId.url()}/focus", "{}")
     }
 
+    /** Focus exactly the pane; `tab.focus` activates the tab's last pane, not a split sibling. */
+    suspend fun focusPane(paneId: String) {
+        post("v1/pane/${paneId.url()}/focus", "{}")
+    }
+
     suspend fun renameTab(tabId: String, label: String) {
         val body = buildJsonObject { put("label", label) }.toString()
         post("v1/tab/${tabId.url()}/rename", body)

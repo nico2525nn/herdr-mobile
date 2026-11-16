@@ -2,6 +2,7 @@ package dev.herdr.mobile.feature.terminal
 
 import dev.herdr.mobile.core.designsystem.UiMessage
 import dev.herdr.mobile.core.model.ConnectionState
+import dev.herdr.mobile.core.model.Pane
 import dev.herdr.mobile.core.model.SessionSnapshot
 import dev.herdr.mobile.core.network.HerdrSession
 import kotlinx.coroutines.CoroutineScope
@@ -71,6 +72,8 @@ class PaneSessionController(
 
     private var attachJob: Job? = null
     private var ackJob: Job? = null
+    private var readAckPaneId: String? = null
+    private var lastReadAckAttemptAt = 0L
 
     /** Pane the live backend belongs to (release ordering needs it). */
     private var backendPaneId: String? = null
@@ -122,9 +125,15 @@ class PaneSessionController(
                     resolved,
                 )?.let(onMessage)
                 openTarget(resolved, preserveMessage = true)
+                snapshot.pane(resolved.paneId)?.let { pane ->
+                    maybeAckDone(pane, resolved, session.targetGeneration)
+                }
             }
         } else {
             reconcileVanishedTarget(snapshot, current)
+            snapshot.pane(current.paneId)?.let { pane ->
+                maybeAckDone(pane, current, session.targetGeneration)
+            }
         }
     }
 
@@ -313,23 +322,6 @@ class PaneSessionController(
             targetOwnerGeneration != generation
         ) return
 
-        // Read-ack: opening a DONE pane focuses its tab server-side, which
-        // transitions done -> idle everywhere. Never steal focus for
-        // working/idle opens, and never let a stale ack overwrite a message.
-        // A rapid A->B switch must also cancel A's in-flight focus call: it
-        // would otherwise steal desktop focus back to A after B is visible.
-        ackJob?.cancel()
-        ackJob = null
-        if (pane.status == dev.herdr.mobile.core.model.AgentStatus.DONE) {
-            ackJob = scope.launch {
-                focusTabForReadAck(session, target.tabId) { detail ->
-                    if (session.targetGeneration == generation) {
-                        onMessage(UiMessage.CommandFailed(UiMessage.CommandFailed.Command.READ_ACK, detail))
-                    }
-                }
-            }
-        }
-
         val targetChanged = targetFlow.value != target
         // A coalescing job from the old pane must not steal the new pane's
         // first gesture: it captures the old backend and drops the merged sum.
@@ -337,6 +329,33 @@ class PaneSessionController(
         targetFlow.value = target
         targetOwnerGeneration = generation
         attachJob = scope.launch { attach(target, generation) }
+        maybeAckDone(pane, target, generation)
+    }
+
+    /**
+     * Mark a DONE pane read exactly once per done episode, including when the
+     * user is already looking at it. The old open-time-only ack required
+     * leaving and reopening the terminal after the agent finished.
+     */
+    private fun maybeAckDone(pane: Pane, target: TerminalTarget, generation: Long) {
+        if (pane.status != dev.herdr.mobile.core.model.AgentStatus.DONE) {
+            if (readAckPaneId == pane.id) readAckPaneId = null
+            return
+        }
+        if (readAckPaneId == pane.id || ackJob?.isActive == true) return
+        if (targetFlow.value != target || targetOwnerGeneration != generation) return
+        val now = System.currentTimeMillis()
+        if (now - lastReadAckAttemptAt < 1_000) return
+        lastReadAckAttemptAt = now
+        readAckPaneId = pane.id
+        ackJob = scope.launch {
+            val ok = focusPaneForReadAck(session, pane.id) { detail ->
+                if (session.targetGeneration == generation) {
+                    onMessage(UiMessage.CommandFailed(UiMessage.CommandFailed.Command.READ_ACK, detail))
+                }
+            }
+            if (!ok) readAckPaneId = null
+        }
     }
 
     private suspend fun attach(target: TerminalTarget, generation: Long) {
@@ -484,6 +503,8 @@ class PaneSessionController(
         attachJob = null
         ackJob?.cancel()
         ackJob = null
+        readAckPaneId = null
+        lastReadAckAttemptAt = 0
         pendingFlushJob?.cancel()
         pendingFlushJob = null
         retryJob?.cancel()

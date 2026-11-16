@@ -38,6 +38,9 @@ interface HerdrSession {
 
     suspend fun focusTab(tabId: String)
 
+    /** Focus exactly this pane (read-ack for split tabs; tab focus is not enough). */
+    suspend fun focusPane(paneId: String)
+
     suspend fun createTab(workspaceId: String, label: String?, focus: Boolean = true): String
 
     suspend fun closeTab(tabId: String)
