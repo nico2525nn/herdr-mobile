@@ -129,6 +129,8 @@ if [ "$NO_SERVICE" != "1" ] && command -v systemctl >/dev/null 2>&1; then
     fi
     systemctl --user daemon-reload >/dev/null 2>&1 || true
     if systemctl --user enable --now herdr-mobile-daemon >/dev/null 2>&1; then
+        # An already-running unit keeps the old inode after the binary update.
+        systemctl --user try-restart herdr-mobile-daemon >/dev/null 2>&1 || true
         say "herdr-mobile-daemon enabled (systemctl --user status herdr-mobile-daemon)"
     else
         warn "could not enable herdr-mobile-daemon; start it with: systemctl --user enable --now herdr-mobile-daemon"
