@@ -4,6 +4,7 @@ import android.graphics.Typeface
 import androidx.compose.foundation.layout.ExperimentalLayoutApi
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.WindowInsets
@@ -310,6 +311,19 @@ internal fun TerminalSurface(
             AndroidView(
                 factory = { controller.view },
                 modifier = Modifier.fillMaxSize(),
+            )
+        }
+        val hostScroll = state.pane?.scroll
+        if (routing == ScrollRouting.REMOTE_HOST && hostScroll != null &&
+            hostScroll.maxOffsetFromBottom > 0
+        ) {
+            RemoteScrollbar(
+                scroll = hostScroll,
+                onScrollTo = viewModel::scrollHostTo,
+                modifier = Modifier
+                    .align(Alignment.CenterEnd)
+                    .fillMaxHeight()
+                    .padding(vertical = 8.dp),
             )
         }
         if (detached != null) {

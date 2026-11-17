@@ -51,23 +51,6 @@ struct BridgeState {
     closing: bool,
 }
 
-/// Last host-scroll state seen for a session's pane. `resolved_at` only
-/// matters for scrollback-less states, which are cheap to re-read.
-struct HostScroll {
-    info: ScrollInfo,
-    resolved_at: tokio::time::Instant,
-}
-
-/// How long a scrollback-less scroll state is trusted before it is re-read
-/// (Herdr grows `max_offset_from_bottom` as new output arrives).
-const HOST_SCROLL_RECHECK: std::time::Duration = std::time::Duration::from_secs(3);
-
-impl HostScroll {
-    fn is_fresh(&self) -> bool {
-        self.resolved_at.elapsed() < HOST_SCROLL_RECHECK
-    }
-}
-
 /// Geometry to hand back to Herdr on detach.
 #[derive(Clone, Copy, Debug)]
 struct RestoreViewport {
@@ -94,6 +77,8 @@ enum SessionCommand {
     /// (they scroll local prelude history instantly, no RTT).
     Scroll(ScrollAction),
     Mouse(String, String, u32, u32),
+    /// Absolute host-scroll offset (scrollbar drag), in rows from live.
+    HostScroll(u64),
     Release,
 }
 
@@ -195,10 +180,6 @@ impl TerminalRegistry {
     /// screen per press, so a 3-row swipe used to jump three screens. Herdr's
     /// absolute host offset moves exactly the rows asked for.
     ///
-    /// `known` is this session's last observed scroll state; it is refreshed
-    /// from every `pane.scroll` response so consecutive gestures accumulate
-    /// exactly instead of re-reading a stale base.
-    ///
     /// Returns `false` when the caller must fall back to `terminal.scroll`:
     /// the pane has no host scrollback, Herdr reports no scroll state for it,
     /// or the RPC failed.
@@ -207,22 +188,12 @@ impl TerminalRegistry {
         pane_id: &str,
         up: bool,
         rows: u32,
-        known: &mut Option<HostScroll>,
     ) -> bool {
-        let base = match known {
-            // A state with scrollback stays authoritative: every scroll
-            // response refreshes it. A scrollback-less state is re-resolved
-            // after a TTL so history gained by later output is noticed without
-            // paying an RPC per gesture.
-            Some(known) if known.info.has_scrollback() || known.is_fresh() => known.info,
-            _ => {
-                let Some(info) = self.pane_scroll_state(pane_id).await else {
-                    *known = None;
-                    return false;
-                };
-                *known = Some(HostScroll { info, resolved_at: tokio::time::Instant::now() });
-                info
-            }
+        // Always re-read the live offset before applying a RELATIVE gesture.
+        // A cached offset from before a desktop scrollbar/wheel move made the
+        // next phone drag jump to the wrong absolute position.
+        let Some(base) = self.pane_scroll_state(pane_id).await else {
+            return false;
         };
         if !base.has_scrollback() {
             // Main-screen TUIs keep no host scrollback: page keys are the only
@@ -239,9 +210,6 @@ impl TerminalRegistry {
             // same offset). Scrolling up against a max that may have grown
             // since the last report is re-resolved next gesture; down at the
             // live bottom is stable and keeps its state.
-            if up {
-                *known = None;
-            }
             return true;
         };
         match self.herdr.pane_scroll(pane_id, target).await {
@@ -250,12 +218,11 @@ impl TerminalRegistry {
                     Some(info) => info,
                     None => ScrollInfo { offset_from_bottom: target, ..base },
                 };
-                *known = Some(HostScroll { info, resolved_at: tokio::time::Instant::now() });
+                let _ = info;
                 true
             }
             Err(error) => {
                 warn!("pane.scroll failed for {pane_id} (target {target}): {error:#}; using page keys");
-                *known = None;
                 false
             }
         }
@@ -415,9 +382,6 @@ async fn run_session(
     // restarts on every arriving command, starving sustained resize streams.
     // The deadline is set once when the first pending resize lands.
     let mut flush_at: Option<tokio::time::Instant> = None;
-    // Last host-scroll state observed for this pane, kept per session so a
-    // gesture stream accumulates rows exactly (see `host_scroll`).
-    let mut host_scroll: Option<HostScroll> = None;
     // Process kind changes when a shell launches less/vim; a one-second cache
     // avoids an RPC per scroll frame without pinning a stale classification.
     let mut shell_probe: Option<(bool, tokio::time::Instant)> = None;
@@ -458,7 +422,7 @@ async fn run_session(
                     SessionCommand::Scroll(action) => {
                         let host_handled = match action {
                             ScrollAction::PageKey { up, rows } => {
-                                registry.host_scroll(&pane_id, up, rows, &mut host_scroll).await
+                                registry.host_scroll(&pane_id, up, rows).await
                             }
                             // Wheel routing is the app's own viewport, never
                             // the host scrollback.
@@ -489,6 +453,14 @@ async fn run_session(
                             && child.send_scroll(action).await.is_err()
                         {
                             break;
+                        }
+                    }
+                    SessionCommand::HostScroll(offset) => {
+                        match herdr.pane_scroll(&pane_id, offset).await {
+                            Ok(Some(_)) | Ok(None) => {}
+                            Err(error) => {
+                                warn!("pane.scroll absolute {offset} failed for {pane_id}: {error:#}");
+                            }
                         }
                     }
                     SessionCommand::Mouse(action, button, column, row) => {
@@ -1021,6 +993,11 @@ async fn handle_client_text(
             if action != ScrollAction::Ignore {
                 send(SessionCommand::Scroll(action)).await;
             }
+            true
+        }
+        "host_scroll" => {
+            let offset = value.get("offsetFromBottom").and_then(|o| o.as_u64()).unwrap_or(0);
+            send(SessionCommand::HostScroll(offset)).await;
             true
         }
         "mouse" => {

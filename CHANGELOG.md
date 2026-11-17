@@ -1,5 +1,28 @@
 # Changelog
 
+## 2.1.0 — 2026-11-18
+
+- **TUI host scrollbar support.** The daemon now subscribes to Herdr
+  `pane.scroll_changed` for every known pane, folds the current
+  offset/max/viewport into its snapshot, and broadcasts a foldable
+  `pane.scroll_changed` event. The client no longer waits for a full snapshot
+  to notice a desktop scrollbar/wheel move.
+- **No more jump after a desktop scroll.** Relative phone scrolls resolve the
+  live `pane.get` offset on every coalesced gesture instead of trusting a cached
+  base from before the desktop moved. The app paints a host scrollbar overlay
+  (replacing the local prelude bar in REMOTE_HOST mode) and supports dragging it:
+  a new `host_scroll` terminal record sets the absolute `pane.scroll` offset,
+  coalesced to 40 ms.
+- Scroll position is included in the 60 s consistency hash, so a dropped scroll
+  event is healed by the tick instead of leaving a stale thumb forever.
+- Added `install.sh`: `curl -fsSL .../install.sh | sh` resolves the latest
+  release, installs `herdr-mobile-daemon` under `~/.local/bin`, enables a
+  systemd user unit on loopback, and falls back to a tagged source build when
+  no prebuilt asset exists. `tools/package-daemon.sh` builds the release
+  tarball.
+- Tests cover scroll-event folding, host-scroll control framing, daemon cache
+  updates, and the existing API 29/33 + 32-bit matrix.
+
 ## 2.0.27 — 2026-11-17
 
 - Fixed the attach storm on a missing/stale pane (reported as `w1:p1`). The

@@ -175,7 +175,12 @@ data class SessionSnapshot(
         val canonical = workspaces
             .flatMap { it.tabs }
             .flatMap { it.panes }
-            .joinToString(separator = "") { "${it.id}=${it.status.wire};" }
+            .joinToString(separator = "") {
+                val scroll = it.scroll?.let { s ->
+                    "${s.offsetFromBottom}:${s.maxOffsetFromBottom}:${s.viewportRows}"
+                } ?: "-"
+                "${it.id}=${it.status.wire}@$scroll;"
+            }
         return fnv1a64Hex(canonical.toByteArray(Charsets.UTF_8))
     }
 }

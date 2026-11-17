@@ -108,6 +108,36 @@ class TerminalSocketReleaseTest {
     }
 
     @Test
+    fun hostScrollDragSendsAnAbsoluteControlFrame() {
+        val fake = FakeWebSocket()
+        val socket = TerminalSocket(
+            http = CapturingClient(fake),
+            endpoint = DaemonEndpoint.direct("http://127.0.0.1:1", null, "test"),
+            paneId = "w1:pX",
+            cols = 80,
+            rows = 24,
+            takeover = false,
+            scope = kotlinx.coroutines.CoroutineScope(kotlinx.coroutines.Dispatchers.Unconfined),
+        )
+        socket.connect()
+        kotlinx.coroutines.runBlocking { socket.scrollHostTo(42) }
+
+        val deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(2)
+        while (System.nanoTime() < deadline &&
+            fake.sentText.none { it.contains("\"type\":\"host_scroll\"") }
+        ) {
+            Thread.sleep(5)
+        }
+        assertTrue(
+            "host scroll control was not sent: ${fake.sentText}",
+            fake.sentText.any {
+                it.contains("\"type\":\"host_scroll\"") &&
+                    it.contains("\"offsetFromBottom\":42")
+            },
+        )
+    }
+
+    @Test
     fun backendModeIsSentOnTerminalSocketHandshake() {
         val fake = FakeWebSocket()
         val client = CapturingClient(fake)

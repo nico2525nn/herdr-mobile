@@ -25,7 +25,8 @@ remote host). Kotlin/Compose app + Rust daemon in `daemon/`.
   main + tag, build with `-PrequireSigning` and
   `HERDR_RELEASE_KEYSTORE_PASSWORD`, verify with `apksigner`, then
   `gh release create` with **two per-ABI signed APKs** (arm64-v8a default,
-  `-Pabi=armeabi-v7a` for 32-bit devices); never attach a universal APK.
+  `-Pabi=armeabi-v7a` for 32-bit devices) plus the Linux daemon tarball from
+  `tools/package-daemon.sh` and `install.sh`; never attach a universal APK.
 
 ## Layout
 

@@ -159,6 +159,32 @@ class ModelContractTest {
     }
 
     @Test
+    fun `reducer folds host scrollbar updates without a refetch`() {
+        val pane = Pane(id = "w1:p1", tabId = "w1:t1", workspaceId = "w1")
+        val tab = Tab(id = "w1:t1", workspaceId = "w1", panes = listOf(pane))
+        val workspace = Workspace(id = "w1", label = "w", tabs = listOf(tab))
+        val snapshot = SessionSnapshot(revision = 1, seq = 10, workspaces = listOf(workspace))
+        val event = SemanticEvent(
+            seq = 11,
+            type = SemanticEvent.TYPE_PANE_SCROLL_CHANGED,
+            workspaceId = "w1",
+            paneId = "w1:p1",
+            revision = 2,
+            detail = json.parseToJsonElement(
+                """{"scroll":{"offsetFromBottom":12,"maxOffsetFromBottom":400,"viewportRows":52}}"""
+            ).jsonObject,
+        )
+
+        val outcome = SnapshotReducer.apply(snapshot, event)
+        assertTrue(outcome is SnapshotReducer.Outcome.Applied)
+        val updated = (outcome as SnapshotReducer.Outcome.Applied).snapshot
+        assertEquals(11, updated.seq)
+        assertEquals(12L, updated.pane("w1:p1")?.scroll?.offsetFromBottom)
+        assertEquals(400L, updated.pane("w1:p1")?.scroll?.maxOffsetFromBottom)
+        assertEquals(52L, updated.pane("w1:p1")?.scroll?.viewportRows)
+    }
+
+    @Test
     fun `reducer reports a gap instead of patching`() {
         val snapshot = SessionSnapshot(revision = 1, seq = 10)
         val outcome = SnapshotReducer.apply(

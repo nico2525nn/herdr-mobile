@@ -5,6 +5,20 @@ Android client. Herdr stays the single source of truth: this daemon caches Herdr
 to answer the phone quickly, and rebuilds everything from Herdr on every reconnect and on
 every structural change.
 
+## Install (release)
+
+On the host that runs Herdr:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/nico2525nn/herdr-mobile/main/install.sh | sh
+```
+
+This installs `~/.local/bin/herdr-mobile-daemon`, writes/enables
+`herdr-mobile-daemon.service` (loopback `127.0.0.1:8765`), and preserves an
+existing unit. Environment overrides: `HERDR_MOBILE_VERSION`,
+`HERDR_MOBILE_PREFIX`, `HERDR_MOBILE_NO_SERVICE=1`, `HERDR_MOBILE_TOKEN`.
+A source build fallback requires `cargo`.
+
 ## Build
 
 ```bash
@@ -94,11 +108,12 @@ Direct tailnet (bind the tailnet address explicitly):
 | `POST` | `/v1/pane/{id}/input` | `{"encoding":"utf-8"\|"base64","text":"…"}` |
 | `POST` | `/v1/pane/{id}/interrupt` | Sends `ctrl+c` |
 | `POST` | `/v1/pane/{id}/resize` | `{"cols":n,"rows":n}` via a short-lived control child |
+| `POST` | `/v1/pane/{id}/focus` | Focus/read-ack that exact pane |
 | `POST` | `/v1/agent/report` | `{"paneId","status","agent","message?","source?"}` → `pane.report_agent` |
 | `POST` | `/v1/tab` | `{"workspaceId","label?"}` → `{"ok":true,"tabId"}` |
 
 Terminal socket client→daemon frames: binary = raw input bytes; text = `resize`, `scroll`,
-`mouse`, `release` control records. Unknown text frames are ignored, never fatal.
+`host_scroll`, `mouse`, `release` control records. Unknown text frames are ignored, never fatal.
 
 `scroll` carries `{"direction":"up"|"down","lines":N}` with `N` counted in terminal
 ROWS (not pages). Per backend:
@@ -120,7 +135,7 @@ The `/v1/snapshot` pane object exposes Herdr's scroll state when reported:
 
 Semantic event types: `stream.ready`, `snapshot.required`, `workspace.created|closed|
 renamed|status_changed`, `tab.created|closed|renamed|status_changed`,
-`pane.created|closed|status_changed`. `seq` is global and strictly increasing; a gap means
+`pane.created|closed|status_changed|scroll_changed`. `seq` is global and strictly increasing; a gap means
 the client must refetch `/v1/snapshot`.
 
 ## Herdr subscription notes

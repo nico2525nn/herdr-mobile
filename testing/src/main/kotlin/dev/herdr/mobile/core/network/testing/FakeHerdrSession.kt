@@ -168,6 +168,7 @@ class FakeTerminalConnection(
     val sentData = mutableListOf<ByteArray>()
     val sentText = mutableListOf<String>()
     val scrolls = mutableListOf<Triple<Int, Boolean, String>>()
+    val hostScrolls = mutableListOf<Long>()
     var released = 0
         private set
 
@@ -198,6 +199,10 @@ class FakeTerminalConnection(
 
     override suspend fun scrollRemote(lines: Int, allowPageKey: Boolean, unit: String) {
         scrolls += Triple(lines, allowPageKey, unit)
+    }
+
+    override suspend fun scrollHostTo(offsetFromBottom: Long) {
+        hostScrolls += offsetFromBottom
     }
 
     override suspend fun mouse(action: String, button: String, column: Int, row: Int) = Unit

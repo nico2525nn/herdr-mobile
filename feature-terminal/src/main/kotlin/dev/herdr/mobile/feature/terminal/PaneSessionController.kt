@@ -274,8 +274,31 @@ class PaneSessionController(
         }
     }
 
+    /**
+     * Absolute host scrollbar drag. Coalesce to the latest requested offset so
+     * a 60 Hz drag does not queue a daemon RPC per pixel, while preserving the
+     * final position.
+     */
+    fun scrollHostTo(offsetFromBottom: Long) {
+        val backend = backendFlow.value ?: return
+        pendingHostOffset = offsetFromBottom
+        if (hostScrollJob?.isActive == true) return
+        val generation = targetOwnerGeneration ?: return
+        hostScrollJob = scope.launch {
+            delay(SCROLL_COALESCE_MS)
+            val offset = pendingHostOffset ?: return@launch
+            pendingHostOffset = null
+            val current = backendFlow.value ?: return@launch
+            val currentGeneration = targetOwnerGeneration ?: return@launch
+            if (!isCurrent(current, currentGeneration)) return@launch
+            runCatching { current.scrollHostTo(offset) }
+        }
+    }
+
     private var pendingScrollRows = 0
     private var scrollFlushJob: Job? = null
+    private var pendingHostOffset: Long? = null
+    private var hostScrollJob: Job? = null
     private var retryJob: Job? = null
     private var backgrounded = false
 
@@ -530,6 +553,9 @@ class PaneSessionController(
         scrollFlushJob?.cancel()
         scrollFlushJob = null
         pendingScrollRows = 0
+        hostScrollJob?.cancel()
+        hostScrollJob = null
+        pendingHostOffset = null
         resizeJob?.cancel()
         resizeJob = null
         pendingResize = null

@@ -93,6 +93,21 @@ object TerminalProtocol {
         }
     }
 
+    /** Client to daemon: set the absolute Herdr host-scroll offset (scrollbar drag). */
+    @Serializable
+    data class HostScroll(
+        val offsetFromBottom: Long,
+        @EncodeDefault val type: String = TYPE,
+    ) {
+        init {
+            require(offsetFromBottom >= 0) { "offsetFromBottom must be non-negative" }
+        }
+
+        companion object {
+            const val TYPE = "host_scroll"
+        }
+    }
+
     @Serializable
     data class Mouse(
         val action: String,

@@ -34,6 +34,20 @@ cd daemon && cargo build --release
 
 Full install, token, systemd and API docs: [`daemon/README.md`](daemon/README.md).
 
+## Install the daemon
+
+On the host that runs Herdr:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/nico2525nn/herdr-mobile/main/install.sh | sh
+```
+
+The installer downloads the matching GitHub release binary (or builds from the
+tag when no prebuilt asset exists), installs it under `~/.local/bin`, and enables
+a user systemd unit on `127.0.0.1:8765`. Options: `HERDR_MOBILE_VERSION`,
+`HERDR_MOBILE_PREFIX`, `HERDR_MOBILE_NO_SERVICE=1`, `HERDR_MOBILE_TOKEN`.
+SSH tunneling remains the recommended phone → daemon path.
+
 ## App development (emulator)
 
 Prerequisites: Android SDK, KVM, an API 36+ AVD. From the project root:

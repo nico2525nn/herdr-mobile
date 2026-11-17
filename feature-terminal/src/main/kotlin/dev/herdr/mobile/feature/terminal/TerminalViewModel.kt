@@ -156,6 +156,9 @@ class TerminalViewModel(
     /** Host-owned scrollback: pane.scroll rows. */
     fun scrollRemote(rows: Int) = panes.scrollRemote(rows)
 
+    /** Host scrollbar drag: absolute rows from the live bottom. */
+    fun scrollHostTo(offsetFromBottom: Long) = panes.scrollHostTo(offsetFromBottom)
+
     fun openTarget(target: TerminalTarget) = panes.openTarget(target)
 
     fun openTab(workspaceId: String, tabId: String) = panes.openTab(workspaceId, tabId)

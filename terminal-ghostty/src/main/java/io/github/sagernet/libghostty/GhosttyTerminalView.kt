@@ -111,6 +111,11 @@ public class GhosttyTerminalView @JvmOverloads constructor(
             }
         }
 
+    /** The engine owns a scrollbar only when the host does not own the viewport. */
+    private val localScrollUi: Boolean
+        get() = scrollRouting != ScrollRouting.REMOTE_HOST &&
+            scrollRouting != ScrollRouting.REMOTE_SERVER
+
     /** Rows of finger travel per wheel notch for the pane's agent. */
     public var wheelRowsPerEvent: Float = 1f
         set(value) {
@@ -380,7 +385,9 @@ public class GhosttyTerminalView @JvmOverloads constructor(
 
             override fun onSingleTapUp(e: MotionEvent): Boolean {
                 val handled = session?.withTerminal { handle ->
-                    if (scrollbarTotal > 0 && scrollbarOffset + scrollbarLen < scrollbarTotal) {
+                    if (localScrollUi &&
+                        scrollbarTotal > 0 && scrollbarOffset + scrollbarLen < scrollbarTotal
+                    ) {
                         val slop = JUMP_CHIP_RADIUS_DP * JUMP_CHIP_TAP_SLOP_SCALE * resources.displayMetrics.density
                         if (hypot(e.x - jumpChipCenterX, e.y - jumpChipCenterY) <= slop) {
                             GhosttyVt.nativeScrollToBottom(handle)
@@ -1849,7 +1856,7 @@ public class GhosttyTerminalView @JvmOverloads constructor(
     }
 
     private fun drawScrollIndicator(canvas: Canvas) {
-        if (scrollbarTotal <= scrollbarLen) return
+        if (!localScrollUi || scrollbarTotal <= scrollbarLen) return
         val elapsed = SystemClock.uptimeMillis() - lastScrollActivityAt
         if (elapsed > SCROLLBAR_FADE_END_MS) return
         val alpha = if (elapsed <= SCROLLBAR_FADE_START_MS) {
@@ -1878,7 +1885,9 @@ public class GhosttyTerminalView @JvmOverloads constructor(
     }
 
     private fun drawJumpToBottomChip(canvas: Canvas) {
-        if (scrollbarTotal <= 0 || scrollbarOffset + scrollbarLen >= scrollbarTotal) return
+        if (!localScrollUi || scrollbarTotal <= 0 ||
+            scrollbarOffset + scrollbarLen >= scrollbarTotal
+        ) return
         val density = resources.displayMetrics.density
         val radius = JUMP_CHIP_RADIUS_DP * density
         jumpChipPaint.style = Paint.Style.FILL

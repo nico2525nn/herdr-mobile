@@ -55,5 +55,8 @@ class ConnectionTerminalBackend(
 
     suspend fun scrollRemote(lines: Int, unit: String) =
         inner.scrollRemote(lines, allowPageKey = false, unit = unit)
+
+    suspend fun scrollHostTo(offsetFromBottom: Long) =
+        inner.scrollHostTo(offsetFromBottom)
     suspend fun release() = inner.release()
 }

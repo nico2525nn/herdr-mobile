@@ -85,6 +85,9 @@ interface TerminalConnection {
     suspend fun sendText(text: String)
     suspend fun resize(cols: Int, rows: Int)
     suspend fun scrollRemote(lines: Int, allowPageKey: Boolean, unit: String)
+
+    /** TUI host scrollbar drag: set the absolute offset from the live bottom. */
+    suspend fun scrollHostTo(offsetFromBottom: Long)
     suspend fun mouse(action: String, button: String, column: Int, row: Int)
     suspend fun release()
 
@@ -303,6 +306,15 @@ class TerminalSocket(
                 allowPageKey = endpoint.backendMode == BackendMode.CORE && allowPageKey,
                 unit = unit,
             ),
+        )
+        outbound.send(OutboundFrame.Text(record))
+    }
+
+    override suspend fun scrollHostTo(offsetFromBottom: Long) {
+        if (endpoint.backendMode != BackendMode.TUI) return
+        val record = HerdrJson.encodeToString(
+            TerminalProtocol.HostScroll.serializer(),
+            TerminalProtocol.HostScroll(offsetFromBottom),
         )
         outbound.send(OutboundFrame.Text(record))
     }

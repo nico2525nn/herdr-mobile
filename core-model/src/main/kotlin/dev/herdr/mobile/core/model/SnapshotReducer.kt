@@ -1,6 +1,7 @@
 package dev.herdr.mobile.core.model
 
 import kotlinx.serialization.json.JsonNull
+import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.contentOrNull
@@ -58,6 +59,27 @@ object SnapshotReducer {
             SemanticEvent.TYPE_PANE_STATUS_CHANGED ->
                 snapshot.workspaces.map { w ->
                     if (w.id == event.workspaceId) w.withPaneStatus(event) else w
+                }
+
+            SemanticEvent.TYPE_PANE_SCROLL_CHANGED ->
+                snapshot.workspaces.map { w ->
+                    if (w.id != event.workspaceId) w else {
+                        w.copy(tabs = w.tabs.map { tab ->
+                            tab.copy(panes = tab.panes.map { pane ->
+                                if (pane.id == event.paneId) {
+                                    val scroll = event.detail?.get("scroll") as? JsonObject
+                                    val decoded = scroll?.let { value ->
+                                        runCatching {
+                                            Json.decodeFromJsonElement(PaneScroll.serializer(), value)
+                                        }.getOrNull()
+                                    }
+                                    if (decoded != null) pane.copy(scroll = decoded) else pane
+                                } else {
+                                    pane
+                                }
+                            })
+                        })
+                    }
                 }
 
             SemanticEvent.TYPE_PANE_TITLE_CHANGED ->

@@ -193,6 +193,7 @@ impl SessionCache {
         match name {
             "pane_agent_status_changed" | "pane_agent_detected" => Ok(self.apply_status_change(event)),
             "pane_exited" => self.apply_exit_diff(event).await,
+            "pane_scroll_changed" => Ok(self.apply_scroll_change(event)),
             "tab_renamed" => Ok(self.apply_tab_rename(event)),
             "workspace_renamed" => Ok(self.apply_workspace_rename(event)),
             "pane_created" | "pane_closed" | "tab_created" | "tab_closed" | "workspace_created"
@@ -666,6 +667,56 @@ impl SessionCache {
     /// pane id — no tab_closed follows — so the diff (not the event) decides
     /// what closed. One snapshot GET + tiny events; clients refetch on any
     /// structural kind. Empty diff (duplicate/late exit) emits nothing.
+    /// One pane's host scroll viewport changed (desktop scrollbar, wheel, or
+    /// our own pane.scroll). Fold it into the cache and broadcast a foldable
+    /// event; a full snapshot refetch per scroll tick would be wasteful.
+    fn apply_scroll_change(&self, event: &HerdrEvent) -> Vec<SemanticEvent> {
+        let pane_id = event.data.get("pane_id").and_then(serde_json::Value::as_str).unwrap_or("");
+        let workspace_id = event
+            .data
+            .get("workspace_id")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or("");
+        let Some(scroll) = event.data.get("scroll").cloned()
+            .and_then(|value| serde_json::from_value::<crate::model::HerdrScroll>(value).ok())
+            .map(ScrollInfo::from)
+        else {
+            return vec![];
+        };
+        let Some((revision, found)) = self.mutate(|snapshot| {
+            for workspace in &mut snapshot.workspaces {
+                if workspace.id != workspace_id {
+                    continue;
+                }
+                for tab in &mut workspace.tabs {
+                    for pane in &mut tab.panes {
+                        if pane.id == pane_id {
+                            pane.scroll = Some(scroll);
+                            return true;
+                        }
+                    }
+                }
+            }
+            false
+        }) else {
+            return vec![];
+        };
+        if !found {
+            return vec![];
+        }
+        vec![self.emit(
+            "pane.scroll_changed",
+            Some(workspace_id.to_string()),
+            None,
+            Some(pane_id.to_string()),
+            None,
+            None,
+            revision,
+            Some(serde_json::json!({"scroll": scroll})),
+            None,
+        )]
+    }
+
     async fn apply_exit_diff(&self, event: &HerdrEvent) -> Result<Vec<SemanticEvent>> {
         let before = self
             .inner
@@ -1051,6 +1102,9 @@ fn all_subscriptions(pane_ids: &[String]) -> Vec<serde_json::Value> {
     // and resubscribes with the fresh pane set whenever structure changes.
     for pane_id in pane_ids {
         subs.push(serde_json::json!({"type": "pane.agent_status_changed", "pane_id": pane_id}));
+        // Desktop scrollbar/wheel changes must reach the phone; otherwise its
+        // next relative scroll starts from a stale base and jumps.
+        subs.push(serde_json::json!({"type": "pane.scroll_changed", "pane_id": pane_id}));
     }
     subs
 }
@@ -1080,6 +1134,17 @@ fn status_hash_of(snapshot: &SessionSnapshot) -> String {
                 canonical.push_str(&pane.id);
                 canonical.push('=');
                 canonical.push_str(pane.status.as_wire());
+                canonical.push('@');
+                if let Some(scroll) = pane.scroll {
+                    canonical.push_str(&format!(
+                        "{}:{}:{}",
+                        scroll.offset_from_bottom,
+                        scroll.max_offset_from_bottom,
+                        scroll.viewport_rows
+                    ));
+                } else {
+                    canonical.push('-');
+                }
                 canonical.push(';');
             }
         }
@@ -1345,6 +1410,51 @@ mod tests {
         .unwrap();
         let snap = build_snapshot(raw, 1, 0, None, None, crate::model::HerdrUpdate::default()).unwrap();
         assert_eq!(snap.workspaces[0].status, AgentStatus::Unknown);
+    }
+
+    #[tokio::test]
+    async fn pane_scroll_changes_fold_without_a_snapshot_refresh() {
+        let cache = SessionCache::new(HerdrClient::new("/nonexistent.sock".into(), "herdr".into()));
+        let snap = build_snapshot(
+            fixture(),
+            1,
+            4,
+            None,
+            None,
+            crate::model::HerdrUpdate::default(),
+        )
+        .unwrap();
+        *cache.inner.write().expect("cache lock") = Inner {
+            snapshot: Some(snap),
+            ..Default::default()
+        };
+        let event = HerdrEvent {
+            name: "pane_scroll_changed".into(),
+            data: serde_json::json!({
+                "pane_id": "w1:pT",
+                "workspace_id": "w1",
+                "scroll": {
+                    "offset_from_bottom": 7,
+                    "max_offset_from_bottom": 400,
+                    "viewport_rows": 68
+                }
+            }),
+        };
+
+        let events = cache.apply_herdr_event(&event).await.unwrap();
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].kind, "pane.scroll_changed");
+        assert_eq!(events[0].pane_id.as_deref(), Some("w1:pT"));
+        let snapshot = cache.snapshot().unwrap();
+        let pane = snapshot.workspaces.iter()
+            .flat_map(|w| w.tabs.iter())
+            .flat_map(|t| t.panes.iter())
+            .find(|p| p.id == "w1:pT")
+            .unwrap();
+        let scroll = pane.scroll.unwrap();
+        assert_eq!(scroll.offset_from_bottom, 7);
+        assert_eq!(scroll.max_offset_from_bottom, 400);
+        assert_eq!(scroll.viewport_rows, 68);
     }
 
     #[test]
