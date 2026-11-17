@@ -1,5 +1,17 @@
 # Changelog
 
+## 2.0.27 — 2026-11-17
+
+- Fixed the attach storm on a missing/stale pane (reported as `w1:p1`). The
+  reconnect watchdog reset its retry budget on every brief `Attached` emission,
+  so a pane that attached and immediately dropped reconnected forever. The
+  budget now survives short-lived attaches and resets only after a stable 5 s
+  session.
+- A detach whose reason contains `not found`/`pane_not_found` is treated as
+  permanent: no automatic retry; the screen reports `Cannot attach: …` and
+  leaves recovery to the user instead of hammering the daemon.
+- Added tests for the bounded retry budget and permanent missing-pane detach.
+
 ## 2.0.26 — 2026-11-16
 
 - Read acknowledgment is now pane-scoped. The daemon exposes

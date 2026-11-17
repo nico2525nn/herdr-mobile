@@ -14,6 +14,7 @@ import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.test.UnconfinedTestDispatcher
+import kotlinx.coroutines.test.advanceTimeBy
 import kotlinx.coroutines.test.advanceUntilIdle
 import kotlinx.coroutines.test.resetMain
 import kotlinx.coroutines.test.runTest
@@ -274,6 +275,75 @@ class TerminalViewModelBehaviourTest {
         advanceUntilIdle()
 
         assertEquals(listOf("a"), session.connections.single().sentText)
+    }
+
+    @Test
+    fun `a missing pane is not retried forever`() = runTest {
+        val session = FakeHerdrSession(snapshot(oneWorkspace()))
+        val controllerScope = kotlinx.coroutines.CoroutineScope(dispatcher)
+        var message: dev.herdr.mobile.core.designsystem.UiMessage? = null
+        val controller = PaneSessionController(
+            session = session,
+            scope = controllerScope,
+            onMessage = { message = it },
+            initialWorkspaceId = null,
+            initialTabId = null,
+            initialPaneId = null,
+        )
+        controller.start()
+        advanceUntilIdle()
+        val opens = session.openedPanes.size
+
+        session.connections.last().detach("terminal target w1:p1 not found")
+        advanceTimeBy(30_000)
+        runCurrent()
+
+        org.junit.Assert.assertEquals(opens, session.openedPanes.size)
+        org.junit.Assert.assertTrue(
+            message is dev.herdr.mobile.core.designsystem.UiMessage.AttachFailed,
+        )
+        controller.shutdown()
+        controllerScope.cancel()
+    }
+
+    @Test
+    fun `a pane that attaches then immediately drops stops after bounded retries`() = runTest {
+        val session = FakeHerdrSession(snapshot(oneWorkspace()))
+        val controllerScope = kotlinx.coroutines.CoroutineScope(dispatcher)
+        val controller = PaneSessionController(
+            session = session,
+            scope = controllerScope,
+            onMessage = {},
+            initialWorkspaceId = null,
+            initialTabId = null,
+            initialPaneId = null,
+        )
+        controller.start()
+        advanceUntilIdle()
+        val initialOpens = session.openedPanes.size
+
+        // Each cycle looks healthy for one state emission, then drops. The old
+        // `Attached -> attempts = 0` reset made this loop forever on a missing
+        // pane (the reported w1:p1 attach storm).
+        repeat(DesiredRetries + 2) {
+            session.connections.last().attach()
+            runCurrent()
+            session.connections.last().detach("closed")
+            advanceTimeBy(AutoReattachDelayCap)
+            runCurrent()
+        }
+
+        org.junit.Assert.assertTrue(
+            "opened ${session.openedPanes.size} times; retry budget did not bound",
+            session.openedPanes.size <= initialOpens + DesiredRetries + 1,
+        )
+        controller.shutdown()
+        controllerScope.cancel()
+    }
+
+    private companion object {
+        const val DesiredRetries = 4
+        const val AutoReattachDelayCap = 15_000L
     }
 
     @Test

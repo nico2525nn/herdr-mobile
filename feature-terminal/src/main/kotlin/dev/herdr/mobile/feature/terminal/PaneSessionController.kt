@@ -185,6 +185,7 @@ class PaneSessionController(
     private suspend fun watchReconnect() {
         var attempts = 0
         var lastKey: Pair<String, String>? = null
+        var attachedAt = 0L
         session.state.map { it.connection }
             .distinctUntilChanged()
             .combine(
@@ -192,23 +193,40 @@ class PaneSessionController(
             ) { connection, backendState -> connection to backendState }
             .collect { (connection, backendState) ->
                 if (backendState is BackendState.Attached) {
-                    attempts = 0
-                    lastKey = null
+                    // Do NOT reset the retry budget here. A pane that attaches
+                    // and immediately drops (missing terminal, daemon/backend
+                    // race) otherwise loops forever: every short attach reset
+                    // the counter that was meant to stop it.
+                    if (attachedAt == 0L) attachedAt = System.currentTimeMillis()
                     return@collect
                 }
                 if (connection != ConnectionState.CONNECTED) {
                     attempts = 0
                     lastKey = null
+                    attachedAt = 0
                     return@collect
                 }
                 val detached = backendState as? BackendState.Detached
                     ?: return@collect
+                val now = System.currentTimeMillis()
+                if (attachedAt != 0L && now - attachedAt >= STABLE_ATTACH_MS) {
+                    // A real, long-lived attach earns a fresh retry budget.
+                    attempts = 0
+                    lastKey = null
+                }
+                attachedAt = 0
                 val key = (targetFlow.value?.paneId ?: "?") to detached.reason
                 if (key != lastKey) {
                     lastKey = key
                     attempts = 0
                 }
-                if (attempts >= AUTO_REATTACH_ATTEMPTS) return@collect
+                // A missing pane is permanent: reconnecting cannot create it.
+                val permanent = detached.reason.contains("not found", ignoreCase = true) ||
+                    detached.reason.contains("pane_not_found", ignoreCase = true)
+                if (permanent || attempts >= AUTO_REATTACH_ATTEMPTS) {
+                    onMessage(UiMessage.AttachFailed(detached.reason))
+                    return@collect
+                }
                 val delayMs = AUTO_REATTACH_DELAY_MS * (1L shl attempts)
                 attempts++
                 retryJob?.cancel()
@@ -567,6 +585,9 @@ private const val AUTO_REATTACH_DELAY_MS = 600L
 
 /** 0.6s, 1.2s, 2.4s, then the Retry button takes over. */
 private const val AUTO_REATTACH_ATTEMPTS = 4
+
+/** Attach must last this long before a detach earns a fresh retry budget. */
+private const val STABLE_ATTACH_MS = 5_000L
 
 /** One scroll tick: the view reports per-row deltas during a drag. */
 private const val SCROLL_COALESCE_MS = 40L
