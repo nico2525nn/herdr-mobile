@@ -22,6 +22,10 @@ data class HerdrColors(
     val idle: Color,
     val failed: Color,
     val unknown: Color,
+    /** True only for the pure-black AMOLED (Midnight) scheme. */
+    val amoled: Boolean = false,
+    /** Resolved dark/light state, including ThemeMode.SYSTEM. */
+    val dark: Boolean = false,
 ) {
     fun forStatus(status: AgentStatus): Color = when (status) {
         AgentStatus.BLOCKED -> blocked

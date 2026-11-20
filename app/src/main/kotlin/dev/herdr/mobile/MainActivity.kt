@@ -1,6 +1,7 @@
 package dev.herdr.mobile
 
 import android.Manifest
+import android.app.Activity
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.os.Build
@@ -9,21 +10,30 @@ import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.padding
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Home
 import androidx.compose.material.icons.filled.Settings
+import androidx.compose.material.icons.outlined.Home
+import androidx.compose.material.icons.outlined.Settings
+import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
+import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.NavigationBar
 import androidx.compose.material3.NavigationBarItem
+import androidx.compose.material3.NavigationBarItemDefaults
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.SideEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalView
+import androidx.core.view.WindowCompat
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
 import androidx.navigation.NavDestination.Companion.hasRoute
@@ -34,6 +44,7 @@ import androidx.navigation.compose.currentBackStackEntryAsState
 import androidx.navigation.compose.rememberNavController
 import androidx.navigation.toRoute
 import dev.herdr.mobile.core.designsystem.HerdrMobileTheme
+import dev.herdr.mobile.core.designsystem.HerdrTheme
 import dev.herdr.mobile.feature.home.HomeScreen
 import dev.herdr.mobile.feature.home.HomeViewModel
 import dev.herdr.mobile.feature.settings.SettingsScreen
@@ -137,6 +148,7 @@ class MainActivity : ComponentActivity() {
             val settings by container.settingsRepository.settings.collectAsStateWithLifecycle()
             val deepLink by deepLinkTarget.collectAsStateWithLifecycle()
             HerdrMobileTheme(themeMode = settings.themeMode, dynamicColor = settings.dynamicColor) {
+                SystemBarAppearance()
                 AppNav(
                     container = container,
                     startTerminal = deepLink,
@@ -153,6 +165,24 @@ class MainActivity : ComponentActivity() {
         routeFromIntent(intent)?.let {
             lastHandledDeepLink = it
             deepLinkTarget.value = it
+        }
+    }
+}
+
+/**
+ * enableEdgeToEdge() picks the status/navigation icon appearance from the
+ * system dark setting. The app can override that with ThemeMode.DARK or
+ * MIDNIGHT while the system is light, so reapply it from the resolved theme.
+ */
+@Composable
+private fun SystemBarAppearance() {
+    val view = LocalView.current
+    val dark = HerdrTheme.dark
+    SideEffect {
+        val window = (view.context as? Activity)?.window ?: return@SideEffect
+        WindowCompat.getInsetsController(window, view).apply {
+            isAppearanceLightStatusBars = !dark
+            isAppearanceLightNavigationBars = !dark
         }
     }
 }
@@ -182,37 +212,77 @@ private fun AppNav(
 
     // Terminal is a working context, not a permanent bottom-nav destination; the bar only
     // shows Home and Settings, and Terminal hides it to give the grid every pixel.
-    val showBar = destination?.hierarchy?.any { it.hasRoute(HomeRoute::class) || it.hasRoute(SettingsRoute::class) } == true
+    // The official nav bar uses filled icons for the active destination and
+    // outlined icons for inactive ones; the selected label alone is shown.
+    val homeSelected = destination?.hierarchy?.any { it.hasRoute(HomeRoute::class) } == true
+    val settingsSelected = destination?.hierarchy?.any { it.hasRoute(SettingsRoute::class) } == true
+    val showBar = homeSelected || settingsSelected
+    val amoled = HerdrTheme.amoled
+    // Midnight maps secondaryContainer (the active indicator) to black.
+    // A translucent primary wash keeps the pill visible without a grey band;
+    // the filled icon + label still carry the selection.
+    val navItemColors = if (amoled) {
+        NavigationBarItemDefaults.colors(
+            indicatorColor = MaterialTheme.colorScheme.primary.copy(alpha = 0.18f),
+        )
+    } else {
+        NavigationBarItemDefaults.colors()
+    }
 
     Scaffold(
         modifier = Modifier.fillMaxSize(),
         bottomBar = {
             if (showBar) {
-                NavigationBar {
-                    NavigationBarItem(
-                        selected = destination?.hierarchy?.any { it.hasRoute(HomeRoute::class) } == true,
-                        onClick = {
-                            nav.navigate(HomeRoute) {
-                                popUpTo(HomeRoute) { inclusive = false }
-                                launchSingleTop = true
-                            }
-                        },
-                        icon = { Icon(Icons.Filled.Home, contentDescription = null) },
-                        label = { Text("Home") },
-                        alwaysShowLabel = false,
-                    )
-                    NavigationBarItem(
-                        selected = destination?.hierarchy?.any { it.hasRoute(SettingsRoute::class) } == true,
-                        onClick = {
-                            nav.navigate(SettingsRoute) {
-                                popUpTo(HomeRoute) { inclusive = false }
-                                launchSingleTop = true
-                            }
-                        },
-                        icon = { Icon(Icons.Filled.Settings, contentDescription = null) },
-                        label = { Text("Settings") },
-                        alwaysShowLabel = false,
-                    )
+                Column {
+                    if (amoled) {
+                        HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
+                    }
+                    NavigationBar {
+                        NavigationBarItem(
+                            selected = homeSelected,
+                            onClick = {
+                                nav.navigate(HomeRoute) {
+                                    popUpTo(HomeRoute) { inclusive = false }
+                                    launchSingleTop = true
+                                }
+                            },
+                            icon = {
+                                Icon(
+                                    imageVector = if (homeSelected) {
+                                        Icons.Filled.Home
+                                    } else {
+                                        Icons.Outlined.Home
+                                    },
+                                    contentDescription = null,
+                                )
+                            },
+                            label = { Text("Home") },
+                            alwaysShowLabel = false,
+                            colors = navItemColors,
+                        )
+                        NavigationBarItem(
+                            selected = settingsSelected,
+                            onClick = {
+                                nav.navigate(SettingsRoute) {
+                                    popUpTo(HomeRoute) { inclusive = false }
+                                    launchSingleTop = true
+                                }
+                            },
+                            icon = {
+                                Icon(
+                                    imageVector = if (settingsSelected) {
+                                        Icons.Filled.Settings
+                                    } else {
+                                        Icons.Outlined.Settings
+                                    },
+                                    contentDescription = null,
+                                )
+                            },
+                            label = { Text("Settings") },
+                            alwaysShowLabel = false,
+                            colors = navItemColors,
+                        )
+                    }
                 }
             }
         },

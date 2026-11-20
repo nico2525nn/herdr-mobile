@@ -185,32 +185,44 @@ internal fun HomeHeader(
     stale: Boolean,
     connection: ConnectionState,
     error: String?,
+    modifier: Modifier = Modifier,
 ) {
-    Column(modifier = Modifier.padding(horizontal = 20.dp, vertical = 12.dp)) {
-        Text(
-            text = "Herdr",
-            style = MaterialTheme.typography.displaySmall,
-        )
-        val subtitle = when {
-            workspaceCount == 0 && connection == ConnectionState.CONNECTED ->
-                "No workspaces"
+    val subtitle = when {
+        workspaceCount == 0 && connection == ConnectionState.CONNECTED ->
+            "No workspaces"
 
-            workspaceCount == 0 -> connection.name.lowercase().replaceFirstChar { it.uppercase() }
-            else -> "$workspaceCount workspaces · $tabCount active tabs"
-        }
-        Text(
-            text = if (stale) "$subtitle · stale" else subtitle,
-            style = MaterialTheme.typography.bodyMedium,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-        )
-        if (error != null && workspaceCount > 0) {
+        workspaceCount == 0 -> connection.name.lowercase().replaceFirstChar { it.uppercase() }
+        else -> "$workspaceCount workspaces · $tabCount active tabs"
+    }
+    // A plain wrapping header instead of LargeTopAppBar: Material3 1.4.0's
+    // public large bar reuses its title slot as the collapsed row, so a
+    // subtitle/error column would inflate both rows and clip at large font
+    // scales. The flexible title+subtitle bar is internal in 1.4.0.
+    Surface(
+        color = MaterialTheme.colorScheme.surface,
+        modifier = modifier.fillMaxWidth(),
+    ) {
+        Column(
+            modifier = Modifier.padding(start = 16.dp, end = 16.dp, top = 16.dp, bottom = 8.dp),
+        ) {
             Text(
-                text = error,
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.error,
-                maxLines = 2,
-                overflow = TextOverflow.Ellipsis,
+                text = "Herdr",
+                style = MaterialTheme.typography.displaySmall,
             )
+            Text(
+                text = if (stale) "$subtitle · stale" else subtitle,
+                style = MaterialTheme.typography.titleMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            if (error != null && workspaceCount > 0) {
+                Text(
+                    text = error,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.error,
+                    maxLines = 2,
+                    overflow = TextOverflow.Ellipsis,
+                )
+            }
         }
     }
 }

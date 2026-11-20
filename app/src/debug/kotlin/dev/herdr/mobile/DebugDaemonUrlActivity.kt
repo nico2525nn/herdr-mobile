@@ -125,12 +125,20 @@ class DebugDaemonUrlActivity : ComponentActivity() {
     }
 
     private fun writeState(json: JSONObject) {
-        val file = File(getExternalFilesDir(null) ?: filesDir, STATE_FILE)
+        val text = json.toString()
+        // Write both locations: the CI reads the external file first and
+        // falls back to the app-private one when external storage is not
+        // ready (cold boot) or is not readable from the shell.
+        getExternalFilesDir(null)?.let { external ->
+            runCatching {
+                external.mkdirs()
+                File(external, STATE_FILE).writeText(text)
+            }.onFailure { Log.w(TAG, "cannot write external state", it) }
+        }
         runCatching {
-            file.parentFile?.mkdirs()
-            file.writeText(json.toString())
-        }.onFailure { Log.w(TAG, "cannot write $file", it) }
-        Log.i(TAG, json.toString())
+            File(filesDir, STATE_FILE).writeText(text)
+        }.onFailure { Log.w(TAG, "cannot write internal state", it) }
+        Log.i(TAG, text)
     }
 
     companion object {

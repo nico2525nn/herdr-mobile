@@ -66,6 +66,7 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import dev.herdr.mobile.core.designsystem.PeerTabChip
 import dev.herdr.mobile.core.designsystem.StatusDot
 import dev.herdr.mobile.core.designsystem.contentDescription
+import dev.herdr.mobile.core.designsystem.HerdrTheme
 import dev.herdr.mobile.core.designsystem.LocalUiCopy
 import dev.herdr.mobile.core.model.ConnectionState
 import dev.herdr.mobile.core.model.Tab
@@ -132,7 +133,7 @@ fun HomeScreen(
                 text = shown.let { LocalUiCopy.current.render(it) },
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.error,
-                modifier = Modifier.padding(horizontal = 20.dp, vertical = 4.dp),
+                modifier = Modifier.padding(horizontal = 16.dp, vertical = 4.dp),
             )
         }
         when {
@@ -169,7 +170,12 @@ fun HomeScreen(
                         LazyVerticalGrid(
                             columns = GridCells.Fixed(columns),
                             modifier = Modifier.fillMaxSize(),
-                            contentPadding = PaddingValues(horizontal = 16.dp),
+                            contentPadding = PaddingValues(
+                                start = 16.dp,
+                                top = 16.dp,
+                                end = 16.dp,
+                                bottom = 80.dp,
+                            ),
                             verticalArrangement = Arrangement.spacedBy(12.dp),
                             horizontalArrangement = Arrangement.spacedBy(12.dp),
                         ) {
@@ -193,6 +199,7 @@ fun HomeScreen(
                                     screenOrigin,
                                     { tabMenu = it },
                                     { wsMenu = it },
+                                    reorderable = false,
                                 )
                             }
                         }
@@ -205,11 +212,24 @@ fun HomeScreen(
         // New workspace: small (rounded-square) FAB, bottom-end. Always
         // visible — while offline the create call fails with a surfaced
         // message instead of a dead button.
+        // Midnight maps primaryContainer to black; use primary there so the
+        // FAB keeps a visible container instead of only a floating glyph.
+        val amoledFab = HerdrTheme.amoled
         SmallFloatingActionButton(
             onClick = { showCreate = true },
             modifier = Modifier
                 .align(Alignment.BottomEnd)
                 .padding(16.dp),
+            containerColor = if (amoledFab) {
+                MaterialTheme.colorScheme.primary
+            } else {
+                MaterialTheme.colorScheme.primaryContainer
+            },
+            contentColor = if (amoledFab) {
+                MaterialTheme.colorScheme.onPrimary
+            } else {
+                MaterialTheme.colorScheme.onPrimaryContainer
+            },
         ) {
             Icon(Icons.Filled.Add, contentDescription = "New workspace")
         }

@@ -1,5 +1,33 @@
 # Changelog
 
+## 2.2.0 — 2026-11-20
+
+- Home uses the expressive large-title header (`displaySmall` 36/44 +
+  `titleMedium` 16/24), 28dp workspace cards with 20dp padding, 12dp status
+  dots, `bodyMedium` paths and filled tonal chips. Reordering keeps the
+  explicit handle in the phone list; the tablet grid no longer renders a dead
+  handle.
+- The bottom navigation keeps the official full-width `NavigationBar`:
+  active icon filled, inactive icon outlined, and the existing
+  `alwaysShowLabel = false` selected-only label (the floating caption).
+- Settings groups use `surfaceContainer`. Terminal rails use the expressive
+  chip shape (12dp unselected, measured-height full pill selected).
+- Extra keys are 40dp with 12dp square corners. PGUP keeps the downward-flick
+  PGDN action (`PGUP↓`) and now exposes a "Page down" accessibility action for
+  TalkBack/switch access; the flick no longer competes with the panel pager.
+- Panel swipes only switch pages when Swipe behavior is PAGE; NONE and
+  SCROLLBACK no longer trigger the pager.
+- Midnight keeps its AMOLED fallbacks: hairline chips/cards/keys, a visible
+  nav indicator and a nav-bar divider, and a primary FAB container.
+- Status/navigation-bar icon appearance now follows the resolved app theme,
+  not only the system setting, so Dark/Midnight no longer hides the status bar
+  icons on a light system.
+- `tools/ci.sh` now logs the device screen and fails an emulator smaller than
+  1080x1920px / 360x640dp, because the smoke uses fixed pixel swipe
+  coordinates. HerdrTest was booting at 320x480@160 (HVGA) and is now
+  1080x2400@420 (411x914dp); the debug override poll waits past the activity's
+  30s DataStore timeout and the activity writes both state files.
+
 ## 2.1.0 — 2026-11-18
 
 - **TUI host scrollbar support.** The daemon now subscribes to Herdr

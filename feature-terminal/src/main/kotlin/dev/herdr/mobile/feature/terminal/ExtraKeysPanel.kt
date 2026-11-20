@@ -2,7 +2,6 @@ package dev.herdr.mobile.feature.terminal
 
 import androidx.compose.foundation.gestures.awaitEachGesture
 import androidx.compose.foundation.gestures.awaitFirstDown
-import androidx.compose.foundation.gestures.awaitTouchSlopOrCancellation
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
@@ -10,6 +9,7 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.FilledTonalButton
 import androidx.compose.material3.MaterialTheme
@@ -18,17 +18,19 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.input.pointer.PointerInputChange
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.platform.LocalHapticFeedback
+import androidx.compose.ui.semantics.CustomAccessibilityAction
 import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.customActions
 import androidx.compose.ui.semantics.onClick
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.semantics.toggleableState
 import androidx.compose.ui.state.ToggleableState
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import dev.herdr.mobile.core.designsystem.HerdrTheme
 import kotlin.math.abs
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
@@ -123,6 +125,10 @@ private fun RepeatableKeyButton(
     val repeatable = onFlickDown == null && key.modifier == null && key.bytes != null &&
         key.label !in setOf("ESC", "TAB")
     val interactions = remember { androidx.compose.foundation.interaction.MutableInteractionSource() }
+    // Pointer presses already fire through PressInteraction. The Button's
+    // onClick must fire only for keyboard/D-pad/accessibility activation,
+    // otherwise a pointer tap would send the key twice.
+    val pointerPress = remember { androidx.compose.runtime.mutableStateOf(false) }
     // Flick tracking: press Y in button coords. Release carries its own
     // pressPosition? No — Release only references the original Press, so the
     // drag distance comes from a pointer-input modifier below, not here.
@@ -137,6 +143,7 @@ private fun RepeatableKeyButton(
             when (interaction) {
                 is androidx.compose.foundation.interaction.PressInteraction.Press -> {
                     if (!dualAction) {
+                        pointerPress.value = true
                         onPress()
                         if (repeatable) {
                             repeatJob?.cancel()
@@ -150,10 +157,16 @@ private fun RepeatableKeyButton(
                         }
                     }
                 }
-                is androidx.compose.foundation.interaction.PressInteraction.Release,
+                is androidx.compose.foundation.interaction.PressInteraction.Release -> {
+                    repeatJob?.cancel()
+                    repeatJob = null
+                    // Leave pointerPress for onClick: the click is delivered
+                    // right after Release and must be swallowed.
+                }
                 is androidx.compose.foundation.interaction.PressInteraction.Cancel -> {
                     repeatJob?.cancel()
                     repeatJob = null
+                    pointerPress.value = false
                 }
             }
         }
@@ -166,9 +179,16 @@ private fun RepeatableKeyButton(
         // The pointer path emits through PressInteraction; TalkBack and
         // switch access invoke the semantics action without a Press, so the
         // panel must handle that action explicitly or every key is inert.
-        onClick = { if (dualAction) onPress() },
+        onClick = {
+            when {
+                dualAction -> onPress()
+                pointerPress.value -> pointerPress.value = false
+                else -> onPress()
+            }
+        },
+        shape = RoundedCornerShape(12.dp),
         modifier = modifier
-            .heightIn(min = 44.dp)
+            .heightIn(min = 40.dp)
             .then(
                 if (dualAction) {
                     Modifier.pointerInput(key) {
@@ -181,9 +201,15 @@ private fun RepeatableKeyButton(
                             while (true) {
                                 val event = awaitPointerEvent()
                                 val change = event.changes.firstOrNull { it.id == down.id } ?: break
-                                if (!change.pressed) break
+                                // The panel pager claims horizontal drags in the
+                                // Initial pass; never turn a consumed swipe into
+                                // a flick on top of the page switch.
+                                if (change.pressed && change.isConsumed) {
+                                    return@awaitEachGesture
+                                }
                                 dx += change.position.x - change.previousPosition.x
                                 dy += change.position.y - change.previousPosition.y
+                                if (!change.pressed) break
                                 if (!claimed) {
                                     if (abs(dx) > slop && abs(dx) >= abs(dy)) {
                                         // Horizontal gesture belongs to the
@@ -196,6 +222,9 @@ private fun RepeatableKeyButton(
                                 if (claimed) change.consume()
                             }
                             if (claimed) {
+                                // Past slop and the fixed 24dp travel threshold:
+                                // classify a short downward drag as a tap so a
+                                // tap near the edge never pages down.
                                 if (dy > 24.dp.toPx()) onFlickDown?.invoke() else onPress()
                             }
                         }
@@ -218,17 +247,26 @@ private fun RepeatableKeyButton(
                         onPress()
                         true
                     }
+                } else {
+                    // A downward flick is pointer-only by construction; expose
+                    // the alternate action so TalkBack and switch access can
+                    // reach PGDN without the gesture.
+                    customActions = listOf(
+                        CustomAccessibilityAction(label = "Page down") {
+                            onFlickDown?.invoke()
+                            true
+                        },
+                    )
                 }
             },
-        shape = ButtonDefaults.filledTonalShape,
         contentPadding = PaddingValues(horizontal = 2.dp, vertical = 8.dp),
-        // On the AMOLED theme every container role is black, so a tonal fill
-        // would render as a floating label. A hairline border keeps the key
-        // visible without lighting pixels; the armed state is the accent.
-        border = if (isArmed) null else BorderStroke(
-            1.dp,
-            MaterialTheme.colorScheme.outlineVariant,
-        ),
+        // The hairline is only for the pure-black AMOLED scheme, where a
+        // tonal fill disappears. Standard themes use the plain filled button.
+        border = if (isArmed || !HerdrTheme.amoled) {
+            null
+        } else {
+            BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant)
+        },
         colors = if (isArmed) {
             ButtonDefaults.filledTonalButtonColors(
                 containerColor = MaterialTheme.colorScheme.primary,
@@ -249,7 +287,7 @@ private fun RepeatableKeyButton(
             // alternate); screen readers still get the full description.
             Text(
                 text = "${key.label}↓",
-                style = MaterialTheme.typography.labelSmall,
+                style = MaterialTheme.typography.labelMedium,
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis,
                 modifier = Modifier.semantics {

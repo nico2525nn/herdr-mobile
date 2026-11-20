@@ -5,5 +5,5 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 OUT="${1:-$ROOT/build/herdr-mobile-daemon-linux-x86_64.tar.gz}"
 mkdir -p "$(dirname "$OUT")"
 ( cd "$ROOT/daemon" && cargo build --release --offline )
-tar -C "$ROOT/daemon/target/release" -czf "$OUT" herdr-mobile-daemon
+tar --owner=0 --group=0 --numeric-owner -C "$ROOT/daemon/target/release" -czf "$OUT" herdr-mobile-daemon
 sha256sum "$OUT"

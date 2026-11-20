@@ -85,7 +85,11 @@ fun HerdrMobileTheme(
         dark -> darkColorScheme()
         else -> lightColorScheme()
     }
-    CompositionLocalProvider(LocalHerdrColors provides if (dark) HerdrColorsDark else HerdrColorsLight) {
+    val herdrColors = (if (dark) HerdrColorsDark else HerdrColorsLight).copy(
+        amoled = themeMode == ThemeMode.MIDNIGHT,
+        dark = dark,
+    )
+    CompositionLocalProvider(LocalHerdrColors provides herdrColors) {
         MaterialTheme(
             colorScheme = colorScheme,
             content = content,

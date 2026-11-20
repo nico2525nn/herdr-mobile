@@ -74,18 +74,28 @@ adb devices
 
 ```bash
 export HERDR_RELEASE_KEYSTORE_PASSWORD=$(cat ~/.config/herdr-mobile/keystore.password)
-./gradlew :app:assembleRelease -PrequireSigning --offline
-# → app/build/outputs/apk/release/app-release.apk
-~/Android/Sdk/build-tools/36.0.0/apksigner verify --print-certs \
-  app/build/outputs/apk/release/app-release.apk
+mkdir -p build/release
 
-# 32-bit device artifact
+# Default arm64 artifact; copy it before the next build overwrites the output.
+./gradlew :app:assembleRelease -PrequireSigning --offline
+cp app/build/outputs/apk/release/app-release.apk \
+  build/release/herdr-mobile-arm64-v8a.apk
+
+# 32-bit device artifact.
 ./gradlew :app:assembleRelease -PrequireSigning -Pabi=armeabi-v7a --offline
+cp app/build/outputs/apk/release/app-release.apk \
+  build/release/herdr-mobile-armeabi-v7a.apk
+
+~/Android/Sdk/build-tools/36.0.0/apksigner verify --print-certs \
+  build/release/herdr-mobile-arm64-v8a.apk
 ```
 
 `-PrequireSigning` fails the build instead of silently producing an unsigned
 APK. Production releases use `~/.config/herdr-mobile/release.keystore`, never the
 debug key. Attach one signed APK per ABI; never a universal APK.
+
+Full checklist (tag before build, checksum, installer, `gh release create`):
+[docs/release.md](docs/release.md).
 
 ## Protocol (v1)
 

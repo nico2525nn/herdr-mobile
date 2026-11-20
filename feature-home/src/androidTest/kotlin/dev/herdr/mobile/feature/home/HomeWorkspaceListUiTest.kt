@@ -3,15 +3,17 @@ package dev.herdr.mobile.feature.home
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.semantics.SemanticsActions
 import androidx.compose.ui.test.SemanticsMatcher
 import androidx.compose.ui.test.assertIsDisplayed
 import androidx.compose.ui.test.hasText
+import androidx.compose.ui.unit.Density
 import androidx.compose.ui.test.junit4.createComposeRule
 import androidx.compose.ui.test.hasStateDescription
-import androidx.compose.ui.test.hasText
 import androidx.compose.ui.test.onNodeWithContentDescription
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performClick
@@ -169,4 +171,28 @@ class HomeWorkspaceListUiTest {
         assertEquals("w1", menus.single().workspaceId)
         assertEquals("api", menus.single().label)
     }
+    @Test
+    fun headerKeepsTitleSubtitleAndErrorAtLargeFontScale() {
+        compose.setContent {
+            HerdrMobileTheme(themeMode = ThemeMode.DARK) {
+                val density = LocalDensity.current
+                CompositionLocalProvider(
+                    LocalDensity provides Density(density.density, fontScale = 2f),
+                ) {
+                    HomeHeader(
+                        workspaceCount = 2,
+                        tabCount = 4,
+                        stale = false,
+                        connection = ConnectionState.CONNECTED,
+                        error = "Connection refused",
+                    )
+                }
+            }
+        }
+
+        compose.onNodeWithText("Herdr").assertIsDisplayed()
+        compose.onNodeWithText("2 workspaces · 4 active tabs").assertIsDisplayed()
+        compose.onNodeWithText("Connection refused").assertIsDisplayed()
+    }
+
 }

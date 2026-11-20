@@ -1,6 +1,7 @@
 package dev.herdr.mobile.feature.home
 
 import androidx.compose.animation.animateContentSize
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.interaction.MutableInteractionSource
@@ -57,9 +58,11 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import dev.herdr.mobile.core.designsystem.HerdrTheme
 import dev.herdr.mobile.core.designsystem.PeerTabChip
 import dev.herdr.mobile.core.designsystem.StatusDot
 import dev.herdr.mobile.core.designsystem.contentDescription
@@ -77,12 +80,14 @@ internal fun workspaceCard(
     onMenu: (HomeTabMenuTarget) -> Unit,
     onWsMenu: (HomeWsMenuTarget) -> Unit,
     handleModifier: (Workspace) -> Modifier = { Modifier },
+    reorderable: Boolean = true,
 ) {
     WorkspaceCard(
         workspace = workspace,
         onOpenWorkspace = { onOpenWorkspace(workspace.id, workspace.activeTabId) },
         onOpenTab = { tab -> onOpenTab(workspace.id, tab.id) },
         handleModifier = handleModifier(workspace),
+        reorderable = reorderable,
         onWorkspaceLongPress = { pressWindow ->
             val anchor = androidx.compose.ui.unit.IntOffset(
                 (pressWindow.x - screenOrigin.x).toInt(),
@@ -155,7 +160,7 @@ internal fun WorkspaceList(
         modifier = modifier
             .fillMaxSize()
             .nestedScroll(reorder.scrollBlocker),
-        contentPadding = PaddingValues(horizontal = 16.dp),
+        contentPadding = PaddingValues(start = 16.dp, top = 16.dp, end = 16.dp, bottom = 80.dp),
         verticalArrangement = Arrangement.spacedBy(12.dp),
     ) {
         if (state.showOfflineBanner || state.stale) {
@@ -185,7 +190,6 @@ internal fun WorkspaceList(
                 )
             }
         }
-        item(key = "bottom-space") { Spacer(Modifier.height(8.dp)) }
     }
 }
 
@@ -201,6 +205,7 @@ internal fun WorkspaceCard(
     modifier: Modifier = Modifier,
     /** Drag-reorder handle gesture (Home list builds it; grid passes empty). */
     handleModifier: Modifier = Modifier,
+    reorderable: Boolean = true,
 ) {
     Card(
         modifier = modifier
@@ -208,8 +213,14 @@ internal fun WorkspaceCard(
             .animateContentSize(),
         shape = MaterialTheme.shapes.extraLarge,
         colors = CardDefaults.cardColors(
-            containerColor = MaterialTheme.colorScheme.surfaceContainerLow,
+            containerColor = MaterialTheme.colorScheme.surfaceContainer,
         ),
+        // Midnight has no tonal separation; a hairline keeps the card edge.
+        border = if (HerdrTheme.amoled) {
+            BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant)
+        } else {
+            null
+        },
     ) {
         Column(
             modifier = Modifier
@@ -219,7 +230,7 @@ internal fun WorkspaceCard(
                     onClickLabel = "Open ${workspace.label} in terminal",
                     onClick = onOpenWorkspace,
                 )
-                .padding(16.dp),
+                .padding(20.dp),
         ) {
             var headerOrigin by remember(workspace.id) { mutableStateOf(androidx.compose.ui.geometry.Offset.Zero) }
             var headerWidthPx by remember(workspace.id) { mutableStateOf(0) }
@@ -250,7 +261,9 @@ internal fun WorkspaceCard(
                             // icon + 24dp chevron) belong to reorder, not the menu:
                             // both detectors see the long-press, so the menu must
                             // yield its strip or every drag also opens it.
-                            val handleStripPx = with(density) { 64.dp.toPx() }
+                            val handleStripPx = with(density) {
+                                (if (reorderable) 64.dp else 0.dp).toPx()
+                            }
                             if (headerPress.x < headerWidthPx - handleStripPx) {
                                 onWorkspaceLongPress(headerOrigin + headerPress)
                             }
@@ -258,7 +271,7 @@ internal fun WorkspaceCard(
                         onClick = onOpenWorkspace,
                     ),
             ) {
-                StatusDot(status = workspace.status)
+                StatusDot(status = workspace.status, diameter = 12.dp, describe = false)
                 Column(
                     modifier = Modifier
                         .weight(1f)
@@ -270,29 +283,33 @@ internal fun WorkspaceCard(
                 ) {
                     Text(
                         text = workspace.label,
-                        style = MaterialTheme.typography.titleLarge,
+                        style = MaterialTheme.typography.titleLarge.copy(
+                            fontWeight = FontWeight.Medium,
+                        ),
                         maxLines = 1,
                         overflow = TextOverflow.Ellipsis,
                     )
                     workspace.displayPath?.let { path ->
                         Text(
                             text = path,
-                            style = MaterialTheme.typography.bodySmall,
+                            style = MaterialTheme.typography.bodyMedium,
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                             maxLines = 1,
                             overflow = TextOverflow.Ellipsis,
                         )
                     }
                 }
-                Icon(
-                    imageVector = Icons.Filled.DragHandle,
-                    contentDescription = "Reorder ${workspace.label}",
-                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
-                    modifier = Modifier
-                        .size(40.dp)
-                        .padding(8.dp)
-                        .then(handleModifier),
-                )
+                if (reorderable) {
+                    Icon(
+                        imageVector = Icons.Filled.DragHandle,
+                        contentDescription = "Reorder ${workspace.label}",
+                        tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier
+                            .then(handleModifier)
+                            .size(40.dp)
+                            .padding(8.dp),
+                    )
+                }
                 Icon(
                     imageVector = Icons.Filled.ChevronRight,
                     contentDescription = null,

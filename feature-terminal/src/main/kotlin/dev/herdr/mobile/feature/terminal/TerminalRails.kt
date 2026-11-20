@@ -97,6 +97,7 @@ internal fun WorkspaceRail(
                         // Consume long-presses: the menu opens on UP via the
                         // reorder detector, like the tab rail.
                         onLongClick = {},
+                        onMenuAction = { onWorkspaceLongPress(workspace.id, workspace.label) },
                     )
                     val target = menuTarget?.takeIf { it.workspaceId == workspace.id }
                     if (target != null) {
@@ -182,6 +183,7 @@ internal fun TabRail(
                         // detector instead): without this a dwell falls through
                         // to tap and the UP races the drag-end callback.
                         onLongClick = {},
+                        onMenuAction = { onTabLongPress(workspace.id, tab.id, tab.displayLabel) },
                     )
                     val target = menuTarget?.takeIf { it.tabId == tab.id }
                     if (target != null) {

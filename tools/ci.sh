@@ -290,13 +290,19 @@ override_settings() {
     adb_ shell am start -W -n "$OVERRIDE_ACTIVITY" --es action "$action" >/dev/null
   fi
 
-  for _ in $(seq 1 150); do
+  # The activity allows 30s for DataStore's first load; a cold-booted
+  # emulator can spend most of that dexopting. Poll past its timeout and
+  # keep the activity's own ok:false result as the authoritative failure.
+  for _ in $(seq 1 400); do
     state="$(read_override_state)"
     [[ -n "$state" ]] && break
     sleep 0.1
   done
   if [[ -z "$state" ]]; then
     printf 'ci: DebugDaemonUrlActivity wrote no state (%s); is the debug APK installed?\n' "$action" >&2
+    adb_ shell ls -l "$EXTERNAL_STATE" 2>&1 | tail -2 >&2 || true
+    adb_ shell run-as "$PKG" ls -l files/herdr-ci-state.json 2>&1 | tail -2 >&2 || true
+    adb_ logcat -d -s HerdrCi 2>/dev/null | tail -20 >&2 || true
     return 1
   fi
   printf '%s' "$state"
@@ -428,6 +434,35 @@ for _ in $(seq 1 600); do
 done
 [[ "$(adb_ shell getprop sys.boot_completed 2>/dev/null | tr -d '\r')" == "1" ]] ||
   die "device '$SERIAL' did not finish booting (sys.boot_completed != 1)"
+
+# Screenshots and layout checks are meaningless on a tiny AVD. The old
+# HerdrTest profile booted at 320x480@160 (HVGA) while CI used medium_phone
+# (1080x2400@420 = 411x914dp); keep the smoke on a realistic phone. The
+# smoke's fixed swipe coordinates also assume at least 1080x1920 physical
+# pixels, so enforce both pixel and dp sizes on emulators. Physical devices
+# only get the log: a Display-size override can legitimately change the dp.
+SCREEN_SIZE="$(adb_ shell wm size 2>/dev/null | tr -d '\r' | tail -n 1)" || true
+SCREEN_DENSITY="$(adb_ shell wm density 2>/dev/null | tr -d '\r' | tail -n 1)" || true
+read -r SCREEN_W SCREEN_H <<<"$(sed -n 's/.*: \([0-9][0-9]*\)x\([0-9][0-9]*\).*/\1 \2/p' <<<"$SCREEN_SIZE")" || true
+SCREEN_DPI="$(sed -n 's/.*: \([0-9][0-9]*\).*/\1/p' <<<"$SCREEN_DENSITY")"
+IS_EMULATOR="$(adb_ shell getprop ro.kernel.qemu 2>/dev/null | tr -d '\r' || true)"
+if [[ -n "${SCREEN_W:-}" && -n "${SCREEN_H:-}" && -n "${SCREEN_DPI:-}" &&
+      "$SCREEN_W" -gt 0 && "$SCREEN_H" -gt 0 && "$SCREEN_DPI" -gt 0 ]]; then
+  DP_W=$((SCREEN_W * 160 / SCREEN_DPI))
+  DP_H=$((SCREEN_H * 160 / SCREEN_DPI))
+  info "screen ${SCREEN_W}x${SCREEN_H} @ ${SCREEN_DPI}dpi (${DP_W}x${DP_H}dp)"
+  if [[ "${SKIP_SCREEN_CHECK:-0}" == "1" ]]; then
+    info "realistic-screen check skipped (SKIP_SCREEN_CHECK=1)"
+  elif [[ "${IS_EMULATOR:-0}" == "1" ]]; then
+    if ((SCREEN_W < 1080 || SCREEN_H < 1920 || DP_W < 360 || DP_H < 640)); then
+      die "emulator screen is ${SCREEN_W}x${SCREEN_H} @ ${SCREEN_DPI}dpi (${DP_W}x${DP_H}dp); the phone smoke expects >=1080x1920px / >=360x640dp. Use a medium_phone profile or fix the AVD's hw.lcd.* settings."
+    fi
+  else
+    info "physical device; screen check logged only"
+  fi
+else
+  info "screen size unavailable; skipping the realistic-screen check"
+fi
 
 # The keyboard checks need the IME to show while a hardware keyboard is present.
 OLD_SHOW_IME="$(adb_ shell settings get secure show_ime_with_hard_keyboard 2>/dev/null | tr -d '\r')"

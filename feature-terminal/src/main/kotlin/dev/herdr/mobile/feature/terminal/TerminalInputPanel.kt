@@ -103,7 +103,10 @@ internal fun BottomInputPanel(
                     Column(
                         modifier = Modifier
                             .fillMaxWidth()
-                            .pointerInput(pages.size) {
+                            .pointerInput(pages.size, settings.swipeBehavior) {
+                                if (settings.swipeBehavior != SwipeBehavior.PAGE) {
+                                    return@pointerInput
+                                }
                                 awaitEachGesture {
                                     val down = awaitFirstDown(
                                         requireUnconsumed = false,

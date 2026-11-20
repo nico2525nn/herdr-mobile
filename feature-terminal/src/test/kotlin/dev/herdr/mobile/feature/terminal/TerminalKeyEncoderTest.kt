@@ -291,6 +291,10 @@ class TerminalKeyEncoderTest {
         assertTrue(flat.any { it.modifier == TerminalKeyEncoder.Modifier.SHIFT })
         val pg = flat.first { it.label == "PGUP" }
         assertArrayEquals(
+            "\u001B[5~".toByteArray(Charsets.US_ASCII),
+            requireNotNull(pg.bytes),
+        )
+        assertArrayEquals(
             "\u001B[6~".toByteArray(Charsets.US_ASCII),
             pg.flickDownBytes,
         )
