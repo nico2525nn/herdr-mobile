@@ -92,11 +92,16 @@ token = ""
 try:
     args = open(f"/proc/{pid}/cmdline", "rb").read().split(b"\0")
     args = [a.decode("utf-8", "replace") for a in args if a]
-    for i, arg in enumerate(args):
+    i = 0
+    while i < len(args):
+        arg = args[i]
         if arg == "--token" and i + 1 < len(args):
             token = args[i + 1]
-        elif arg.startswith("--token="):
+            i += 2
+            continue
+        if arg.startswith("--token="):
             token = arg.split("=", 1)[1]
+        i += 1
 except OSError:
     pass
 if not token:
@@ -147,8 +152,9 @@ health_curl() {
   local token="$1" url="$2"
   if [[ -n "$token" ]]; then
     # Do not put the bearer in curl's argv: /proc/<pid>/cmdline is readable.
-    printf 'header = "Authorization: Bearer %s"\n' "$token" |
-      curl -fsS --max-time 2 --config - "$url"
+    # -H @- avoids curl-config quoting rules for literal quotes/backslashes.
+    printf 'Authorization: Bearer %s\n' "$token" |
+      curl -fsS --max-time 2 -H @- "$url"
   else
     curl -fsS --max-time 2 "$url"
   fi

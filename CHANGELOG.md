@@ -47,6 +47,15 @@
   the notification tap goes through a non-exported proxy instead of the
   exported launcher activity.
 
+### Release-gate fixes (fifth pass)
+
+- Deploy reads the post-restart token from `/proc/<pid>/cmdline` with an
+  argv walk that preserves `--token=` prefixes, and sends the Bearer header via
+  stdin `-H @-` so literal quotes/backslashes are not curl-config syntax.
+- Notification seed ignores a stale non-alert event that arrives after a newer
+  snapshot, and suppresses the reconcile notification for pre-seed events; this
+  removes the DONE double-post / zero-post orderings.
+
 ### Release-gate fixes (fourth pass)
 
 - Deploy resolves the bearer from the running service's `/proc/<pid>/cmdline`
