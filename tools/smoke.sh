@@ -391,17 +391,6 @@ if [[ -n "$PRIVATE_DAEMON_PID" && -n "$PRIVATE_DAEMON_BIN" &&
     fail "terminal prompt missing before the reconnect"
   fi
 
-  # Start the capture in the live cursor's blink-off phase. With the cursor
-  # forced on in the frozen frame, the next check must still find a solid cell.
-  for _ in $(seq 1 15); do
-    shot "$WORKDIR/cursor-phase.png"
-    if ! cursor_block "$WORKDIR/cursor-phase.png"; then
-      pass "capture starts in the cursor blink-off phase"
-      break
-    fi
-    sleep 0.2
-  done
-
   kill "$PRIVATE_DAEMON_PID" 2>/dev/null || true
   sleep 4
   shot "$WORKDIR/reconnect-frozen.png"

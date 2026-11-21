@@ -957,6 +957,15 @@ public class GhosttyTerminalView @JvmOverloads constructor(
         }
     }
 
+    internal fun setBlinkPhaseForTest(on: Boolean) {
+        blinkPhaseOn = on
+    }
+
+    internal fun cursorCellForTest(): IntArray? {
+        if (cursorX < 0 || cursorY < 0 || cellWidth <= 0f || cellHeight <= 0) return null
+        return intArrayOf(cursorX, cursorY, cellWidth.toInt(), cellHeight)
+    }
+
     private fun renderFrame() {
         val buffer = snapshotBuffer ?: return
         val canvas = bitmapCanvas ?: return

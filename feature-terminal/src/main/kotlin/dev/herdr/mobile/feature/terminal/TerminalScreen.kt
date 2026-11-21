@@ -24,7 +24,6 @@ import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
-import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.saveable.Saver
@@ -109,14 +108,10 @@ fun TerminalScreen(
         mutableStateOf<WorkspaceMenuTarget?>(null)
     }
     var backendState by remember { mutableStateOf<BackendState?>(null) }
-    var frozenFrame by remember { mutableStateOf<FrozenTerminalFrame?>(null) }
-    var frameEpoch by remember { mutableLongStateOf(0L) }
+    val frozenStore = remember { FrozenFrameStore<android.graphics.Bitmap>() }
     // A frame belongs to exactly one target and backend. A tab/pane switch or
     // a backend replacement must never show the previous pane's screen.
-    LaunchedEffect(state.target, state.backend) {
-        frameEpoch += 1
-        frozenFrame = null
-    }
+    LaunchedEffect(state.target, state.backend) { frozenStore.onOwnerChanged() }
     // Manual keyboard summon (CJK panel button). Counter, not boolean: two
     // consecutive requests must both fire. Nothing else shows the IME — no
     // tap, no swipe, no focus change (Termux behavior). Page swipes never
@@ -340,23 +335,16 @@ fun TerminalScreen(
                     onBack = onNavigateHome,
                     onBackendState = { backendState = it },
                     linkRowVisible = linkStatus != null,
-                    captureEpoch = frameEpoch,
+                    captureEpoch = frozenStore.epoch,
                     onFrameCaptured = { epoch, ownerBackend, ownerTarget, bitmap ->
-                        frozenFrame = if (
-                            bitmap != null &&
-                            frozenFrameBelongsToCurrent(
-                                ownerEpoch = epoch,
-                                currentEpoch = frameEpoch,
-                                ownerBackend = ownerBackend,
-                                currentBackend = state.backend,
-                                ownerTarget = ownerTarget,
-                                currentTarget = state.target,
-                            )
-                        ) {
-                            FrozenTerminalFrame(ownerBackend, ownerTarget!!, bitmap)
-                        } else {
-                            null
-                        }
+                        frozenStore.onCaptured(
+                            ownerEpoch = epoch,
+                            ownerBackend = ownerBackend,
+                            ownerTarget = ownerTarget,
+                            captured = bitmap,
+                            currentBackend = state.backend,
+                            currentTarget = state.target,
+                        )
                     },
                     keyboardShowRequest = keyboardShowRequest,
                     keyboardShowHandled = keyboardShowHandled,
@@ -369,12 +357,10 @@ fun TerminalScreen(
             // The frozen full frame is fitted into the area below the 32dp
             // status strip. Both the top and the bottom row stay visible; the
             // live view and its PTY are never resized.
-            val visibleFrame = frozenFrame?.takeIf {
-                linkStatus != null && it.backend === state.backend && it.target == state.target
-            }
-            visibleFrame?.let { frozen ->
+            val visibleFrame = frozenStore.frame?.takeIf { linkStatus != null }
+            visibleFrame?.let { bitmap ->
                 Image(
-                    bitmap = frozen.bitmap.asImageBitmap(),
+                    bitmap = bitmap.asImageBitmap(),
                     contentDescription = null,
                     contentScale = ContentScale.FillBounds,
                     modifier = Modifier
@@ -478,22 +464,3 @@ fun TerminalScreen(
         )
     }
 }
-
-private data class FrozenTerminalFrame(
-    val backend: ConnectionTerminalBackend,
-    val target: TerminalTarget,
-    val bitmap: android.graphics.Bitmap,
-)
-
-internal fun frozenFrameBelongsToCurrent(
-    ownerEpoch: Long,
-    currentEpoch: Long,
-    ownerBackend: Any?,
-    currentBackend: Any?,
-    ownerTarget: Any?,
-    currentTarget: Any?,
-): Boolean =
-    ownerEpoch == currentEpoch &&
-        ownerBackend != null &&
-        ownerBackend === currentBackend &&
-        ownerTarget == currentTarget

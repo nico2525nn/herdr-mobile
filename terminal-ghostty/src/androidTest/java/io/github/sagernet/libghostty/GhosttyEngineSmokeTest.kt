@@ -7,6 +7,8 @@ import android.view.View
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertNotEquals
+import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import org.junit.runner.RunWith
@@ -56,6 +58,17 @@ class GhosttyEngineSmokeTest {
                 context,
                 GhosttyTerminalSession.Options(columns = 20, rows = 6),
             )
+            session.setTheme(
+                GhosttyTheme(
+                    foreground = 0xFFE8E8E8.toInt(),
+                    background = 0xFF101010.toInt(),
+                    cursorColor = 0xFFEB4765.toInt(),
+                    selectionBackground = null,
+                    selectionForeground = null,
+                    palette = List(256) { null },
+                ),
+            )
+            session.setColorScheme(true)
             view = GhosttyTerminalView(context)
             view.session = session
             view.measure(
@@ -165,4 +178,62 @@ class GhosttyEngineSmokeTest {
         assertEquals("key produced no transport bytes", 1, sent.size)
         session.close()
     }
+
+    @Test
+    fun frozenCapturePaintsTheCursorWhenBlinkIsOff() {
+        val instrumentation = InstrumentationRegistry.getInstrumentation()
+        val context = instrumentation.targetContext
+        lateinit var session: GhosttyTerminalSession
+        lateinit var view: GhosttyTerminalView
+
+        instrumentation.runOnMainSync {
+            session = GhosttyTerminalSession(
+                context,
+                GhosttyTerminalSession.Options(columns = 20, rows = 6),
+            )
+            session.setTheme(
+                GhosttyTheme(
+                    foreground = 0xFFE8E8E8.toInt(),
+                    background = 0xFF101010.toInt(),
+                    cursorColor = 0xFFEB4765.toInt(),
+                    selectionBackground = null,
+                    selectionForeground = null,
+                    palette = List(256) { null },
+                ),
+            )
+            session.setColorScheme(true)
+            view = GhosttyTerminalView(context)
+            view.session = session
+            view.measure(
+                View.MeasureSpec.makeMeasureSpec(400, View.MeasureSpec.EXACTLY),
+                View.MeasureSpec.makeMeasureSpec(240, View.MeasureSpec.EXACTLY),
+            )
+            view.layout(0, 0, 400, 240)
+            session.feedOutput("$ ".toByteArray())
+        }
+        instrumentation.waitForIdleSync()
+        Thread.sleep(250)
+        instrumentation.waitForIdleSync()
+
+        instrumentation.runOnMainSync {
+            view.setBlinkPhaseForTest(false)
+            val cell = view.cursorCellForTest()
+            assertNotNull("cursor cell", cell)
+            val frame = view.captureFrameWithCursor()
+            assertNotNull("frozen frame", frame)
+            val (col, row, cw, ch) = cell!!
+            val x = (col * cw + cw / 2).coerceIn(0, frame!!.width - 1)
+            val y = (row * ch + ch / 2).coerceIn(0, frame.height - 1)
+            val backgroundX = (19 * cw + cw / 2).coerceIn(0, frame.width - 1)
+            // A block cursor fills the cell with the cursor colour. Without
+            // the forced blink-on capture the cell is the background here.
+            assertNotEquals(
+                "cursor disappeared when blink was off",
+                frame.getPixel(backgroundX, y),
+                frame.getPixel(x, y),
+            )
+        }
+        session.close()
+    }
+
 }
