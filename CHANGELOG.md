@@ -47,6 +47,29 @@
   the notification tap goes through a non-exported proxy instead of the
   exported launcher activity.
 
+### Sixth deep-review pass
+
+- **Target-safe rows:** Terminal rail tab/workspace menus and read-ack carry
+  the generation captured when the row was selected; a host switch never
+  re-resolves the old route by ID. Home menu targets carry the same generation.
+- **Attach truth:** the TUI history prelude (cols=0) is no longer reported as
+  `Attached`; only the geometry Ready is. `UiFocusState` suppresses alerts only
+  while the backend is actually `Attached`.
+- **Core/paths:** path segments percent-encode spaces (`%20`, not `+`); a Core
+  rename freezes where-derived IDs; a partial multi-pane close returns failure.
+- **CI:** `/proc/<pid>/exe` accepts the ` (deleted)` suffix after a rebuild;
+  an explicit teardown failure is not retried by the EXIT trap.
+- **Deploy:** `--token` wins, EnvironmentFiles override Environment in systemd
+  order (empty clears), shell fallback last.
+- **Notifications:** same-seq snapshot reconciliation, a 1024-event buffer, and
+  EventSocket closes on overflow instead of silently dropping; persisted
+  `status|workspace` splits only at the first pipe; seed retracts a persisted
+  DONE even when a live event is present; storage failure blocks writes.
+- **Settings:** backend-mode edits share the profile lock; host/port TOFU
+  approval is rejected if the profile moved since the probe.
+- **Cache/reorder:** revision check, payload install, and revision advance share
+  one lock; a drag releases only its own row's state and requires a real UP.
+
 ### Fifth deep-review pass
 
 - **Target generations everywhere:** tab close/rename, workspace rename/close,

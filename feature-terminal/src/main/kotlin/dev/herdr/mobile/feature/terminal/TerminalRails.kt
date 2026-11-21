@@ -32,12 +32,14 @@ internal data class TabMenuTarget(
     val workspaceId: String,
     val tabId: String,
     val label: String,
+    val targetGeneration: Long,
 )
 
 /** Which workspace a long-press menu refers to. */
 internal data class WorkspaceMenuTarget(
     val workspaceId: String,
     val label: String,
+    val targetGeneration: Long,
 )
 
 @Composable

@@ -47,6 +47,7 @@ sealed interface ConnectionTestResult {
         val host: String,
         val fingerprint: String,
         val knownHostsLine: String,
+        val port: Int = 22,
     ) : ConnectionTestResult
 }
 
@@ -61,6 +62,7 @@ class UnknownHostKeyException(
     val host: String,
     val fingerprint: String,
     val knownHostsLine: String,
+    val port: Int = 22,
 ) : Exception("Unknown host key for $host ($fingerprint)")
 
 enum class FailureKind {

@@ -38,6 +38,7 @@ data class SettingsUiState(
 data class PendingHostKey(
     val profileId: String,
     val host: String,
+    val port: Int = 22,
     /** e.g. `SHA256:abc... (ssh-ed25519)` — whatever JSch reported. */
     val fingerprint: String,
     /** Full `host type base64` line to store on approval. */
@@ -72,6 +73,17 @@ class SettingsViewModel(
         }
     }
 
+    /** Profile-owned settings share the save/remove/TOFU lock. */
+    private fun editProfile(transform: (AppSettings) -> AppSettings) {
+        viewModelScope.launch {
+            repository.withProfileLock {
+                runCatching { repository.update(transform) }
+                    .onSuccess { clearSaveError() }
+                    .onFailure { _ui.value = _ui.value.copy(error = saveFailed(it)) }
+            }
+        }
+    }
+
     fun setThemeMode(mode: ThemeMode) = edit { it.copy(themeMode = mode) }
     fun setDynamicColor(enabled: Boolean) = edit { it.copy(dynamicColor = enabled) }
     fun setTerminalScheme(scheme: TerminalColorScheme) = edit { it.copy(terminalColorScheme = scheme) }
@@ -83,13 +95,13 @@ class SettingsViewModel(
     fun setBoldIsBright(enabled: Boolean) = edit { it.copy(boldIsBright = enabled) }
 
     fun setTransportMode(mode: TransportMode) = edit { it.copy(transportMode = mode) }
-    fun setBackendMode(mode: BackendMode) = edit { settings ->
+    fun setBackendMode(mode: BackendMode) = editProfile { settings ->
         if (settings.transportMode == TransportMode.DIRECT) {
             settings.copy(directBackendMode = mode)
         } else {
             val profile = settings.hostProfiles.firstOrNull { it.id == settings.activeProfileId }
                 ?: settings.hostProfiles.firstOrNull()
-                ?: return@edit settings
+                ?: return@editProfile settings
             settings.copy(hostProfiles = settings.hostProfiles.map {
                 if (it.id == profile.id) it.copy(backendMode = mode) else it
             })
@@ -374,6 +386,7 @@ class SettingsViewModel(
                         PendingHostKey(
                             profileId = it.profileId,
                             host = it.host,
+                            port = it.port,
                             fingerprint = it.fingerprint,
                             knownHostsLine = it.knownHostsLine,
                         )
@@ -402,7 +415,14 @@ class SettingsViewModel(
     fun approveHostKey() {
         val pending = _ui.value.pendingHostKey ?: return
         viewModelScope.launch {
-            runCatching { repository.acceptHostKey(pending.profileId, pending.knownHostsLine) }
+            runCatching {
+                repository.acceptHostKeyFor(
+                    pending.profileId,
+                    pending.knownHostsLine,
+                    pending.host,
+                    pending.port,
+                )
+            }
                 .onSuccess {
                     _ui.value = _ui.value.copy(pendingHostKey = null)
                     testConnection()

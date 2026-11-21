@@ -183,6 +183,10 @@ impl SessionCache {
                 // flight. Keep its newer payload and make the caller retry.
                 return Err(anyhow::anyhow!("cache moved during refresh; retry"));
             }
+            // Advance the generation while holding the same lock that installs
+            // the payload; two concurrent refreshes can no longer both pass
+            // the stale check.
+            self.revision.store(revision_before + 1, Ordering::SeqCst);
             inner.snapshot = Some(snapshot);
             inner.herdr_connected = true;
             inner.herdr_error = None;
@@ -191,9 +195,8 @@ impl SessionCache {
                 inner.herdr_protocol = info.protocol;
             }
         }
-        let revision = self.revision.fetch_add(1, Ordering::SeqCst) + 1;
         Ok(CacheSummary {
-            revision,
+            revision: revision_before + 1,
             seq: self.seq.load(Ordering::SeqCst),
             workspaces,
         })

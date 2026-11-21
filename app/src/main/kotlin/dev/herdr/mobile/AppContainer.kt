@@ -27,6 +27,8 @@ internal data class ConnectionTargetKey(
     val directUrl: String?,
     val profile: ProfileTargetKey?,
     val backendMode: BackendMode,
+    /** Direct only: the bearer is read from the active profile alias. */
+    val directBearerAlias: String? = null,
 )
 
 /**
@@ -68,11 +70,22 @@ internal fun connectionTargetKey(settings: AppSettings): ConnectionTargetKey {
     return ConnectionTargetKey(
         transportMode = settings.transportMode,
         directUrl = settings.directUrl.takeIf { settings.transportMode == TransportMode.DIRECT },
-        profile = activeProfile?.let(::ProfileTargetKey),
+        // Direct uses only URL/backend/bearer; SSH profile field edits must not
+        // tear down a healthy Direct link.
+        profile = if (settings.transportMode == TransportMode.SSH) {
+            activeProfile?.let(::ProfileTargetKey)
+        } else {
+            null
+        },
         backendMode = if (settings.transportMode == TransportMode.SSH) {
             activeProfile?.backendMode ?: BackendMode.TUI
         } else {
             settings.directBackendMode
+        },
+        directBearerAlias = if (settings.transportMode == TransportMode.DIRECT) {
+            activeProfile?.bearerTokenAlias
+        } else {
+            null
         },
     )
 }

@@ -148,6 +148,7 @@ class SshTunnelProvider(
                             host = profile.host,
                             fingerprint = runCatching { hk.getFingerPrint(jsch) }.getOrNull() ?: type,
                             knownHostsLine = "$hostPart $type $key",
+                            port = profile.port,
                         )
                     }
                 }

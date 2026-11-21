@@ -42,6 +42,8 @@ data class TerminalUiState(
     val stickyModifiers: Set<TerminalKeyEncoder.Modifier> = emptySet(),
     /** Increments when a rail reorder fails so the local list can restore. */
     val reorderReset: Long = 0,
+    /** Target that produced this snapshot; rail actions carry it to REST. */
+    val targetGeneration: Long = 0,
 ) {
     val workspace: Workspace? get() = snapshot?.workspace(target?.workspaceId)
     val tab: Tab? get() = snapshot?.tab(target?.tabId)
@@ -152,6 +154,7 @@ class TerminalViewModel(
             statusMessage = message,
             stickyModifiers = sticky,
             reorderReset = reset,
+            targetGeneration = client.targetGeneration,
         )
     }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), TerminalUiState())
 
@@ -348,9 +351,9 @@ class TerminalViewModel(
         }
     }
 
-    fun closeTab(workspaceId: String, tabId: String) {
+    fun closeTab(workspaceId: String, tabId: String, targetGeneration: Long = client.targetGeneration) {
         viewModelScope.launch {
-            runCatching { client.closeTab(tabId) }
+            runCatching { client.closeTabAt(tabId, targetGeneration) }
                 .onSuccess {
                     // Move to a surviving tab; the closed one disappears on the next event.
                     val snapshot = client.state.value.snapshot
@@ -365,16 +368,22 @@ class TerminalViewModel(
         }
     }
 
-    fun renameWorkspace(workspaceId: String, label: String) {
+    fun renameWorkspace(
+        workspaceId: String,
+        label: String,
+        targetGeneration: Long = client.targetGeneration,
+    ) {
         viewModelScope.launch {
-            runCatching { client.renameWorkspace(workspaceId, label.trim()) }
+            runCatching {
+                client.renameWorkspaceAt(workspaceId, label.trim(), targetGeneration)
+            }
                 .onFailure { messageFlow.value = UiMessage.CommandFailed(UiMessage.CommandFailed.Command.RENAME_WORKSPACE, it.message) }
         }
     }
 
-    fun closeWorkspace(workspaceId: String) {
+    fun closeWorkspace(workspaceId: String, targetGeneration: Long = client.targetGeneration) {
         viewModelScope.launch {
-            runCatching { client.closeWorkspace(workspaceId) }
+            runCatching { client.closeWorkspaceAt(workspaceId, targetGeneration) }
                 .onSuccess {
                     // Move to a surviving workspace's active tab, like closeTab.
                     val snapshot = client.state.value.snapshot ?: return@onSuccess
@@ -390,9 +399,9 @@ class TerminalViewModel(
         }
     }
 
-    fun renameTab(tabId: String, label: String) {
+    fun renameTab(tabId: String, label: String, targetGeneration: Long = client.targetGeneration) {
         viewModelScope.launch {
-            runCatching { client.renameTab(tabId, label.trim()) }
+            runCatching { client.renameTabAt(tabId, label.trim(), targetGeneration) }
                 .onFailure { messageFlow.value = UiMessage.CommandFailed(UiMessage.CommandFailed.Command.RENAME_TAB, it.message) }
         }
     }

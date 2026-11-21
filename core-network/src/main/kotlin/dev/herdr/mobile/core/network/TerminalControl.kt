@@ -32,8 +32,19 @@ internal fun parseTerminalControl(
     }
     return when (record.type) {
         TerminalProtocol.Ready.TYPE ->
-            parseReadyRecord(text, previous, fallbackPaneId)
-                ?.let { TerminalControlTransition(it.toAttachedState(), it) }
+            parseReadyRecord(text, previous, fallbackPaneId)?.let { ready ->
+                if (ready.prelude) {
+                    // History metadata only. Stay Attaching until the geometry
+                    // Ready arrives, or a DONE read-ack can run for a failed
+                    // attach.
+                    TerminalControlTransition(
+                        previous ?: TerminalAttachmentState.Attaching(ready.paneId),
+                        ready,
+                    )
+                } else {
+                    TerminalControlTransition(ready.toAttachedState(), ready)
+                }
+            }
         TerminalProtocol.Closed.TYPE -> parseClosedRecord(text)
         TerminalProtocol.Failure.TYPE -> parseFailureRecord(text)
         // Unknown control record from a newer daemon: ignore, stay attached.
@@ -78,6 +89,7 @@ internal fun parseReadyRecord(
         } else {
             previous?.historyError
         },
+        prelude = int("cols") == 0,
         visibleOk = if (obj.containsKey("visibleOk")) {
             primitive("visibleOk")?.content != "false"
         } else {

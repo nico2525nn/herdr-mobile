@@ -236,7 +236,11 @@ class DaemonApi(
         return obj["log"]?.jsonPrimitive?.contentOrNull.orEmpty()
     }
 
-    private fun String.url(): String = URLEncoder.encode(this, "UTF-8")
+    private fun String.url(): String =
+        // URLEncoder is form encoding: `+` for spaces. Axum path decoding does
+        // not translate it back, so a Core "where" id with spaces became
+        // not_found. Percent-encode the path segment properly.
+        URLEncoder.encode(this, "UTF-8").replace("+", "%20")
 }
 
 data class WorkspacesResponse(

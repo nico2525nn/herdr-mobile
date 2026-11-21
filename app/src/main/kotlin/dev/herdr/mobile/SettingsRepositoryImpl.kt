@@ -78,6 +78,9 @@ class SettingsRepositoryImpl(
     @Volatile
     private var loadFailed = false
 
+    /** False while the initial DataStore read failed; do not overwrite it. */
+    val storageHealthy: Boolean get() = !loadFailed
+
     init {
         scope.launch { load() }
     }
@@ -178,6 +181,22 @@ class SettingsRepositoryImpl(
             secrets.put(resolved, knownHosts)
             resolved
         }
+
+    override suspend fun acceptHostKeyFor(
+        profileId: String,
+        knownHostsLine: String,
+        expectedHost: String,
+        expectedPort: Int,
+    ): String = profileMutex.withLock {
+        val current = _settings.value.hostProfiles.firstOrNull { it.id == profileId }
+            ?: throw IllegalArgumentException("No such profile: $profileId")
+        if (current.host != expectedHost || current.port != expectedPort) {
+            throw IllegalArgumentException("The profile endpoint changed; approve the new host again")
+        }
+        val alias = storeKnownHosts(current.hostKeyAlias, knownHostsLine.trim())
+        updateProfile(current.copy(hostKeyAlias = alias))
+        alias
+    }
 
     override suspend fun acceptHostKey(profileId: String, knownHostsLine: String): String =
         profileMutex.withLock {
@@ -293,6 +312,7 @@ class SettingsRepositoryImpl(
                         host = e.host,
                         fingerprint = e.fingerprint,
                         knownHostsLine = e.knownHostsLine,
+                        port = e.port,
                     )
                 }
             }

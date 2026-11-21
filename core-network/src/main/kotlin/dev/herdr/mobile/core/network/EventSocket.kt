@@ -62,14 +62,20 @@ class EventSocket(
                 val type = (obj["type"] as? JsonPrimitive)?.contentOrNull ?: return
                 val seq = (obj["seq"] as? JsonPrimitive)?.longOrNull ?: return
                 if (type == SemanticEvent.TYPE_STREAM_READY) {
-                    trySend(Signal.Ready(seq))
+                    if (trySend(Signal.Ready(seq)).isFailure) {
+                        webSocket.close(1008, "events_lost")
+                    }
                 } else {
                     val event = try {
                         HerdrJson.decodeFromJsonElement(SemanticEvent.serializer(), obj)
                     } catch (_: Exception) {
                         return
                     }
-                    trySend(Signal.Event(event))
+                    if (trySend(Signal.Event(event)).isFailure) {
+                        // Dropping a semantic event would lose a short DONE.
+                        // Close instead; the reconnect refetches the snapshot.
+                        webSocket.close(1008, "events_lost")
+                    }
                 }
             }
 

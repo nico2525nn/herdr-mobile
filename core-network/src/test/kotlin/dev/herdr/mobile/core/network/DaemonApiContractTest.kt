@@ -65,7 +65,7 @@ class DaemonApiContractTest {
     fun `pane ids are url-encoded into the path`() = runBlocking {
         api().sendInput("w1:p 1", "hi")
         assertEquals(
-            "http://127.0.0.1:8765/v1/pane/w1%3Ap+1/input",
+            "http://127.0.0.1:8765/v1/pane/w1%3Ap%201/input",
             recorded.single().url.toString(),
         )
     }

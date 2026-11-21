@@ -178,6 +178,12 @@ class NotificationRelay(
                                 // that left a DONE alert alive when the newer
                                 // snapshot said working.
                                 if (live.seq > snapshot.seq) continue
+                                // Even when a live event is authoritative,
+                                // retract a different process-death status so
+                                // a stale DONE does not survive the seed.
+                                if (old != null && old.status != pane.status) {
+                                    HerdrNotifications.dismissPane(context, old.workspaceId, pane.id)
+                                }
                                 if (live.status != pane.status) {
                                     val event = SemanticEvent(
                                         seq = snapshot.seq,
@@ -228,7 +234,7 @@ class NotificationRelay(
                                 )
                             }
                         }
-                        persistenceReady = true
+                        persistenceReady = settings.storageHealthy
                         persistLocked()
                         seeded = true
                         val currentSettings = settings.settings.value
@@ -321,7 +327,7 @@ class NotificationRelay(
             // leaving a DONE alert that no later event will retract.
             val state = client.state.value
             val snapshot = state.snapshot
-            if (snapshot != null && snapshot.seq > event.seq &&
+            if (snapshot != null && snapshot.seq >= event.seq &&
                 state.connectionEpoch == connectionEpoch
             ) {
                 val currentPane = snapshot.pane(paneId)
@@ -375,7 +381,7 @@ class NotificationRelay(
             resetEpoch++
             lastNotified.clear()
             seeded = false
-            persistenceReady = true
+            persistenceReady = settings.storageHealthy
             persistLocked()
         }
     }
@@ -419,10 +425,14 @@ class NotificationRelay(
     }
 
     private fun parseNotified(raw: String): NotifiedState {
-        val parts = raw.split('|')
+        // Split only at the first pipe: a where-derived workspace id may
+        // itself contain '|'. The old split('|') truncated it on restart.
+        val separator = raw.indexOf('|')
+        val status = if (separator >= 0) raw.substring(0, separator) else raw
+        val workspace = if (separator >= 0) raw.substring(separator + 1) else null
         return NotifiedState(
-            status = AgentStatus.fromWire(parts.getOrNull(0)),
-            workspaceId = parts.getOrNull(1)?.takeUnless { it == "null" },
+            status = AgentStatus.fromWire(status),
+            workspaceId = workspace?.takeUnless { it == "null" || it.isEmpty() },
         )
     }
 

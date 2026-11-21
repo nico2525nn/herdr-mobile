@@ -179,7 +179,16 @@ fun <T> rememberReorderState(
                         while (!done) {
                             val event = awaitPointerEvent(PointerEventPass.Initial)
                             val change = event.changes.firstOrNull { it.id == down.id }
-                            if (change != null && change.isConsumed) {
+                            if (change == null) {
+                                // The pointer/node disappeared without an UP.
+                                draggingKey.value = null
+                                scrollDir.intValue = 0
+                                dragOffsetPx.floatValue = 0f
+                                order.value = pendingReset.value ?: latestItems.value
+                                pendingReset.value = null
+                                return@awaitEachGesture
+                            }
+                            if (change.isConsumed) {
                                 // Compose's cancel synthesis is consumed with
                                 // pressed=false; do not commit a reorder/menu.
                                 draggingKey.value = null
@@ -189,7 +198,7 @@ fun <T> rememberReorderState(
                                 pendingReset.value = null
                                 return@awaitEachGesture
                             }
-                            if (change == null || change.changedToUpIgnoreConsumed()) {
+                            if (change.changedToUpIgnoreConsumed()) {
                                 done = true
                                 break
                             }
@@ -319,7 +328,7 @@ fun <T> rememberReorderState(
                         // the drag so auto-scroll and the resync gate recover.
                         // A normally completed drag already cleared the key
                         // and sent onDrop; do not undo its optimistic order.
-                        if (draggingKey.value != null) {
+                        if (draggingKey.value == itemKey) {
                             draggingKey.value = null
                             scrollDir.intValue = 0
                             dragOffsetPx.floatValue = 0f

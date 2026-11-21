@@ -125,6 +125,8 @@ class PaneSessionController(
         val snapshot = state.snapshot ?: return
         val current = targetFlow.value
         if (current == null) {
+            // After a host switch an old route must not re-resolve by ID.
+            if (!initialResolutionAllowed) return
             val resolved = resolveTarget(
                 snapshot,
                 initialWorkspaceId,
@@ -633,6 +635,7 @@ class PaneSessionController(
         // returns early when backgrounded), leaving no target at all. Resolve
         // it now instead of waiting for an unrelated later state change.
         val target = targetFlow.value ?: run {
+            if (!initialResolutionAllowed) return
             val snapshot = state.snapshot ?: return
             val resolved = resolveTarget(
                 snapshot, initialWorkspaceId, initialTabId, initialPaneId,

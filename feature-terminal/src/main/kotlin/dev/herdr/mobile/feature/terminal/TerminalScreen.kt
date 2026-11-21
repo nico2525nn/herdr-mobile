@@ -44,26 +44,32 @@ import androidx.compose.runtime.setValue
  * horizontally.
  */
 private val TabMenuTargetSaver: Saver<TabMenuTarget?, Any> = Saver(
-    save = { target -> target?.let { listOf(it.workspaceId, it.tabId, it.label) } },
+    save = { target ->
+        target?.let { listOf(it.workspaceId, it.tabId, it.label, it.targetGeneration) }
+    },
     restore = { raw ->
         val parts = raw as? List<*> ?: return@Saver null
-        if (parts.size != 3) null
+        if (parts.size != 4) null
         else TabMenuTarget(
             workspaceId = parts[0] as? String ?: return@Saver null,
             tabId = parts[1] as? String ?: return@Saver null,
             label = parts[2] as? String ?: return@Saver null,
+            targetGeneration = parts[3] as? Long ?: return@Saver null,
         )
     },
 )
 
 private val WorkspaceMenuTargetSaver: Saver<WorkspaceMenuTarget?, Any> = Saver(
-    save = { target -> target?.let { listOf(it.workspaceId, it.label) } },
+    save = { target ->
+        target?.let { listOf(it.workspaceId, it.label, it.targetGeneration) }
+    },
     restore = { raw ->
         val parts = raw as? List<*> ?: return@Saver null
-        if (parts.size != 2) null
+        if (parts.size != 3) null
         else WorkspaceMenuTarget(
             workspaceId = parts[0] as? String ?: return@Saver null,
             label = parts[1] as? String ?: return@Saver null,
+            targetGeneration = parts[2] as? Long ?: return@Saver null,
         )
     },
 )
@@ -125,10 +131,21 @@ fun TerminalScreen(
         onDispose { hideImeNow() }
     }
 
-    // Suppress alerts for the pane the user is looking at: the relay only
-    // needs to know that the terminal is on screen and which pane it shows.
-    DisposableEffect(state.target) {
-        UiFocusState.paneId = state.target?.paneId
+    // Suppress alerts only when the pane is actually attached. A failed attach
+    // must not hide its DONE notification merely because the route was chosen.
+    var backendAttached by androidx.compose.runtime.remember {
+        androidx.compose.runtime.mutableStateOf(false)
+    }
+    LaunchedEffect(state.backend) {
+        val backend = state.backend
+        if (backend == null) {
+            backendAttached = false
+            return@LaunchedEffect
+        }
+        backend.state.collect { backendAttached = it is BackendState.Attached }
+    }
+    DisposableEffect(state.target, backendAttached) {
+        UiFocusState.paneId = state.target?.paneId?.takeIf { backendAttached }
         onDispose {
             if (UiFocusState.paneId == state.target?.paneId) UiFocusState.paneId = null
         }
@@ -197,7 +214,7 @@ fun TerminalScreen(
             },
             onMoveWorkspace = { workspaceId, to -> viewModel.moveWorkspace(workspaceId, to) },
             onWorkspaceLongPress = { workspaceId, label ->
-                workspaceMenu = WorkspaceMenuTarget(workspaceId, label)
+                workspaceMenu = WorkspaceMenuTarget(workspaceId, label, state.targetGeneration)
             },
             menuTarget = workspaceMenu,
             onDismissMenu = { workspaceMenu = null },
@@ -220,7 +237,7 @@ fun TerminalScreen(
                 viewModel.createTab(workspaceId, label = null)
             },
             onTabLongPress = { workspaceId, tabId, label ->
-                tabMenu = TabMenuTarget(workspaceId, tabId, label)
+                tabMenu = TabMenuTarget(workspaceId, tabId, label, state.targetGeneration)
             },
             menuTarget = tabMenu,
             onDismissMenu = { tabMenu = null },
@@ -229,7 +246,7 @@ fun TerminalScreen(
                 tabMenu = null
             },
             onCloseMenu = {
-                viewModel.closeTab(it.workspaceId, it.tabId)
+                viewModel.closeTab(it.workspaceId, it.tabId, it.targetGeneration)
                 tabMenu = null
             },
             onMoveTab = { tabId, to ->
@@ -320,7 +337,7 @@ fun TerminalScreen(
             initial = target.label,
             onDismiss = { renameTarget = null },
             onConfirm = { label ->
-                viewModel.renameTab(target.tabId, label)
+                viewModel.renameTab(target.tabId, label, target.targetGeneration)
                 renameTarget = null
             },
         )
@@ -331,7 +348,7 @@ fun TerminalScreen(
             initial = target.label,
             onDismiss = { workspaceRenameTarget = null },
             onConfirm = { label ->
-                viewModel.renameWorkspace(target.workspaceId, label)
+                viewModel.renameWorkspace(target.workspaceId, label, target.targetGeneration)
                 workspaceRenameTarget = null
             },
         )
@@ -341,7 +358,7 @@ fun TerminalScreen(
             label = target.label,
             onDismiss = { workspaceCloseTarget = null },
             onConfirm = {
-                viewModel.closeWorkspace(target.workspaceId)
+                viewModel.closeWorkspace(target.workspaceId, target.targetGeneration)
                 workspaceCloseTarget = null
             },
         )

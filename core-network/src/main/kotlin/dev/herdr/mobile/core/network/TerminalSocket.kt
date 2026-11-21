@@ -111,6 +111,8 @@ sealed interface TerminalInbound {
         val historyTruncated: Boolean = false,
         val historyError: String? = null,
         val visibleOk: Boolean = true,
+        /** History prelude (cols=0) is not proof that the controller attached. */
+        val prelude: Boolean = false,
     ) : TerminalInbound
     data class Bytes(val data: ByteArray) : TerminalInbound
     data class Closed(val reason: String) : TerminalInbound

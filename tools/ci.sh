@@ -73,6 +73,7 @@ SMOKE_STATUS=0
 ISOLATION_STATUS=0
 RESTORE_STATUS=0
 TEARDOWN_STATUS=0
+PRIVATE_TEARDOWN_DONE=0
 LIVE_ISOLATION=0
 INSTALLED=0
 REVERSE_SET=0
@@ -173,7 +174,11 @@ is_our_daemon() {
   ((${#args[@]} > 0)) || return 1
   local expected_exe
   expected_exe="$(readlink -f "$DAEMON_BIN" 2>/dev/null || printf '%s' "$DAEMON_BIN")"
-  [[ "$(proc_exe "$pid")" == "$expected_exe" ]] || return 1
+  local exe
+  exe="$(proc_exe "$pid")"
+  # A rebuild can replace the path while the old process still runs; Linux
+  # then reports "/path (deleted)".
+  [[ "$exe" == "$expected_exe" || "$exe" == "$expected_exe (deleted)" ]] || return 1
   expected_bind="127.0.0.1:${PRIVATE_PORT}"
   sock="$(session_dir)/herdr.sock"
   # Argument-boundary comparison: a substring match killed a process whose
@@ -453,8 +458,10 @@ cleanup() {
     fi
   fi
 
-  ( stop_private_daemon ) >/dev/null 2>&1 || true
-  ( stop_private_session ) >/dev/null 2>&1 || true
+  if (( PRIVATE_TEARDOWN_DONE == 0 )); then
+    ( stop_private_daemon ) >/dev/null 2>&1 || true
+    ( stop_private_session ) >/dev/null 2>&1 || true
+  fi
   if [[ -n "${STARTED_EMULATOR:-}" && -n "${SERIAL:-}" && "${KEEP_EMULATOR:-0}" != "1" ]]; then
     ( adb_ emu kill >/dev/null 2>&1 || kill "$STARTED_EMULATOR" 2>/dev/null ) || true
   fi
@@ -746,6 +753,7 @@ fi
 # Compare the live signature only after the private daemon and session are
 # fully gone: a teardown bug must not hide behind an earlier reading.
 say "tearing down the private instance"
+PRIVATE_TEARDOWN_DONE=1
 set +e
 stop_private_daemon
 DAEMON_TEARDOWN=$?

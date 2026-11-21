@@ -54,4 +54,16 @@ interface SettingsRepository {
      * profile's host-key alias so the next connect verifies against it. Returns the alias.
      */
     suspend fun acceptHostKey(profileId: String, knownHostsLine: String): String
+
+    /**
+     * Accept only if the profile still points at the probed endpoint. A test
+     * connection can finish after the user edits host/port; storing A's key on
+     * B's profile makes B fail strict verification forever.
+     */
+    suspend fun acceptHostKeyFor(
+        profileId: String,
+        knownHostsLine: String,
+        expectedHost: String,
+        expectedPort: Int,
+    ): String = acceptHostKey(profileId, knownHostsLine)
 }

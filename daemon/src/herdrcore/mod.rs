@@ -513,7 +513,6 @@ impl CoreClient {
     }
 
     async fn close_selected(&self, terminals: impl Iterator<Item = Value>) -> Result<()> {
-        let mut closed = 0usize;
         let mut first_error: Option<anyhow::Error> = None;
         for terminal in terminals {
             let Some(address) = field_string(&terminal, "address") else { continue };
@@ -525,8 +524,8 @@ impl CoreClient {
             }
             if finished {
                 match self.call("terminal.rm", json!({"terminal":address})).await {
-                    Ok(_) => closed += 1,
-                    Err(error) if format!("{error:#}").contains("not_found") => closed += 1,
+                    Ok(_) => {}
+                    Err(error) if format!("{error:#}").contains("not_found") => {}
                     Err(error) if format!("{error:#}").contains("live") => {
                         if first_error.is_none() {
                             first_error = Some(anyhow!("failed: terminal {address} is live"));
@@ -540,11 +539,12 @@ impl CoreClient {
                 first_error = Some(anyhow!("failed: terminal {address} is {state}"));
             }
         }
-        // A multi-pane tab may close most of its panes; report success then.
-        if closed > 0 || first_error.is_none() {
-            Ok(())
-        } else {
-            Err(first_error.unwrap())
+        // A multi-pane tab may close most of its panes, but a leftover live
+        // terminal is a partial failure: the caller must not move away as if
+        // the whole tab/workspace closed.
+        match first_error {
+            Some(error) => Err(error),
+            None => Ok(()),
         }
     }
 
