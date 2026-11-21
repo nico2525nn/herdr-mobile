@@ -52,9 +52,11 @@
 - Deploy reads the post-restart token from `/proc/<pid>/cmdline` with an
   argv walk that preserves `--token=` prefixes, and sends the Bearer header via
   stdin `-H @-` so literal quotes/backslashes are not curl-config syntax.
-- Notification seed ignores a stale non-alert event that arrives after a newer
-  snapshot, and suppresses the reconcile notification for pre-seed events; this
-  removes the DONE double-post / zero-post orderings.
+- Notification events post their transitions immediately; the initial seed
+  only retracts a different persisted status and never re-posts the live one.
+  A stale non-alert event after a newer snapshot is ignored, while a stale
+  DONE/BLOCKED is still processed then reconciled. This removes the DONE
+  double-post / zero-post orderings.
 
 ### Release-gate fixes (fourth pass)
 

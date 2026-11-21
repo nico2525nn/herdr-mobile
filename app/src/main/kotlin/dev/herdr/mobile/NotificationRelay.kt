@@ -118,10 +118,6 @@ class NotificationRelay(
                     paneId, status, event.workspaceId, event,
                     connectionEpoch = stamped.connectionEpoch,
                     fromEvent = true,
-                    // Before seed the persisted map is not merged yet; record
-                    // the live state but let seed emit the one authoritative
-                    // notification (avoids DONE/BLOCKED reposting).
-                    suppressNotify = synchronized(transitionLock) { !seeded },
                 )
             }
         }
@@ -209,29 +205,8 @@ class NotificationRelay(
                                         connectionEpoch = state.connectionEpoch,
                                     )
                                 } else {
-                                    // The live event was recorded before seed
-                                    // with posting suppressed. If it is the
-                                    // first alerting state (or replaces a
-                                    // different persisted one), emit it once.
-                                    if (old?.status != pane.status &&
-                                        (pane.status == AgentStatus.DONE ||
-                                            pane.status == AgentStatus.BLOCKED)
-                                    ) {
-                                        val tab = snapshot.tab(pane.tabId)
-                                        val workspace = snapshot.workspace(pane.workspaceId)
-                                        maybeNotify(
-                                            SemanticEvent(
-                                                seq = snapshot.seq,
-                                                type = SemanticEvent.TYPE_PANE_STATUS_CHANGED,
-                                                workspaceId = pane.workspaceId,
-                                                tabId = pane.tabId,
-                                                paneId = pane.id,
-                                                status = pane.status,
-                                            ),
-                                            workspace?.label,
-                                            tab?.displayLabel,
-                                        )
-                                    }
+                                    // The live event already posted its own
+                                    // transition; seed only advances the seq.
                                     lastNotified[pane.id] = live.copy(seq = snapshot.seq)
                                 }
                                 continue
@@ -339,7 +314,6 @@ class NotificationRelay(
         tabLabel: String? = null,
         connectionEpoch: Long,
         fromEvent: Boolean = false,
-        suppressNotify: Boolean = false,
     ): Boolean = synchronized(transitionLock) {
         val accepted = if (fromEvent) {
             acceptEventLocked(event.seq, connectionEpoch)
@@ -351,7 +325,7 @@ class NotificationRelay(
         // A stale non-alert status (e.g. WORKING arriving after a newer DONE
         // snapshot) must not dismiss the current alert. Alerting events are
         // still processed so a short DONE is not lost, then reconciled.
-        if (fromEvent && !suppressNotify && prev != null && event.seq < prev.seq &&
+        if (fromEvent && prev != null && event.seq < prev.seq &&
             status != AgentStatus.DONE && status != AgentStatus.BLOCKED
         ) {
             return@synchronized false
@@ -363,8 +337,8 @@ class NotificationRelay(
         }
         lastNotified[paneId] = NotifiedState(status, workspaceId, event.seq)
         persistLocked()
-        if (!suppressNotify) maybeNotify(event, workspaceLabel, tabLabel)
-        if (fromEvent && !suppressNotify) {
+        maybeNotify(event, workspaceLabel, tabLabel)
+        if (fromEvent) {
             // A snapshot may already have folded past this event (a short
             // working->done->working). Apply its newer state now rather than
             // leaving a DONE alert that no later event will retract.
@@ -401,10 +375,6 @@ class NotificationRelay(
                             snapshot.tab(pane.tabId)?.displayLabel,
                             connectionEpoch = connectionEpoch,
                             fromEvent = false,
-                            // The pre-event state already owned this alert;
-                            // a stale event must restore it without posting a
-                            // second notification.
-                            suppressNotify = suppressNotify || prev?.status == pane.status,
                         )
                     }
                 }
