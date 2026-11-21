@@ -212,9 +212,12 @@ class NotificationRelay(
                             lastNotified[pane.id] =
                                 NotifiedState(pane.status, pane.workspaceId, snapshot.seq)
                             if (old != null && old.status != pane.status) {
-                                // Changed while dead: retract the stale shade
-                                // entry, then alert the new state once.
-                                HerdrNotifications.dismissPane(context, old.workspaceId, pane.id)
+                                // Changed while dead: retract only the old
+                                // status id, never a sibling that may already
+                                // belong to the live completion.
+                                HerdrNotifications.dismissPaneStatus(
+                                    context, old.workspaceId, pane.id, old.status,
+                                )
                                 val tab = snapshot.tab(pane.tabId)
                                 val workspace = snapshot.workspace(pane.workspaceId)
                                 maybeNotify(

@@ -452,7 +452,10 @@ async fn run_session(
     // alone. A controller that reports busy/failed after a few hundred ms must
     // not look attached. A genuinely quiet pane times out and is accepted.
     let first = tokio::time::timeout(
-        std::time::Duration::from_millis(600),
+        // A controller can report busy well after 600 ms (measured 766 ms).
+        // Waiting longer is safer than acknowledging a DONE too early; a
+        // genuinely quiet pane only pays this once at attach.
+        std::time::Duration::from_millis(1500),
         child.next_record(),
     )
     .await;

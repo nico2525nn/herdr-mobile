@@ -47,6 +47,15 @@
   the notification tap goes through a non-exported proxy instead of the
   exported launcher activity.
 
+### Release-gate fixes (third pass)
+
+- Terminal create-tab rechecks the target generation after the snapshot wait.
+- Deploy parses ExecStart with shlex (quoted `;`/`'` preserved) and chooses the
+  last `--token`, matching the daemon's parser.
+- Notification seed retracts only the old status id.
+- TUI attach waits up to 1.5s for the controller's first successful record, so
+  a 750ms busy failure is not acknowledged as Attached.
+
 ### Release-gate fixes (second pass)
 
 - Core where ids escape both components unambiguously.

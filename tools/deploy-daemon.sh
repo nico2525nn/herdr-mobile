@@ -28,9 +28,32 @@ resolve_deploy_token() {
   # Match the daemon's own priority exactly: --token wins over everything,
   # then the service environment, then the deploy shell override.
   exec="$(systemctl --user show "$SERVICE" -p ExecStart --value 2>/dev/null || true)"
-  token="$(printf '%s' "$exec" |
-    grep -o -- '--token[= ]"\?[^" ;]*' | head -n1 |
-    sed 's/^--token[= ]"\?//' | tr -d "\"'" )"
+  token="$(python3 - "$exec" <<'PY' || true
+import shlex, sys
+raw = sys.argv[1]
+start = raw.find("argv[]=")
+if start >= 0:
+    argv = raw[start + 7:]
+    end = argv.find(" ; ")
+    if end >= 0:
+        argv = argv[:end]
+    try:
+        args = shlex.split(argv)
+    except ValueError:
+        args = argv.split()
+    token = ""
+    i = 0
+    while i < len(args):
+        if args[i] == "--token" and i + 1 < len(args):
+            token = args[i + 1]
+            i += 2
+            continue
+        if args[i].startswith("--token="):
+            token = args[i].split("=", 1)[1]
+        i += 1
+    print(token, end="")
+PY
+)"
   if [[ -n "$token" ]]; then
     printf '%s' "$token"
     return

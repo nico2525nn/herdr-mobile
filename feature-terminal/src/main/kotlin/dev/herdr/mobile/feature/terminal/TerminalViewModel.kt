@@ -350,6 +350,9 @@ class TerminalViewModel(
                         if (client.state.value.snapshot?.tab(tabId) != null) break
                         kotlinx.coroutines.delay(150)
                     }
+                    // The snapshot wait can span a host switch; re-check
+                    // before resolving the new tab on the new host.
+                    if (client.targetGeneration != targetGeneration) return@onSuccess
                     openTab(workspaceId, tabId)
                 }
                 .onFailure { messageFlow.value = UiMessage.CommandFailed(UiMessage.CommandFailed.Command.CREATE_TAB, it.message) }
