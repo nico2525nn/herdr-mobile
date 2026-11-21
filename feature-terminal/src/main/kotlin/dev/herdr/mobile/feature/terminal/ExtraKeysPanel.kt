@@ -23,6 +23,7 @@ import androidx.compose.ui.input.key.KeyEventType
 import androidx.compose.ui.input.key.key
 import androidx.compose.ui.input.key.onPreviewKeyEvent
 import androidx.compose.ui.input.key.type
+import androidx.compose.ui.input.pointer.PointerEventPass
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.platform.LocalHapticFeedback
@@ -159,13 +160,15 @@ private fun RepeatableKeyButton(
             }
             try {
                 while (true) {
-                    val event = awaitPointerEvent()
+                    val event = awaitPointerEvent(PointerEventPass.Initial)
                     val change = event.changes.firstOrNull { it.id == down.id } ?: break
+                    if (change.isConsumed) return@awaitEachGesture
                     if (!change.pressed) {
+                        // Compose's onCancelPointerInput synthesizes a
+                        // pressed=false, consumed event; it is not a tap.
                         up = true
                         break
                     }
-                    if (change.isConsumed) return@awaitEachGesture
                     val dx = change.position.x - change.previousPosition.x
                     val dy = change.position.y - change.previousPosition.y
                     if (abs(dx) > slop || abs(dy) > slop) {
@@ -204,12 +207,14 @@ private fun RepeatableKeyButton(
                             var claimed = false
                             val slop = viewConfiguration.touchSlop
                             while (true) {
-                                val event = awaitPointerEvent()
+                                val event = awaitPointerEvent(PointerEventPass.Initial)
                                 val change = event.changes.firstOrNull { it.id == down.id } ?: break
                                 // The panel pager claims horizontal drags in the
                                 // Initial pass; never turn a consumed swipe into
-                                // a flick on top of the page switch.
-                                if (change.pressed && change.isConsumed) {
+                                // a flick on top of the page switch. Compose's
+                                // cancel synthesis is consumed with pressed=false,
+                                // so this also rejects a cancelled gesture.
+                                if (change.isConsumed) {
                                     return@awaitEachGesture
                                 }
                                 dx += change.position.x - change.previousPosition.x

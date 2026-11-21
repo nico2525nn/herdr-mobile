@@ -95,6 +95,18 @@ class ExtraKeysPanelUiTest {
     }
 
     @Test
+    fun cancelledPointerGestureDoesNotTypeTheKey() {
+        render()
+        compose.mainClock.autoAdvance = false
+        compose.onNode(hasText("TAB") and hasClickAction()).performTouchInput {
+            down(center)
+            cancel()
+        }
+        compose.mainClock.advanceTimeBy(50)
+        assertTrue("a cancelled pointer must not become a key press, got $sent", sent.isEmpty())
+    }
+
+    @Test
     fun horizontalSwipeOverAKeyDoesNotSendIt() {
         render()
         // Keep the 400 ms hold timer from auto-advancing in the test clock;
