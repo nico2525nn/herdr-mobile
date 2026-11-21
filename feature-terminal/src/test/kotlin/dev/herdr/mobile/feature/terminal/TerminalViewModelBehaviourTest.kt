@@ -8,6 +8,7 @@ import dev.herdr.mobile.core.model.Pane
 import dev.herdr.mobile.core.model.SessionSnapshot
 import dev.herdr.mobile.core.model.Tab
 import dev.herdr.mobile.core.model.Workspace
+import dev.herdr.mobile.core.network.DaemonException
 import dev.herdr.mobile.core.network.HerdrClientState
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
@@ -476,6 +477,73 @@ class TerminalViewModelBehaviourTest {
 
         assertNull(vm.uiState.value.target)
         assertEquals("the orphaned stream must be released", 1, connection.released)
+    }
+
+
+    @Test
+    fun `a detach during a link drop keeps the frozen backend until the link returns`() =
+        runTest(dispatcher) {
+            val session = FakeHerdrSession(snapshot(oneWorkspace()))
+            val vm = TerminalViewModel(session, null, null, null, settings())
+            observe(vm)
+            advanceUntilIdle()
+            val first = session.connections.single()
+            val frozen = vm.uiState.value.backend
+            assertNotNull(frozen)
+
+            // The terminal socket closes as the link drops. A stale
+            // CONNECTED pair must not trigger an immediate reattach.
+            session.setConnection(ConnectionState.RECONNECTING)
+            first.detach("released")
+            advanceUntilIdle()
+
+            assertEquals(
+                "must not re-open while the link is down",
+                1,
+                session.openedPanes.size,
+            )
+            assertEquals(
+                "the backend behind the last frame must survive the drop",
+                frozen,
+                vm.uiState.value.backend,
+            )
+            assertEquals(0, first.released)
+
+            session.setConnection(ConnectionState.CONNECTED)
+            advanceUntilIdle()
+
+            assertEquals(
+                "the same pane is reattached once the link is usable",
+                2,
+                session.openedPanes.size,
+            )
+        }
+
+    @Test
+    fun `a reattach that cannot connect keeps the old backend`() = runTest(dispatcher) {
+        val session = FakeHerdrSession(snapshot(oneWorkspace()))
+        val vm = TerminalViewModel(session, null, null, null, settings())
+        observe(vm)
+        advanceUntilIdle()
+        val first = session.connections.single()
+
+        session.setConnection(ConnectionState.RECONNECTING)
+        first.detach("released")
+        advanceUntilIdle()
+        val frozen = vm.uiState.value.backend
+        assertNotNull(frozen)
+
+        session.openFailure = DaemonException("not_connected", "link down")
+        vm.retryAttach()
+        advanceTimeBy(30_001)
+        advanceUntilIdle()
+
+        assertEquals(
+            "a failed reattach while disconnected must not clear the last frame",
+            frozen,
+            vm.uiState.value.backend,
+        )
+        assertEquals(0, first.released)
     }
 
 }

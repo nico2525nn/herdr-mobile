@@ -61,7 +61,9 @@ import androidx.compose.ui.layout.positionInWindow
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.semantics.LiveRegionMode
 import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.liveRegion
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -248,7 +250,12 @@ internal fun HomeHeader(
                     text = "Herdr",
                     style = MaterialTheme.typography.displaySmall,
                 )
-                Row(verticalAlignment = Alignment.CenterVertically) {
+                Row(
+                    modifier = Modifier.semantics(mergeDescendants = true) {
+                        liveRegion = LiveRegionMode.Polite
+                    },
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
                     if (busy && !failed) {
                         ExpressiveStatusGlyph(
                             color = MaterialTheme.colorScheme.primary,
@@ -282,7 +289,7 @@ internal fun HomeHeader(
 /** "Can't reach 192.168.1.4:8765" when the error names an endpoint. */
 private val hostPattern = Regex("""(?:to\s+)(/?[A-Za-z0-9.\-\[\]:]+:\d+)""")
 
-private fun connectionProblem(error: String?): String {
+internal fun connectionProblem(error: String?): String {
     if (error?.contains("No host profile", ignoreCase = true) == true) {
         return "No host configured"
     }
@@ -293,7 +300,7 @@ private fun connectionProblem(error: String?): String {
 }
 
 /** One short cause clause, stripped of transport noise already in the header. */
-private fun connectionDetail(error: String?): String = when {
+internal fun connectionDetail(error: String?): String = when {
     error == null -> "The daemon is not reachable."
     error.contains("No host profile", ignoreCase = true) ->
         "Add a host profile in Settings, then come back."

@@ -31,6 +31,7 @@ import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import dev.herdr.mobile.core.model.ConnectionState
 import dev.herdr.mobile.core.model.InputPanelPage
 import dev.herdr.mobile.core.model.ScrollMode
 import dev.herdr.mobile.feature.terminal.theme.TerminalColorScheme
@@ -75,14 +76,19 @@ internal fun TerminalSurface(
     if (detached?.reason == "lagged_resync") {
         LaunchedEffect(backend) { onRetry() }
     }
+    val connected = state.connection == ConnectionState.CONNECTED
     when (val bs = backendState) {
         is BackendState.Failed -> {
-            TerminalErrorBody(
-                message = "Attach failed (${bs.code}): ${bs.message}",
-                onRetry = onRetry,
-                onBack = onBack,
-            )
-            return
+            // A transport failure while the link is down is not a terminal
+            // failure: keep the last frame and let the link strip explain it.
+            if (connected) {
+                TerminalErrorBody(
+                    message = "Attach failed (${bs.code}): ${bs.message}",
+                    onRetry = onRetry,
+                    onBack = onBack,
+                )
+                return
+            }
         }
         // A detach is usually transient (link flap, resync). Replacing the
         // terminal with an error made a slow link flash between screen and
@@ -93,7 +99,7 @@ internal fun TerminalSurface(
         // yet, possibly never on an idle pane). Without this branch the user
         // stares at an empty terminal with no explanation and no recourse.
         is BackendState.Attached -> {
-            if (!bs.visibleOk) {
+            if (!bs.visibleOk && connected) {
                 TerminalErrorBody(
                     message = "The pane may be gone.",
                     onRetry = null,
@@ -106,10 +112,10 @@ internal fun TerminalSurface(
         else -> {}
     }
 
-    // A retry budget exhausted is a content-level failure: replace the
-    // terminal with the compact block instead of leaving stale bytes with a
-    // floating status element above them.
-    when (val message = state.statusMessage) {
+    // A retry budget exhausted while the link is up is a content-level
+    // failure: replace the terminal with the compact block. While the link is
+    // down, keep the frozen frame; the strip is the status.
+    if (connected) when (val message = state.statusMessage) {
         is dev.herdr.mobile.core.designsystem.UiMessage.AttachFailed -> {
             TerminalErrorBody(
                 message = message.detail ?: "The pane did not attach.",

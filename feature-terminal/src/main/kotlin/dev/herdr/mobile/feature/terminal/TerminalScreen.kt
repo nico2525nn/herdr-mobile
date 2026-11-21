@@ -324,6 +324,34 @@ fun TerminalScreen(
                     cjkFieldFocused = cjkFieldFocused,
                 )
             }
+            // Overlay, not a layout row: a 32dp height change resized the
+            // PTY and the reflow wiped the visible screen. Anchoring the
+            // strip to the bottom keeps the last frame frozen through a drop.
+            val strip = when {
+                // While the link is down the surface keeps the last frame and
+                // the strip is the only status. Only a failure on a live link
+                // replaces the content with the failure block.
+                state.connection == ConnectionState.CONNECTED && terminalFailure -> null
+                state.connection == ConnectionState.FAILED -> "Link down"
+                state.connection == ConnectionState.RECONNECTING ->
+                    if (elapsed > 0) "Reconnecting… ${elapsed}s" else "Reconnecting…"
+                state.connection == ConnectionState.CONNECTING -> "Connecting…"
+                state.connection == ConnectionState.STALE -> "Refreshing…"
+                detached != null ->
+                    if (detached.reason == "lagged_resync") "Resyncing…" else "Reattaching…"
+                else -> null
+            }
+            if (strip != null) {
+                LinkStrip(
+                    text = strip,
+                    tone = when {
+                        state.connection == ConnectionState.FAILED -> LinkTone.ERROR
+                        state.connection == ConnectionState.STALE -> LinkTone.WARNING
+                        else -> LinkTone.BUSY
+                    },
+                    modifier = Modifier.align(Alignment.BottomCenter),
+                )
+            }
             val transient = state.statusMessage
             if (transient != null && !terminalFailure) {
                 androidx.compose.material3.Snackbar(
@@ -343,28 +371,6 @@ fun TerminalScreen(
                         }
                     }
                 }
-            }
-        }
-        if (state.backend != null && !terminalFailure) {
-            val strip = when {
-                state.connection == ConnectionState.FAILED -> "Link down"
-                state.connection == ConnectionState.RECONNECTING ->
-                    if (elapsed > 0) "Reconnecting… ${elapsed}s" else "Reconnecting…"
-                state.connection == ConnectionState.CONNECTING -> "Connecting…"
-                state.connection == ConnectionState.STALE -> "Refreshing…"
-                detached != null ->
-                    if (detached.reason == "lagged_resync") "Resyncing…" else "Reattaching…"
-                else -> null
-            }
-            if (strip != null) {
-                LinkStrip(
-                    text = strip,
-                    tone = when {
-                        state.connection == ConnectionState.FAILED -> LinkTone.ERROR
-                        state.connection == ConnectionState.STALE -> LinkTone.WARNING
-                        else -> LinkTone.BUSY
-                    },
-                )
             }
         }
         BottomInputPanel(

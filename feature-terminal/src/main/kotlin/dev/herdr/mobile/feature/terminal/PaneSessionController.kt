@@ -224,7 +224,12 @@ class PaneSessionController(
                     }
                     return@collect
                 }
-                if (connection != ConnectionState.CONNECTED) {
+                // The combine pair can carry a stale CONNECTED next to a
+                // freshly detached backend (the link and terminal sockets
+                // close independently). Retrying on that pair cleared the
+                // attached backend mid-drop and replaced the frozen terminal
+                // with a placeholder. Read the live link instead.
+                if (session.state.value.connection != ConnectionState.CONNECTED) {
                     attempts = 0
                     lastKey = null
                     attachedAt = 0
@@ -256,7 +261,12 @@ class PaneSessionController(
                 retryJob?.cancel()
                 retryJob = scope.launch {
                     delay(delayMs)
-                    retryAttach()
+                    // The link can drop again during the backoff; do not
+                    // clear a still-frozen backend for a retry that cannot
+                    // open. The next CONNECTED emission re-schedules.
+                    if (session.state.value.connection == ConnectionState.CONNECTED) {
+                        retryAttach()
+                    }
                 }
             }
     }
@@ -441,41 +451,41 @@ class PaneSessionController(
     }
 
     private suspend fun attach(target: TerminalTarget, generation: Long) {
-        // Release the old backend UNCANCELLABLY: release() suspends and a rapid
-        // tab switch would otherwise leave released=true with the socket open.
-        val old = backendFlow.value
-        backendFlow.value = null
-        val oldPaneId = backendPaneId
-        backendPaneId = null
-        if (old != null) {
-            if (oldPaneId == target.paneId) {
-                // Same pane: the release restores its grid, so the new attach
-                // must not race it. Everything else releases in the background
-                // — waiting cost a fixed 150ms on every tab/pane switch.
-                try {
-                    withContext(NonCancellable) { old.release() }
-                } catch (_: Exception) {
-                }
-            } else {
-                releaseInBackground(old)
-            }
-        }
         currentCoroutineContext().ensureActive()
         if (session.targetGeneration != generation) return
 
+        // Keep the previous backend composed until the replacement stream is
+        // actually open. Clearing it first turned every link-drop reattach
+        // into a blank placeholder and discarded the frozen frame.
         val connection = openTerminalConnection(
             session = session,
             target = target,
             generation = generation,
             grid = gridFlow.value,
             onMessage = onMessage,
-        ) ?: return
+        ) ?: run {
+            // A failure while the link is down is not authoritative: keep the
+            // last frame and let the link strip explain the pause. Once the
+            // link is up, a failed attach may replace the content, so drop the
+            // dead backend and let the failure block render.
+            val previous = backendFlow.value
+            if (session.state.value.connection == ConnectionState.CONNECTED && previous != null) {
+                if (backendFlow.value === previous) {
+                    backendFlow.value = null
+                    backendPaneId = null
+                }
+                releaseInBackground(previous)
+            }
+            return
+        }
         if (!currentCoroutineContext().isActive || targetFlow.value != target ||
             session.targetGeneration != generation
         ) {
             releaseQuietly(connection)
             return
         }
+        val previous = backendFlow.value
+        val previousPaneId = backendPaneId
         val backend = ConnectionTerminalBackend(connection, scope)
         backendPaneId = target.paneId
         backendFlow.value = backend
@@ -485,6 +495,18 @@ class PaneSessionController(
             if (backendFlow.value === backend) backendFlow.value = null
             releaseInBackground(backend)
             return
+        }
+        if (previous != null && previous !== backend) {
+            if (previousPaneId == target.paneId) {
+                // The new bridge is already attached; releasing the old one
+                // restores the host viewport only if it was the last bridge.
+                try {
+                    withContext(NonCancellable) { previous.release() }
+                } catch (_: Exception) {
+                }
+            } else {
+                releaseInBackground(previous)
+            }
         }
         flushPending(backend)
         session.state.value.snapshot?.pane(target.paneId)?.let { pane ->

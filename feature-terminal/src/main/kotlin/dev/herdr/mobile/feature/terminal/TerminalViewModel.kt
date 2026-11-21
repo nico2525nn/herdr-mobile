@@ -151,8 +151,12 @@ class TerminalViewModel(
             connection = clientState.connection,
             stale = clientState.stale,
             error = clientState.error,
-            target = target.takeIf { clientState.snapshot != null },
-            backend = backend.takeIf { clientState.snapshot != null },
+            // Keep the route and the attached engine through a link blip:
+            // clearing them here replaced the terminal with a placeholder the
+            // instant the event stream dropped, losing the last frame. The
+            // controller clears both on an explicit target/host change.
+            target = target,
+            backend = backend,
             settings = settings,
             inputPage = page,
             statusMessage = message,

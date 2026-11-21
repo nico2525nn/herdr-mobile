@@ -32,6 +32,9 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.semantics.LiveRegionMode
+import androidx.compose.ui.semantics.liveRegion
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.text.style.TextOverflow
@@ -99,7 +102,9 @@ fun LinkStrip(text: String, tone: LinkTone, modifier: Modifier = Modifier) {
         MaterialTheme.colorScheme.onSurfaceVariant
     }
     Surface(
-        modifier = modifier.fillMaxWidth(),
+        modifier = modifier
+            .fillMaxWidth()
+            .semantics(mergeDescendants = true) { liveRegion = LiveRegionMode.Polite },
         color = container,
         contentColor = content,
     ) {
