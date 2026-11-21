@@ -429,6 +429,7 @@ class NotificationRelay(
             eventHigh = -1L
             eventCursor.reset()
             snapshotCursor.reset()
+            lastAlertSeq.clear()
         }
         if (!eventCursor.accept(seq, connectionEpoch)) return false
         eventHigh = eventHigh.coerceAtLeast(seq)
@@ -442,6 +443,7 @@ class NotificationRelay(
             eventHigh = -1L
             eventCursor.reset()
             snapshotCursor.reset()
+            lastAlertSeq.clear()
         }
         // A snapshot older than an already accepted event would regress the
         // notification state; only accept the newer authoritative seq.

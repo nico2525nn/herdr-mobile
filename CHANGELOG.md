@@ -56,7 +56,9 @@
   only retracts a different persisted status and never re-posts the live one.
   Per-pane `lastAlertSeq` suppresses a late duplicate DONE/BLOCKED that was
   already announced by snapshot reconciliation, while a genuine later
-  completion still posts. Stale non-alert events are ignored.
+  completion still posts. The map is cleared with the cursors when the
+  connection epoch changes, so a daemon restart with lower seq still alerts.
+  Stale non-alert events are ignored.
 
 ### Release-gate fixes (fourth pass)
 
