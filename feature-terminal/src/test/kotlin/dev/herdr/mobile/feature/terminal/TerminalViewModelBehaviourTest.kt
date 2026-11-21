@@ -745,4 +745,40 @@ class TerminalViewModelBehaviourTest {
         assertEquals(openedBefore + 1, session.openedPanes.size)
     }
 
+
+    @Test
+    fun `a link-return retry is retired when a replacement becomes ready`() =
+        runTest(dispatcher) {
+            val session = FakeHerdrSession(snapshot(oneWorkspace()))
+            val vm = TerminalViewModel(session, null, null, null, settings())
+            observe(vm)
+            advanceUntilIdle()
+            val first = session.connections.single()
+
+            session.autoAttach = false
+            first.detach("released")
+            advanceTimeBy(601)
+            runCurrent()
+            assertEquals(2, session.connections.size)
+            val replacement = session.connections.last()
+
+            // The link returns while the replacement handshake is pending.
+            session.setConnection(ConnectionState.RECONNECTING)
+            runCurrent()
+            session.setConnection(ConnectionState.CONNECTED)
+            runCurrent()
+            replacement.attach()
+            runCurrent()
+            assertTrue(vm.uiState.value.backend?.state?.value is BackendState.Attached)
+
+            advanceTimeBy(601)
+            runCurrent()
+
+            assertEquals(
+                "the link-return retry must die with the old detached backend",
+                2,
+                session.openedPanes.size,
+            )
+        }
+
 }

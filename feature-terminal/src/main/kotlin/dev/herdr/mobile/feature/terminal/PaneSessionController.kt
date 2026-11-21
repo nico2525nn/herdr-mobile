@@ -269,14 +269,20 @@ class PaneSessionController(
                 }
                 attempts++
                 retryJob?.cancel()
+                val scheduledBackend = backendFlow.value
                 retryJob = scope.launch {
                     delay(delayMs)
-                    // The link can drop again during the backoff; do not
-                    // clear a still-frozen backend for a retry that cannot
-                    // open. The next CONNECTED emission re-schedules.
-                    if (session.state.value.connection == ConnectionState.CONNECTED) {
-                        retryAttach()
+                    // This job belongs to one detached backend. If a
+                    // replacement became current while the link was coming
+                    // back, this retry is stale and must not open a third
+                    // stream or consume the attach budget.
+                    if (scheduledBackend == null) return@launch
+                    if (backendFlow.value !== scheduledBackend) return@launch
+                    if (scheduledBackend.state.value !is BackendState.Detached) return@launch
+                    if (session.state.value.connection != ConnectionState.CONNECTED) {
+                        return@launch
                     }
+                    retryAttach()
                 }
             }
     }
@@ -528,6 +534,8 @@ class PaneSessionController(
         attachAttempts = 0
         attachRetryJob?.cancel()
         attachRetryJob = null
+        retryJob?.cancel()
+        retryJob = null
         backendPaneId = target.paneId
         backendFlow.value = backend
         if (!currentCoroutineContext().isActive || targetFlow.value != target ||
