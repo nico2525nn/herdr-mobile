@@ -24,6 +24,7 @@ internal fun parseTerminalControl(
     text: String,
     previous: TerminalAttachmentState.Attached?,
     fallbackPaneId: String,
+    previousAttaching: TerminalAttachmentState.Attaching? = null,
 ): TerminalControlTransition? {
     val record = try {
         HerdrJson.decodeFromString(RawTerminalRecord.serializer(), text)
@@ -32,13 +33,19 @@ internal fun parseTerminalControl(
     }
     return when (record.type) {
         TerminalProtocol.Ready.TYPE ->
-            parseReadyRecord(text, previous, fallbackPaneId)?.let { ready ->
+            parseReadyRecord(text, previous, fallbackPaneId, previousAttaching)?.let { ready ->
                 if (ready.prelude) {
                     // History metadata only. Stay Attaching until the geometry
                     // Ready arrives, or a DONE read-ack can run for a failed
-                    // attach.
+                    // attach. Keep the metadata for the geometry merge.
                     TerminalControlTransition(
-                        previous ?: TerminalAttachmentState.Attaching(ready.paneId),
+                        previous ?: TerminalAttachmentState.Attaching(
+                            paneId = ready.paneId,
+                            historyRows = ready.historyRows,
+                            historyTruncated = ready.historyTruncated,
+                            historyError = ready.historyError,
+                            visibleOk = ready.visibleOk,
+                        ),
                         ready,
                     )
                 } else {
@@ -60,6 +67,7 @@ internal fun parseReadyRecord(
     text: String,
     previous: TerminalAttachmentState.Attached?,
     fallbackPaneId: String,
+    previousAttaching: TerminalAttachmentState.Attaching? = null,
 ): TerminalInbound.Ready? {
     val obj = try {
         HerdrJson.parseToJsonElement(text).jsonObject
@@ -78,22 +86,26 @@ internal fun parseReadyRecord(
         cols = int("cols"),
         rows = int("rows"),
         resumed = bool("resumed"),
-        historyRows = if (hasHistory) int("historyRows") else previous?.historyRows ?: 0,
+        historyRows = if (hasHistory) {
+            int("historyRows")
+        } else {
+            previous?.historyRows ?: previousAttaching?.historyRows ?: 0
+        },
         historyTruncated = if (hasHistory) {
             bool("historyTruncated")
         } else {
-            previous?.historyTruncated ?: false
+            previous?.historyTruncated ?: previousAttaching?.historyTruncated ?: false
         },
         historyError = if (obj.containsKey("historyError")) {
             optStr("historyError")
         } else {
-            previous?.historyError
+            previous?.historyError ?: previousAttaching?.historyError
         },
         prelude = int("cols") == 0,
         visibleOk = if (obj.containsKey("visibleOk")) {
             primitive("visibleOk")?.content != "false"
         } else {
-            previous?.visibleOk ?: true
+            previous?.visibleOk ?: previousAttaching?.visibleOk ?: true
         },
     )
 }

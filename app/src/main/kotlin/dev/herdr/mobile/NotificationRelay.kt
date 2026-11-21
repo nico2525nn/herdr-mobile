@@ -184,7 +184,9 @@ class NotificationRelay(
                                 if (old != null && old.status != pane.status &&
                                     (old.status == AgentStatus.DONE || old.status == AgentStatus.BLOCKED)
                                 ) {
-                                    HerdrNotifications.dismissPane(context, old.workspaceId, pane.id)
+                                    HerdrNotifications.dismissPaneStatus(
+                                        context, old.workspaceId, pane.id, old.status,
+                                    )
                                 }
                                 if (live.status != pane.status) {
                                     val event = SemanticEvent(

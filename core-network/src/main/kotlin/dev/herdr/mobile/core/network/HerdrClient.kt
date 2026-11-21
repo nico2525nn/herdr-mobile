@@ -132,6 +132,13 @@ class HerdrClient(
     override suspend fun createTab(workspaceId: String, label: String?, focus: Boolean): String =
         commands.createTab(workspaceId, label, focus)
 
+    override suspend fun createTabAt(
+        workspaceId: String,
+        label: String?,
+        focus: Boolean,
+        targetGeneration: Long,
+    ): String = commands.createTabAt(workspaceId, label, focus, targetGeneration)
+
     override suspend fun closeTab(tabId: String) = commands.closeTab(tabId)
 
     override suspend fun closeTabAt(tabId: String, targetGeneration: Long) =
@@ -170,6 +177,9 @@ class HerdrClient(
 
     override suspend fun moveTab(tabId: String, insertIndex: Long) =
         commands.moveTab(tabId, insertIndex)
+
+    override suspend fun moveTabAt(tabId: String, insertIndex: Long, targetGeneration: Long) =
+        commands.moveTabAt(tabId, insertIndex, targetGeneration)
 
     override suspend fun moveWorkspace(workspaceId: String, insertIndex: Long) =
         commands.moveWorkspace(workspaceId, insertIndex)

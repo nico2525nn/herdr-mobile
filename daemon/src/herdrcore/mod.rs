@@ -850,10 +850,21 @@ pub(crate) fn tab_id_of(terminal: &Value) -> Option<String> {
             // workspace component their fallback tab ids collide and a close
             // in one workspace removed the other workspace's pane.
             let space = workspace_id_of(terminal)?;
-            field_string(labels, "where")
-                .map(|value| format!("where:{space}:{value}"))
+            field_string(labels, "where").map(|value| {
+                // Length/escaping must be unambiguous: `one:two` + `Same / Tab`
+                // and `one` + `two:Same / Tab` previously produced the same id.
+                format!(
+                    "where:{}:{}",
+                    escape_where_component(&space),
+                    escape_where_component(&value),
+                )
+            })
         })
         .or_else(|| field_string(terminal, "address").map(str::to_owned))
+}
+
+fn escape_where_component(value: &str) -> String {
+    value.replace('%', "%25").replace(':', "%3A")
 }
 
 fn order_label(labels: &Value, key: &str) -> i64 {

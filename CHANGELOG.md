@@ -47,6 +47,24 @@
   the notification tap goes through a non-exported proxy instead of the
   exported launcher activity.
 
+### Release-gate fixes
+
+- **Core ids:** where-derived tab ids escape `%`/`:` in both components, so
+  `(one:two, Same / Tab)` and `(one, two:Same / Tab)` no longer collide.
+  Terminal rail create/move commands also carry the row generation.
+- **Attach readiness:** the TUI waits up to 600 ms for the controller's first
+  successful record (not just process life); the history prelude's metadata is
+  carried through Attaching into the geometry Ready.
+- **Terminal state:** the prelude → geometry transition preserves
+  historyRows/historyTruncated/historyError/visibleOk.
+- **Deploy:** quoted `--token` and Environment values are parsed, single quotes
+  stripped, and a pre-restart 401 warns instead of blocking; post-restart health
+  is authoritative.
+- **CI:** startup stale cleanup is not retried by the EXIT trap when it fails.
+- **Installer:** `%` in ExecStart/Environment is doubled for systemd.
+- **Notifications:** seed retracts only the old status's notification id; the
+  persisted map uses %3B/%25 escaping so old `+`/`%` values still load.
+
 ### Seventh deep-review pass
 
 - **Target identity:** `HerdrClientState.targetGeneration` is published with

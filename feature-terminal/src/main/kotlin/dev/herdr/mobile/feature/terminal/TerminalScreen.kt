@@ -212,7 +212,9 @@ fun TerminalScreen(
                 val pane = tab.activePane ?: return@WorkspaceRail
                 viewModel.openTarget(TerminalTarget(workspaceId, tab.id, pane.id))
             },
-            onMoveWorkspace = { workspaceId, to -> viewModel.moveWorkspace(workspaceId, to) },
+            onMoveWorkspace = { workspaceId, to ->
+                viewModel.moveWorkspace(workspaceId, to, state.targetGeneration)
+            },
             onWorkspaceLongPress = { workspaceId, label ->
                 workspaceMenu = WorkspaceMenuTarget(workspaceId, label, state.targetGeneration)
             },
@@ -234,7 +236,7 @@ fun TerminalScreen(
             onSummonKeyboard = { keyboardShowRequest++ },
             onAddTab = {
                 val workspaceId = state.target?.workspaceId ?: return@TabRail
-                viewModel.createTab(workspaceId, label = null)
+                viewModel.createTab(workspaceId, label = null, state.targetGeneration)
             },
             onTabLongPress = { workspaceId, tabId, label ->
                 tabMenu = TabMenuTarget(workspaceId, tabId, label, state.targetGeneration)
@@ -251,7 +253,7 @@ fun TerminalScreen(
             },
             onMoveTab = { tabId, to ->
                 val workspaceId = state.target?.workspaceId ?: return@TabRail
-                viewModel.moveTab(workspaceId, tabId, to)
+                viewModel.moveTab(workspaceId, tabId, to, state.targetGeneration)
             },
             resetKey = state.reorderReset,
         )

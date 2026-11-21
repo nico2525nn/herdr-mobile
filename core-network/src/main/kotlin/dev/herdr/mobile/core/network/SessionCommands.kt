@@ -41,6 +41,15 @@ internal class SessionCommands(
     suspend fun createTab(workspaceId: String, label: String?, focus: Boolean): String =
         withContext(Dispatchers.IO) { api().createTab(workspaceId, label, focus) }
 
+    suspend fun createTabAt(
+        workspaceId: String,
+        label: String?,
+        focus: Boolean,
+        targetGeneration: Long,
+    ): String = withContext(Dispatchers.IO) {
+        api(targetGeneration).createTab(workspaceId, label, focus)
+    }
+
     suspend fun closeTab(tabId: String) =
         withContext(Dispatchers.IO) { api().closeTab(tabId) }
 
@@ -85,6 +94,9 @@ internal class SessionCommands(
 
     suspend fun moveTab(tabId: String, insertIndex: Long) =
         withContext(Dispatchers.IO) { api().moveTab(tabId, insertIndex) }
+
+    suspend fun moveTabAt(tabId: String, insertIndex: Long, targetGeneration: Long) =
+        withContext(Dispatchers.IO) { api(targetGeneration).moveTab(tabId, insertIndex) }
 
     suspend fun moveWorkspace(workspaceId: String, insertIndex: Long) =
         withContext(Dispatchers.IO) { api().moveWorkspace(workspaceId, insertIndex) }

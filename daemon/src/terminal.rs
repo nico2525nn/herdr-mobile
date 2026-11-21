@@ -447,10 +447,37 @@ async fn run_session(
             return;
         }
     };
-    // A controller that exits immediately (bad pane/backend) must not look
-    // attached: Android acks DONE on the first ready frame.
-    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
-    if !child.is_alive() {
+    // Android acks DONE on the first Ready frame, so wait for the controller's
+    // first record (successful screen bytes) instead of trusting process life
+    // alone. A controller that reports busy/failed after a few hundred ms must
+    // not look attached. A genuinely quiet pane times out and is accepted.
+    let first = tokio::time::timeout(
+        std::time::Duration::from_millis(600),
+        child.next_record(),
+    )
+    .await;
+    let first_frame = match first {
+        Ok(Ok(Some(ChildRecord::Frame(bytes)))) => Some(bytes),
+        Ok(Ok(Some(ChildRecord::Closed(reason)))) => {
+            warn!("terminal controller for {pane_id} closed during attach: {reason}");
+            session.bridges.lock().expect("bridges poisoned").closing = true;
+            *session.last_close_reason.lock().expect("close reason poisoned") =
+                Some("attach_failed".to_string());
+            let _ = session.closed_tx.send("attach_failed".to_string());
+            registry.remove(&pane_id, &session).await;
+            return;
+        }
+        Ok(Ok(None)) | Ok(Err(_)) => {
+            session.bridges.lock().expect("bridges poisoned").closing = true;
+            *session.last_close_reason.lock().expect("close reason poisoned") =
+                Some("attach_failed".to_string());
+            let _ = session.closed_tx.send("attach_failed".to_string());
+            registry.remove(&pane_id, &session).await;
+            return;
+        }
+        Err(_) => None,
+    };
+    if first_frame.is_none() && !child.is_alive() {
         session.bridges.lock().expect("bridges poisoned").closing = true;
         *session.last_close_reason.lock().expect("close reason poisoned") =
             Some("attach_failed".to_string());
@@ -460,6 +487,9 @@ async fn run_session(
     }
     info!("attached terminal session for pane {pane_id} ({cols}x{rows})");
     let _ = session.frames_tx.send(SessionFrame::Ready { cols, rows, resumed: false });
+    if let Some(bytes) = first_frame {
+        let _ = session.frames_tx.send(SessionFrame::Bytes(bytes));
+    }
     let mut last_resize = tokio::time::Instant::now();
     let mut pending_resize: Option<(u32, u32)> = None;
     // Fixed deadline for the pending flush: a fresh sleep() per select! poll

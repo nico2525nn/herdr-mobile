@@ -391,6 +391,7 @@ class TerminalSocket(
                 text = text,
                 previous = _state.value as? TerminalAttachmentState.Attached,
                 fallbackPaneId = paneId,
+                previousAttaching = _state.value as? TerminalAttachmentState.Attaching,
             ) ?: return
             _state.value = transition.state
             emit(transition.inbound)

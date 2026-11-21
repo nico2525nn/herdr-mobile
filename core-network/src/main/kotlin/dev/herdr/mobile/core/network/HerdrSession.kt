@@ -48,6 +48,20 @@ interface HerdrSession {
 
     suspend fun createTab(workspaceId: String, label: String?, focus: Boolean = true): String
 
+    suspend fun createTabAt(
+        workspaceId: String,
+        label: String?,
+        focus: Boolean,
+        targetGeneration: Long,
+    ): String {
+        if (this.targetGeneration != targetGeneration) {
+            throw dev.herdr.mobile.core.network.DaemonException(
+                "target_changed", "The connection target changed",
+            )
+        }
+        return createTab(workspaceId, label, focus)
+    }
+
     suspend fun closeTab(tabId: String)
 
     suspend fun closeTabAt(tabId: String, targetGeneration: Long) {
@@ -84,6 +98,11 @@ interface HerdrSession {
     }
 
     suspend fun moveTab(tabId: String, insertIndex: Long)
+
+    suspend fun moveTabAt(tabId: String, insertIndex: Long, targetGeneration: Long) {
+        if (this.targetGeneration != targetGeneration) return
+        moveTab(tabId, insertIndex)
+    }
 
     suspend fun moveWorkspace(workspaceId: String, insertIndex: Long)
 

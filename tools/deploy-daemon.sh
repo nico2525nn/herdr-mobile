@@ -16,7 +16,7 @@ SERVICE="${SERVICE:-herdr-mobile-daemon}"
 HEALTH="${HEALTH:-http://127.0.0.1:8765/v1/health}"
 token_from_env_text() {
   printf '%s' "$1" | tr ' ' '\n' |
-    sed -n 's/^HERDR_MOBILE_TOKEN=//p' | tr -d '"' | head -n1
+    sed -n 's/^HERDR_MOBILE_TOKEN=//p' | tr -d "\"'" | head -n1
 }
 
 resolve_deploy_token() {
@@ -29,7 +29,7 @@ resolve_deploy_token() {
   # then the service environment, then the deploy shell override.
   exec="$(systemctl --user show "$SERVICE" -p ExecStart --value 2>/dev/null || true)"
   token="$(printf '%s' "$exec" |
-    sed -n 's/.*--token[= ]\([^ ;"]*\).*/\1/p' | tr -d '"' | head -n1)"
+    sed -n 's/.*--token[= ]*"\?\([^" ;]*\)"\?.*/\1/p' | tr -d "\"'" | head -n1)"
   if [[ -n "$token" ]]; then
     printf '%s' "$token"
     return
@@ -44,7 +44,7 @@ resolve_deploy_token() {
     [[ -r "$file" ]] || continue
     if grep -Eq '^[[:space:]]*(export[[:space:]]+)?HERDR_MOBILE_TOKEN=' "$file"; then
       value="$(sed -n 's/^[[:space:]]*\(export[[:space:]]\{1,\}\)\?HERDR_MOBILE_TOKEN=//p' "$file" |
-        tr -d '"' | tail -n1)"
+        tr -d "\"'" | tail -n1)"
       token="$value"
     fi
   done
@@ -105,8 +105,7 @@ health_body() {
 if [[ -z "$TOKEN" ]]; then
   HEALTH_CODE="$(curl -s -o /dev/null -w '%{http_code}' --max-time 2 "$HEALTH" 2>/dev/null || true)"
   if [[ "$HEALTH_CODE" == "401" ]]; then
-    die "the health endpoint requires a bearer token, but none could be resolved.
-deploy: set HERDR_MOBILE_TOKEN (or put it in Environment=/EnvironmentFiles=/--token)."
+    echo "deploy: warning: the running daemon requires a bearer; none resolved before restart; the post-restart health check decides" >&2
   fi
 elif ! health_body >/dev/null; then
   # A new unit token legitimately differs from the still-running daemon;

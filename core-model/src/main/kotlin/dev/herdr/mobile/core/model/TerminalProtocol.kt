@@ -166,7 +166,13 @@ object TerminalProtocol {
 sealed interface TerminalAttachmentState {
     data object Idle : TerminalAttachmentState
 
-    data class Attaching(val paneId: String) : TerminalAttachmentState
+    data class Attaching(
+        val paneId: String,
+        val historyRows: Int = 0,
+        val historyTruncated: Boolean = false,
+        val historyError: String? = null,
+        val visibleOk: Boolean = true,
+    ) : TerminalAttachmentState
 
     data class Attached(
         val paneId: String,

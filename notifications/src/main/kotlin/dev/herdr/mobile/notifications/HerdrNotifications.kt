@@ -164,4 +164,16 @@ object HerdrNotifications {
             manager.cancel(TAG_AGENTS, notificationId(workspaceId, paneId, status))
         }
     }
+
+    /** Retract only the notification posted for [status], not a newer sibling. */
+    fun dismissPaneStatus(
+        context: Context,
+        workspaceId: String?,
+        paneId: String?,
+        status: AgentStatus,
+    ) {
+        if (paneId == null) return
+        val manager = context.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
+        manager.cancel(TAG_AGENTS, notificationId(workspaceId, paneId, status))
+    }
 }

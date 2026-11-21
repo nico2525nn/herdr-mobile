@@ -74,6 +74,7 @@ ISOLATION_STATUS=0
 RESTORE_STATUS=0
 TEARDOWN_STATUS=0
 PRIVATE_TEARDOWN_DONE=0
+STALE_CLEANUP_IN_PROGRESS=0
 LIVE_ISOLATION=0
 INSTALLED=0
 REVERSE_SET=0
@@ -458,7 +459,7 @@ cleanup() {
     fi
   fi
 
-  if (( PRIVATE_TEARDOWN_DONE == 0 )); then
+  if (( PRIVATE_TEARDOWN_DONE == 0 && STALE_CLEANUP_IN_PROGRESS == 0 )); then
     ( stop_private_daemon ) >/dev/null 2>&1 || true
     ( stop_private_session ) >/dev/null 2>&1 || true
   fi
@@ -595,7 +596,9 @@ fi
 
 # ------------------------------------------------------- stale run / ownership
 say "cleaning any stale private instance"
+STALE_CLEANUP_IN_PROGRESS=1
 stop_private_daemon
+STALE_CLEANUP_IN_PROGRESS=0
 
 SESSION_DIR="$(session_dir)"
 if [[ -e "$SESSION_DIR" && ! -e "$SESSION_DIR/.ci-owned" ]]; then

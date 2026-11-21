@@ -332,9 +332,13 @@ class TerminalViewModel(
         panes.send { backend -> backend.send(byteArrayOf(0x03)) }
     }
 
-    fun createTab(workspaceId: String, label: String?) {
+    fun createTab(
+        workspaceId: String,
+        label: String?,
+        targetGeneration: Long = client.targetGeneration,
+    ) {
         viewModelScope.launch {
-            runCatching { client.createTab(workspaceId, label) }
+            runCatching { client.createTabAt(workspaceId, label, true, targetGeneration) }
                 .onSuccess { tabId ->
                     // The snapshot lacks the new tab until the structural event
                     // (or refetch) lands: wait for it, or openTab's lookup
@@ -410,15 +414,21 @@ class TerminalViewModel(
      * Rail drag-reorder. Server-authoritative like everything else: no local
      * patch, the moved event refetches all clients (desktop included).
      */
-    fun moveTab(workspaceId: String, tabId: String, toIndex: Int) {
+    fun moveTab(
+        workspaceId: String,
+        tabId: String,
+        toIndex: Int,
+        targetGeneration: Long = client.targetGeneration,
+    ) {
         val tabs = client.state.value.snapshot?.workspace(workspaceId)?.tabs ?: return
         val from = tabs.indexOfFirst { it.id == tabId }
         if (from < 0 || from == toIndex) return
         viewModelScope.launch {
             runCatching {
-                client.moveTab(
+                client.moveTabAt(
                     tabId,
                     dev.herdr.mobile.core.model.Reorder.insertIndex(from, toIndex, tabs.size),
+                    targetGeneration,
                 )
             }.onFailure {
                 messageFlow.value = UiMessage.CommandFailed(UiMessage.CommandFailed.Command.MOVE_TAB, it.message)
@@ -427,15 +437,20 @@ class TerminalViewModel(
         }
     }
 
-    fun moveWorkspace(workspaceId: String, toIndex: Int) {
+    fun moveWorkspace(
+        workspaceId: String,
+        toIndex: Int,
+        targetGeneration: Long = client.targetGeneration,
+    ) {
         val workspaces = client.state.value.snapshot?.workspaces ?: return
         val from = workspaces.indexOfFirst { it.id == workspaceId }
         if (from < 0 || from == toIndex) return
         viewModelScope.launch {
             runCatching {
-                client.moveWorkspace(
+                client.moveWorkspaceAt(
                     workspaceId,
                     dev.herdr.mobile.core.model.Reorder.insertIndex(from, toIndex, workspaces.size),
+                    targetGeneration,
                 )
             }.onFailure {
                 messageFlow.value = UiMessage.CommandFailed(UiMessage.CommandFailed.Command.MOVE_WORKSPACE, it.message)

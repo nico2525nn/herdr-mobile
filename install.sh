@@ -117,6 +117,10 @@ if [ "$NO_SERVICE" != "1" ] && command -v systemctl >/dev/null 2>&1; then
         say "writing $UNIT"
         OLD_UMASK="$(umask)"
         umask 077
+        # systemd expands % specifiers in unit values; a literal % in the
+        # install prefix/token must be doubled.
+        BIN_UNIT="$(printf '%s' "$BIN" | sed 's/%/%%/g')"
+        TOKEN_UNIT="$(printf '%s' "$TOKEN" | sed 's/%/%%/g')"
         {
             printf '%s\n' '[Unit]'
             printf '%s\n' 'Description=Herdr Mobile bridge daemon'
@@ -124,9 +128,9 @@ if [ "$NO_SERVICE" != "1" ] && command -v systemctl >/dev/null 2>&1; then
             printf '%s\n' 'Wants=network-online.target'
             printf '%s\n' ''
             printf '%s\n' '[Service]'
-            printf 'ExecStart="%s" --bind 127.0.0.1:8765\n' "$BIN"
+            printf 'ExecStart="%s" --bind 127.0.0.1:8765\n' "$BIN_UNIT"
             if [ -n "$TOKEN" ]; then
-                printf 'Environment="HERDR_MOBILE_TOKEN=%s"\n' "$TOKEN"
+                printf 'Environment="HERDR_MOBILE_TOKEN=%s"\n' "$TOKEN_UNIT"
             fi
             printf '%s\n' 'Restart=always'
             printf '%s\n' 'RestartSec=2'

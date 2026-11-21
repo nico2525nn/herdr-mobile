@@ -169,16 +169,21 @@ internal fun decodeNotifiedMap(raw: String?): Map<String, String> {
         .mapNotNull { part ->
             val eq = part.indexOf('=')
             if (eq <= 0) return@mapNotNull null
-            runCatching {
-                java.net.URLDecoder.decode(part.take(eq), "UTF-8") to
-                    java.net.URLDecoder.decode(part.substring(eq + 1), "UTF-8")
-            }.getOrNull()
+            // Only our own %3B/%25 escapes are decoded. Old values may
+            // legitimately contain '+' or '%' (Build+C++, 100%).
+            unescape(part.take(eq)) to unescape(part.substring(eq + 1))
         }
         .toMap()
 }
 
+private fun unescape(value: String): String =
+    value.replace("%3B", ";", ignoreCase = true)
+        .replace("%25", "%")
+
+private fun escape(value: String): String =
+    value.replace("%", "%25").replace(";", "%3B")
+
 internal fun encodeNotifiedMap(map: Map<String, String>): String =
     map.entries.joinToString(";") { (key, value) ->
-        java.net.URLEncoder.encode(key, "UTF-8") + "=" +
-            java.net.URLEncoder.encode(value, "UTF-8")
+        escape(key) + "=" + escape(value)
     }
