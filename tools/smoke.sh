@@ -348,21 +348,29 @@ raise SystemExit(0 if n >= 15 else 1)
 PY
 }
 
-# Tokyo Night's cursor is #C0CAF5; the prompt's blue is darker in red, so this
-# check fails when the frozen frame caught the cursor blink-off phase.
+# Tokyo Night paints the cursor cell with #C0CAF5, the same colour as ordinary
+# foreground text. A global colour count therefore passes with no cursor.
+# Look for a solid 8x8 cell instead: a glyph never fills that rectangle.
 cursor_block() {
   python3 - "$1" <<'PY'
 import sys
 from PIL import Image
 im = Image.open(sys.argv[1]).convert("RGB")
 w, h = im.size
-n = 0
-for y in range(int(h * 0.35), int(h * 0.88), 2):
-    for x in range(0, w, 2):
-        r, g, b = im.getpixel((x, y))
-        if 170 <= r <= 218 and 180 <= g <= 222 and b >= 228:
-            n += 1
-raise SystemExit(0 if n >= 100 else 1)
+for y in range(int(h * 0.55), int(h * 0.92) - 8, 2):
+    for x in range(0, w - 8, 1):
+        solid = True
+        for yy in range(0, 8, 2):
+            for xx in range(0, 8, 2):
+                r, g, b = im.getpixel((x + xx, y + yy))
+                if not (170 <= r <= 218 and 180 <= g <= 222 and b >= 228):
+                    solid = False
+                    break
+            if not solid:
+                break
+        if solid:
+            raise SystemExit(0)
+raise SystemExit(1)
 PY
 }
 
@@ -382,6 +390,17 @@ if [[ -n "$PRIVATE_DAEMON_PID" && -n "$PRIVATE_DAEMON_BIN" &&
   else
     fail "terminal prompt missing before the reconnect"
   fi
+
+  # Start the capture in the live cursor's blink-off phase. With the cursor
+  # forced on in the frozen frame, the next check must still find a solid cell.
+  for _ in $(seq 1 15); do
+    shot "$WORKDIR/cursor-phase.png"
+    if ! cursor_block "$WORKDIR/cursor-phase.png"; then
+      pass "capture starts in the cursor blink-off phase"
+      break
+    fi
+    sleep 0.2
+  done
 
   kill "$PRIVATE_DAEMON_PID" 2>/dev/null || true
   sleep 4

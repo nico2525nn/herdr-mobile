@@ -59,7 +59,13 @@ internal fun TerminalSurface(
     onBack: () -> Unit,
     onBackendState: (BackendState) -> Unit,
     linkRowVisible: Boolean,
-    onFrameCaptured: (android.graphics.Bitmap?) -> Unit,
+    captureEpoch: Long,
+    onFrameCaptured: (
+        epoch: Long,
+        backend: ConnectionTerminalBackend,
+        target: TerminalTarget?,
+        bitmap: android.graphics.Bitmap?,
+    ) -> Unit,
     keyboardShowRequest: Int,
     keyboardShowHandled: Int,
     onKeyboardShowHandled: (Int) -> Unit,
@@ -180,13 +186,22 @@ internal fun TerminalSurface(
     // a frozen copy of its full frame below the row. This preserves both the
     // top and the bottom of the terminal (including a prompt at the bottom)
     // without resizing the PTY.
-    LaunchedEffect(linkRowVisible, controller) {
+    LaunchedEffect(linkRowVisible, controller, captureEpoch) {
         if (!linkRowVisible) {
-            onFrameCaptured(null)
+            onFrameCaptured(captureEpoch, backend, state.target, null)
             return@LaunchedEffect
         }
+        // Bind the frame to the view that produced it, not to whatever the
+        // screen's state happens to be when the 80ms callback lands.
+        val ownerTarget = state.target
+        val ownerBackend = backend
         delay(80)
-        controller.view.captureFrameWithCursor()?.let(onFrameCaptured)
+        onFrameCaptured(
+            captureEpoch,
+            ownerBackend,
+            ownerTarget,
+            controller.view.captureFrameWithCursor(),
+        )
     }
 
     // Attach only replays text (the daemon's prelude carries no DECSET
