@@ -292,6 +292,22 @@ async fn panes(State(state): State<AppState>, headers: HeaderMap) -> Response {
     }
 }
 
+/// Record the completion currently visible on a Core pane. Focusing a working
+/// pane clears any old mark; focusing a done pane stores its completion
+/// identity so only that completion is presented as idle.
+fn record_core_read(state: &AppState, terminal: &Value, pane_id: &str) {
+    if let Ok(mut read) = state.core_read.lock() {
+        match crate::herdrcore::CoreReadMark::for_terminal(terminal) {
+            Some(mark) => {
+                read.insert(pane_id.to_owned(), mark);
+            }
+            None => {
+                read.remove(pane_id);
+            }
+        }
+    }
+}
+
 /// Focus/read-ack one pane. TUI `tab.focus` activates the tab's last pane,
 /// so a split sibling's done state would survive; pane focus targets exactly
 /// the pane the client is showing. The cache is refreshed before returning so
@@ -309,16 +325,16 @@ async fn pane_focus(
             Ok(terminals) => terminals,
             Err(error) => return core_error(error),
         };
-        let focus = terminals
+        let focused = terminals
             .iter()
             .find(|terminal| terminal.get("address").and_then(Value::as_str) == Some(pane_id.as_str()))
-            .and_then(crate::herdrcore::CoreFocus::from_terminal);
-        let Some(focus) = focus else {
+            .and_then(|terminal| {
+                Some((terminal, crate::herdrcore::CoreFocus::from_terminal(terminal)?))
+            });
+        let Some((terminal, focus)) = focused else {
             return api_error(StatusCode::NOT_FOUND, "not_found", format!("pane {pane_id} not found"));
         };
-        if let Ok(mut read) = state.core_read.lock() {
-            read.insert(focus.pane_id.clone());
-        }
+        record_core_read(&state, terminal, &focus.pane_id);
         if let Ok(mut current) = state.core_focus.lock() {
             *current = Some(focus);
         }
@@ -576,18 +592,18 @@ async fn tab_focus(
             Ok(terminals) => terminals,
             Err(error) => return core_error(error),
         };
-        let focus = terminals
+        let focused = terminals
             .iter()
             .find(|terminal| {
                 crate::herdrcore::tab_id_of(terminal).as_deref() == Some(tab_id.as_str())
             })
-            .and_then(crate::herdrcore::CoreFocus::from_terminal);
-        let Some(focus) = focus else {
+            .and_then(|terminal| {
+                Some((terminal, crate::herdrcore::CoreFocus::from_terminal(terminal)?))
+            });
+        let Some((terminal, focus)) = focused else {
             return api_error(StatusCode::NOT_FOUND, "not_found", format!("tab {tab_id} not found"));
         };
-        if let Ok(mut read) = state.core_read.lock() {
-            read.insert(focus.pane_id.clone());
-        }
+        record_core_read(&state, terminal, &focus.pane_id);
         if let Ok(mut current) = state.core_focus.lock() {
             *current = Some(focus);
         }
@@ -809,16 +825,22 @@ async fn events_ws(
         return e;
     }
     if selected_backend(&state, &headers) == crate::config::Backend::Core {
-        let read = state.core_read.clone();
-        return ws.on_upgrade(move |socket| serve_core_events(socket, state.core.clone(), read));
+        return ws.on_upgrade(move |socket| serve_core_events(socket, state.core.clone()));
     }
     ws.on_upgrade(move |socket| serve_events(socket, state.bus.clone(), state.cache.clone()))
 }
 
 async fn serve_events(socket: WebSocket, bus: Arc<EventBus>, cache: Arc<SessionCache>) {
     let (mut sink, mut stream) = socket.split();
+    // Subscribe before computing/sending the cursor. The old order sent ready
+    // and then subscribed, so an event published in that window was in neither
+    // the cursor nor the receiver and the client never saw it.
+    let (cursor, mut rx) = bus.subscribe_with_cursor();
     let ready = SemanticEvent {
-        seq: bus.cursor().max(cache.seq()),
+        // Use the cursor captured with the subscription, not a second read:
+        // an event published in between would be announced by `ready` and
+        // then delivered again, ahead of the client's fold.
+        seq: cursor,
         kind: "stream.ready".to_string(),
         at: crate::cache::now_rfc3339(),
         workspace_id: None,
@@ -833,7 +855,6 @@ async fn serve_events(socket: WebSocket, bus: Arc<EventBus>, cache: Arc<SessionC
     if sink.send(Message::Text(serde_json::to_string(&ready).unwrap().into())).await.is_err() {
         return;
     }
-    let mut rx: broadcast::Receiver<SemanticEvent> = bus.subscribe();
     info!("events subscriber connected");
     let mut last_seq: i64 = ready.seq;
     loop {
@@ -890,11 +911,7 @@ async fn serve_events(socket: WebSocket, bus: Arc<EventBus>, cache: Arc<SessionC
     info!("events subscriber disconnected");
 }
 
-async fn serve_core_events(
-    socket: WebSocket,
-    core: crate::herdrcore::CoreClient,
-    read_panes: Arc<std::sync::Mutex<std::collections::HashSet<String>>>,
-) {
+async fn serve_core_events(socket: WebSocket, core: crate::herdrcore::CoreClient) {
     let mut subscription = match core.subscribe().await {
         Ok(subscription) => subscription,
         Err(error) => {
@@ -934,13 +951,6 @@ async fn serve_core_events(
                         if matches!(event_type, "created" | "removed" | "finished" | "lost" | "restarted" | "labels") {
                             if let Ok(snapshot) = core.snapshot().await {
                                 locations = crate::herdrcore::locations(&snapshot.terminals);
-                            }
-                        }
-                        if let Some(terminal) = notification.pointer("/params/terminal").and_then(Value::as_str) {
-                            if matches!(event_type, "status" | "removed" | "finished") {
-                                if let Ok(mut read) = read_panes.lock() {
-                                    read.remove(terminal);
-                                }
                             }
                         }
                         if let Some(event) = crate::herdrcore::translate_event(&notification, &locations) {
@@ -1005,16 +1015,16 @@ async fn terminal_ws(
         // Attaching the terminal is the app's focus signal on core: update the
         // daemon focus so the next snapshot marks the right workspace/tab/pane.
         if let Ok(terminals) = core.list(false).await {
-            if let Some(focus) = terminals
+            if let Some((terminal, focus)) = terminals
                 .iter()
                 .find(|terminal| {
                     terminal.get("address").and_then(|v| v.as_str()) == Some(address.as_str())
                 })
-                .and_then(crate::herdrcore::CoreFocus::from_terminal)
+                .and_then(|terminal| {
+                    Some((terminal, crate::herdrcore::CoreFocus::from_terminal(terminal)?))
+                })
             {
-                if let Ok(mut read) = state.core_read.lock() {
-                    read.insert(focus.pane_id.clone());
-                }
+                record_core_read(&state, terminal, &focus.pane_id);
                 if let Ok(mut current) = state.core_focus.lock() {
                     *current = Some(focus);
                 }
@@ -1037,7 +1047,10 @@ async fn terminal_ws(
         query.get("restore_cols").and_then(|c| c.parse::<u32>().ok()),
         query.get("restore_rows").and_then(|r| r.parse::<u32>().ok()),
     ) {
-        (Some(0), _) => None,
+        // Keep the explicit disable distinct from "no client opinion": the
+        // bridge learns the tab layout only for None, and treats Some((0,_))
+        // as "do not restore".
+        (Some(0), _) => Some((0, 0)),
         (Some(c), Some(r)) if c > 0 && r > 0 => Some((c.min(400), r.min(200))),
         _ => None,
     };

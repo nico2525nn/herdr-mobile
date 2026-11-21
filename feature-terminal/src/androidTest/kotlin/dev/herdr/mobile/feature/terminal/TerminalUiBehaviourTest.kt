@@ -6,6 +6,8 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.focus.FocusRequester
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.SemanticsProperties
 import androidx.compose.ui.state.ToggleableState
@@ -21,11 +23,14 @@ import dev.herdr.mobile.core.designsystem.HerdrMobileTheme
 import dev.herdr.mobile.core.model.ThemeMode
 import dev.herdr.mobile.core.model.AgentStatus
 import dev.herdr.mobile.core.model.AppSettings
+import dev.herdr.mobile.core.model.SwipeBehavior
 import dev.herdr.mobile.core.model.ConnectionState
 import dev.herdr.mobile.core.model.Pane
 import dev.herdr.mobile.core.model.SessionSnapshot
 import dev.herdr.mobile.core.model.Tab
 import dev.herdr.mobile.core.model.Workspace
+import dev.herdr.mobile.core.network.testing.FakeHerdrSession
+import kotlinx.coroutines.flow.MutableStateFlow
 import org.junit.Assert.assertEquals
 import org.junit.Rule
 import org.junit.Test
@@ -146,6 +151,35 @@ class TerminalUiBehaviourTest {
         compose.onNodeWithText("CTRL").assertIsDisplayed()
     }
 
+
+    @Test
+    fun explicitPageSwitchReachesCjkWhenSwipeIsOff() {
+        val session = FakeHerdrSession(state().snapshot)
+        val settings = MutableStateFlow(
+            AppSettings(
+                swipeBehavior = SwipeBehavior.NONE,
+                extraKeysEnabled = true,
+                cjkInputEnabled = true,
+            ),
+        )
+        val vm = TerminalViewModel(session, null, null, null, settings)
+        compose.setContent {
+            HerdrMobileTheme(themeMode = ThemeMode.DARK) {
+                val state by vm.uiState.collectAsStateWithLifecycle()
+                BottomInputPanel(
+                    viewModel = vm,
+                    state = state,
+                    onSendBytes = {},
+                    onSendText = {},
+                    onExtraKey = {},
+                    onPageChange = {},
+                    cjkFocus = FocusRequester(),
+                )
+            }
+        }
+        compose.onNodeWithText("Input").performClick()
+        compose.onNodeWithText("Type, convert, then send").assertIsDisplayed()
+    }
     // ---- pane rail -----------------------------------------------------
 
     @Test

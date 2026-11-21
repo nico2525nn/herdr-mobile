@@ -42,6 +42,10 @@
                  intent that resolves without one. A dataless VIEW filter would
                  match every implicit VIEW in the system (chooser pollution). -->
         </activity>
+        <activity
+            android:name=".NotificationProxyActivity"
+            android:exported="false"
+            android:theme="@android:style/Theme.Translucent.NoTitleBar" />
         <service
             android:name=".HerdrMonitorService"
             android:exported="false"

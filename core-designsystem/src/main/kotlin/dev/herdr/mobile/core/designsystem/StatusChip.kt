@@ -26,6 +26,7 @@ import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.semantics.CustomAccessibilityAction
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.customActions
+import androidx.compose.ui.semantics.onLongClick
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.semantics.stateDescription
 import androidx.compose.ui.text.style.TextOverflow
@@ -141,6 +142,14 @@ fun StatusChip(
                 // long-press (`combinedClickable`) chip. Do not also set the
                 // `selected` semantics property: TalkBack would repeat it.
                 if (onMenuAction != null) {
+                    // The pointer long-press stays empty so the reorder
+                    // detector owns the gesture; accessibility still gets the
+                    // real menu both as the standard long-click and as an
+                    // explicit action.
+                    onLongClick(label = "Actions") {
+                        onMenuAction.invoke()
+                        true
+                    }
                     customActions = listOf(
                         CustomAccessibilityAction(label = "Actions") {
                             onMenuAction.invoke()

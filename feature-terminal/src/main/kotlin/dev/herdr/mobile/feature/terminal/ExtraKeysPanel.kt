@@ -18,6 +18,11 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.input.key.Key
+import androidx.compose.ui.input.key.KeyEventType
+import androidx.compose.ui.input.key.key
+import androidx.compose.ui.input.key.onPreviewKeyEvent
+import androidx.compose.ui.input.key.type
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.platform.LocalHapticFeedback
@@ -125,49 +130,52 @@ private fun RepeatableKeyButton(
     val repeatable = onFlickDown == null && key.modifier == null && key.bytes != null &&
         key.label !in setOf("ESC", "TAB")
     val interactions = remember { androidx.compose.foundation.interaction.MutableInteractionSource() }
-    // Pointer presses already fire through PressInteraction. The Button's
-    // onClick must fire only for keyboard/D-pad/accessibility activation,
-    // otherwise a pointer tap would send the key twice.
-    val pointerPress = remember { androidx.compose.runtime.mutableStateOf(false) }
-    // Flick tracking: press Y in button coords. Release carries its own
-    // pressPosition? No — Release only references the original Press, so the
-    // drag distance comes from a pointer-input modifier below, not here.
-    // Simpler: track the max Y seen via DragInteraction? Also absent.
-    // Pragmatic: pointerInput + detectVerticalDragGestures owns dual-action
-    // keys entirely (below); this interaction flow only serves tap/repeat keys.
     val dualAction = onFlickDown != null
-
-    androidx.compose.runtime.LaunchedEffect(interactions) {
-        var repeatJob: Job? = null
-        interactions.interactions.collect { interaction ->
-            when (interaction) {
-                is androidx.compose.foundation.interaction.PressInteraction.Press -> {
-                    if (!dualAction) {
-                        pointerPress.value = true
+    // One pointer path for normal keys: down fires once, a hold repeats, and
+    // release cancels. The Button's onClick is reserved for keyboard/D-pad and
+    // the explicit semantics action for accessibility, so a pointer tap cannot
+    // be delivered twice by an asynchronous PressInteraction.
+    val nonDualPointer = Modifier.pointerInput(key) {
+        awaitEachGesture {
+            val down = awaitFirstDown(requireUnconsumed = false)
+            val slop = viewConfiguration.touchSlop
+            var sent = false
+            var cancelled = false
+            val holdJob = scope.launch {
+                // Wait for a real hold before sending: a horizontal page
+                // swipe that starts on a key must not type that key. A short
+                // tap sends on release; a hold sends at 400 ms and repeats.
+                delay(400)
+                if (!sent) {
+                    sent = true
+                    onPress()
+                }
+                if (repeatable) {
+                    while (true) {
+                        delay(60)
                         onPress()
-                        if (repeatable) {
-                            repeatJob?.cancel()
-                            repeatJob = scope.launch {
-                                delay(400)
-                                while (true) {
-                                    onPress()
-                                    delay(60)
-                                }
-                            }
-                        }
                     }
                 }
-                is androidx.compose.foundation.interaction.PressInteraction.Release -> {
-                    repeatJob?.cancel()
-                    repeatJob = null
-                    // Leave pointerPress for onClick: the click is delivered
-                    // right after Release and must be swallowed.
+            }
+            try {
+                while (true) {
+                    val event = awaitPointerEvent()
+                    val change = event.changes.firstOrNull { it.id == down.id } ?: break
+                    if (!change.pressed) break
+                    if (change.isConsumed) {
+                        cancelled = true
+                        return@awaitEachGesture
+                    }
+                    val dx = change.position.x - change.previousPosition.x
+                    val dy = change.position.y - change.previousPosition.y
+                    if (abs(dx) > slop || abs(dy) > slop) {
+                        cancelled = true
+                        return@awaitEachGesture
+                    }
                 }
-                is androidx.compose.foundation.interaction.PressInteraction.Cancel -> {
-                    repeatJob?.cancel()
-                    repeatJob = null
-                    pointerPress.value = false
-                }
+            } finally {
+                holdJob.cancel()
+                if (!sent && !cancelled) onPress()
             }
         }
     }
@@ -176,15 +184,11 @@ private fun RepeatableKeyButton(
     // interaction above stays silent for them). Release with net downward
     // travel past slop = flick action; anything else = tap action.
     FilledTonalButton(
-        // The pointer path emits through PressInteraction; TalkBack and
-        // switch access invoke the semantics action without a Press, so the
-        // panel must handle that action explicitly or every key is inert.
+        // Pointer taps are handled by the pointer path. This click is the
+        // hardware keyboard/D-pad path; the explicit semantics onClick handles
+        // TalkBack and switch access.
         onClick = {
-            when {
-                dualAction -> onPress()
-                pointerPress.value -> pointerPress.value = false
-                else -> onPress()
-            }
+            if (dualAction) onPress()
         },
         shape = RoundedCornerShape(12.dp),
         modifier = modifier
@@ -211,13 +215,15 @@ private fun RepeatableKeyButton(
                                 dy += change.position.y - change.previousPosition.y
                                 if (!change.pressed) break
                                 if (!claimed) {
-                                    if (abs(dx) > slop && abs(dx) >= abs(dy)) {
-                                        // Horizontal gesture belongs to the
-                                        // pager; consuming it made a swipe
-                                        // over PGUP↓ fire a page-up instead.
-                                        return@awaitEachGesture
+                                    when (resolveDragAxis(dx, dy, slop * 1.5f)) {
+                                        DragAxis.HORIZONTAL ->
+                                            // Horizontal gesture belongs to the
+                                            // pager; consuming it made a swipe
+                                            // over PGUP↓ fire a page-up instead.
+                                            return@awaitEachGesture
+                                        DragAxis.VERTICAL -> claimed = true
+                                        DragAxis.NONE -> Unit
                                     }
-                                    if (abs(dy) > slop && abs(dy) > abs(dx)) claimed = true
                                 }
                                 if (claimed) change.consume()
                             }
@@ -230,9 +236,22 @@ private fun RepeatableKeyButton(
                         }
                     }
                 } else {
-                    Modifier
+                    nonDualPointer
                 },
             )
+            .onPreviewKeyEvent { event ->
+                if (event.type == KeyEventType.KeyUp &&
+                    (event.key == Key.Enter ||
+                        event.key == Key.NumPadEnter ||
+                        event.key == Key.Spacebar ||
+                        event.key == Key.DirectionCenter)
+                ) {
+                    onPress()
+                    true
+                } else {
+                    false
+                }
+            }
             // Sticky modifiers (SHIFT/CTRL/ALT) are latches, not one-shot
             // keys: expose the armed state as checkable so TalkBack hears
             // "checked"/"not checked" instead of only seeing a colour change.

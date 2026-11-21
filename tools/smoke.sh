@@ -166,6 +166,26 @@ x=sys.stdin.read()
 m=re.search(r"text=\"" + sys.argv[1] + r"\"[^>]*bounds=\"\[(\d+),(\d+)\]\[(\d+),(\d+)\]\"", x)
 print("" if not m else f"{(int(m.group(1))+int(m.group(3)))//2} {(int(m.group(2))+int(m.group(4)))//2}")' "$1"
 }
+desc_bounds() {
+  adb_ shell rm -f /sdcard/desc.xml >/dev/null 2>&1; adb_ shell uiautomator dump /sdcard/desc.xml >/dev/null 2>&1 || true
+  adb_ shell cat /sdcard/desc.xml 2>/dev/null |
+    python3 -c '
+import re,sys
+x=sys.stdin.read()
+m=re.search(r"content-desc=\"" + re.escape(sys.argv[1]) + r"\"[^>]*bounds=\"\[(\d+),(\d+)\]\[(\d+),(\d+)\]\"", x)
+print("" if not m else f"{(int(m.group(1))+int(m.group(3)))//2} {(int(m.group(2))+int(m.group(4)))//2}")' "$1"
+}
+
+keyboard_tap() {
+  local bounds
+  bounds="$(desc_bounds "Terminal keyboard")"
+  if [[ -z "$bounds" ]]; then
+    fail "keyboard button not found in the tab rail"
+    return 1
+  fi
+  adb_ shell input tap $bounds
+}
+
 TWO_BOUNDS="$(tab_bounds two)"
 if [[ -n "$TWO_BOUNDS" && -n "$TAB2" ]]; then
   shot "$WORKDIR/tab-one.png"
@@ -215,7 +235,7 @@ python3 -c "import sys; sys.exit(0 if $RATIO < 0.45 else 1)" \
 # ---------------------------------------------------------------- keyboard checks
 ime_shown() { adb_ shell dumpsys input_method 2>/dev/null | grep -o 'mInputShown=[a-z]*' | head -1; }
 
-adb_ shell input tap 860 255   # keyboard button in the tab rail
+keyboard_tap
 sleep 2
 [[ "$(ime_shown)" == "mInputShown=true" ]] && pass "keyboard button raises the IME" \
   || fail "keyboard button did not raise the IME ($(ime_shown))"
@@ -240,7 +260,7 @@ if [[ -n "$HOME_BOUNDS" ]]; then
 else
   fail "HOME key not found for the panel swipe"
 fi
-adb_ shell input tap 860 255   # keyboard button
+keyboard_tap
 for _ in $(seq 1 20); do
   [[ "$(ime_shown)" == "mInputShown=true" ]] && break
   sleep 0.5

@@ -91,7 +91,7 @@ object HerdrNotifications {
             // build's applicationId (dev.herdr.mobile.debug) differs from the
             // class package (dev.herdr.mobile), and deriving from packageName
             // fails with CLASS_NOT_FOUND on debug builds.
-            setClassName(context.packageName, "dev.herdr.mobile.MainActivity")
+            setClassName(context.packageName, "dev.herdr.mobile.NotificationProxyActivity")
             putExtra(EXTRA_WORKSPACE_ID, event.workspaceId)
             putExtra(EXTRA_TAB_ID, event.tabId)
             putExtra(EXTRA_PANE_ID, event.paneId)

@@ -21,6 +21,9 @@ pub struct TerminalRegistry {
     /// the live `pane.get` fails.
     cache: Arc<SessionCache>,
     sessions: Mutex<HashMap<String, Arc<TerminalSession>>>,
+    /// Set under the sessions lock before draining. New attaches reject, and
+    /// an attach that already passed the check is included in the drain.
+    shutting_down: std::sync::atomic::AtomicBool,
 }
 
 pub struct TerminalSession {
@@ -88,6 +91,7 @@ impl TerminalRegistry {
             herdr,
             cache,
             sessions: Mutex::new(HashMap::new()),
+            shutting_down: std::sync::atomic::AtomicBool::new(false),
         }
     }
 
@@ -96,14 +100,26 @@ impl TerminalRegistry {
     }
 
     pub async fn shutdown(&self) {
+        use std::sync::atomic::Ordering;
+        // Keep the map entries until run_session removes them: draining here
+        // let a concurrent attach insert a new controller after the drain,
+        // which the shutdown then never released. The flag and the drain are
+        // under the same lock, so an attach either lands in the drain or sees
+        // the flag and is rejected.
         let sessions: Vec<Arc<TerminalSession>> = {
-            let mut guard = self.sessions.lock().await;
-            guard.drain().map(|(_, s)| s).collect()
+            let guard = self.sessions.lock().await;
+            self.shutting_down.store(true, Ordering::SeqCst);
+            guard.values().cloned().collect()
         };
-        for session in sessions {
+        let mut closed = Vec::with_capacity(sessions.len());
+        for session in &sessions {
+            let rx = session.closed_tx.subscribe();
             let _ = session.input_tx.send(SessionCommand::Release).await;
+            closed.push(rx);
         }
-        tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+        for mut rx in closed {
+            let _ = tokio::time::timeout(std::time::Duration::from_secs(5), rx.recv()).await;
+        }
     }
 
     /// Attach (or reuse) and bridge the child to `socket`. Returns when either side closes.
@@ -248,92 +264,120 @@ impl TerminalRegistry {
         cols: u32,
         rows: u32,
     ) -> Result<Arc<TerminalSession>> {
-        // A closing session may still own the Herdr controller (restore resize +
-        // up to 250ms beat + child.kill still in flight). Wait for its teardown
-        // BEFORE spawning a fresh controller, or old and new overlap and the new
-        // attach can fail under takeover=false. Registry lock is released while
-        // waiting so run_session's remove() can proceed.
-        //
-        // The whole body loops: two attachers can both pass the empty-map check
-        // concurrently (lock released during the wait), and the loser must fall
-        // back to reusing the winner — never insert a second session.
+        // A closing session still owns the Herdr controller (restore resize +
+        // beat + child.kill). Keep its map entry until teardown finishes so a
+        // second attacher waits on the same session instead of spawning a new
+        // controller underneath it. The entry is removed here only after the
+        // close reason is set; run_session removes it too (idempotent).
         loop {
-            let old = {
-                let mut guard = self.sessions.lock().await;
-                // Re-check under the CURRENT lock hold: a concurrent attacher may
-                // have inserted while we waited/yielded.
-                match guard.get(&pane_id) {
+            enum Existing {
+                Reuse(Arc<TerminalSession>),
+                Closing(Arc<TerminalSession>, broadcast::Receiver<String>),
+            }
+            let existing = {
+                let guard = self.sessions.lock().await;
+                if self
+                    .shutting_down
+                    .load(std::sync::atomic::Ordering::SeqCst)
+                {
+                    anyhow::bail!("daemon is shutting down");
+                }
+                match guard.get(&pane_id).cloned() {
                     Some(session) => {
-                        let reusable = {
+                        let closing = {
                             let mut st = session.bridges.lock().expect("bridges poisoned");
                             if st.closing {
-                                false
+                                true
                             } else {
                                 st.count += 1;
-                                true
+                                false
                             }
                         };
-                        if reusable {
-                            let session = session.clone();
-                            drop(guard);
-                            // Newest geometry wins; the session task coalesces it.
-                            let _ = session
-                                .input_tx
-                                .send(SessionCommand::Resize(cols, rows))
-                                .await;
-                            return Ok(session);
+                        if closing {
+                            let rx = session.closed_tx.subscribe();
+                            Some(Existing::Closing(session, rx))
+                        } else {
+                            Some(Existing::Reuse(session))
                         }
-                        // Closing: evict from the map now so no other attacher
-                        // queues behind it, then wait for ITS teardown outside
-                        // the registry lock.
-                        guard.remove(&pane_id)
                     }
                     None => None,
                 }
             };
-            match old {
-                None => {
-                    // Fresh insert — but re-check under the lock first (TOCTOU
-                    // against a concurrent inserter).
-                    let mut guard = self.sessions.lock().await;
-                    if guard.get(&pane_id).is_some() {
-                        drop(guard);
-                        tokio::task::yield_now().await;
-                        continue;
-                    }
-                    let (input_tx, input_rx) = mpsc::channel::<SessionCommand>(64);
-                    let (frames_tx, _) = broadcast::channel::<SessionFrame>(256);
-                    let (closed_tx, _) = broadcast::channel::<String>(4);
-                    let (restore_tx, restore_rx) = mpsc::channel::<RestoreViewport>(4);
-                    let session = Arc::new(TerminalSession {
-                        pane_id: pane_id.clone(),
-                        input_tx,
-                        frames_tx,
-                        closed_tx,
-                        last_close_reason: std::sync::Mutex::new(None),
-                        restore_tx,
-                        bridges: std::sync::Mutex::new(BridgeState { count: 1, closing: false }),
-                        shutdown: tokio::sync::Notify::new(),
-                    });
-                    let runner_session = session.clone();
-                    let herdr = self.herdr.clone();
-                    let registry = Arc::clone(self);
-                    tokio::spawn(async move {
-                        run_session(&registry, runner_session, herdr, takeover, cols, rows, input_rx, restore_rx).await;
-                    });
-                    guard.insert(pane_id, session.clone());
+            match existing {
+                Some(Existing::Reuse(session)) => {
+                    // Newest geometry wins; the session task coalesces it.
+                    let _ = session
+                        .input_tx
+                        .send(SessionCommand::Resize(cols, rows))
+                        .await;
                     return Ok(session);
                 }
-                Some(old) => {
-                    // Bounded wait for the evicted session's teardown, then loop
-                    // back and re-enter the normal path.
-                    let _ = tokio::time::timeout(
-                        std::time::Duration::from_secs(5),
-                        old.closed_tx.subscribe().recv(),
-                    )
-                    .await;
+                Some(Existing::Closing(session, mut closed_rx)) => {
+                    if session
+                        .last_close_reason
+                        .lock()
+                        .expect("close reason poisoned")
+                        .is_none()
+                    {
+                        let _ = tokio::time::timeout(
+                            std::time::Duration::from_secs(5),
+                            closed_rx.recv(),
+                        )
+                        .await;
+                    }
+                    if session
+                        .last_close_reason
+                        .lock()
+                        .expect("close reason poisoned")
+                        .is_none()
+                    {
+                        anyhow::bail!("terminal {pane_id} is still closing; retry");
+                    }
+                    let mut guard = self.sessions.lock().await;
+                    if let Some(current) = guard.get(&pane_id) {
+                        if Arc::ptr_eq(current, &session) {
+                            guard.remove(&pane_id);
+                        }
+                    }
+                    continue;
                 }
+                None => {}
             }
+
+            let mut guard = self.sessions.lock().await;
+            if self
+                .shutting_down
+                .load(std::sync::atomic::Ordering::SeqCst)
+            {
+                anyhow::bail!("daemon is shutting down");
+            }
+            if guard.get(&pane_id).is_some() {
+                drop(guard);
+                tokio::task::yield_now().await;
+                continue;
+            }
+            let (input_tx, input_rx) = mpsc::channel::<SessionCommand>(64);
+            let (frames_tx, _) = broadcast::channel::<SessionFrame>(256);
+            let (closed_tx, _) = broadcast::channel::<String>(4);
+            let (restore_tx, restore_rx) = mpsc::channel::<RestoreViewport>(4);
+            let session = Arc::new(TerminalSession {
+                pane_id: pane_id.clone(),
+                input_tx,
+                frames_tx,
+                closed_tx,
+                last_close_reason: std::sync::Mutex::new(None),
+                restore_tx,
+                bridges: std::sync::Mutex::new(BridgeState { count: 1, closing: false }),
+                shutdown: tokio::sync::Notify::new(),
+            });
+            let runner_session = session.clone();
+            let herdr = self.herdr.clone();
+            let registry = Arc::clone(self);
+            tokio::spawn(async move {
+                run_session(&registry, runner_session, herdr, takeover, cols, rows, input_rx, restore_rx).await;
+            });
+            guard.insert(pane_id, session.clone());
+            return Ok(session);
         }
     }
 
@@ -1165,6 +1209,23 @@ mod tests {
             session.shutdown.notified().now_or_never().is_none(),
             "no duplicate wakeup"
         );
+    }
+
+    #[tokio::test]
+    async fn attach_is_rejected_after_shutdown_started() {
+        let registry = Arc::new(TerminalRegistry::new(
+            HerdrClient::new("/nonexistent.sock".into(), "herdr".into()),
+            Arc::new(SessionCache::new(HerdrClient::new(
+                "/nonexistent.sock".into(),
+                "herdr".into(),
+            ))),
+        ));
+        registry.shutdown().await;
+        let error = match registry.attach("w1:pX".to_string(), false, 80, 24).await {
+            Ok(_) => panic!("a new controller must not start during shutdown"),
+            Err(error) => error,
+        };
+        assert!(error.to_string().contains("shutting down"));
     }
 
     /// Test-only session with `n` bridges watching. Production attach() builds

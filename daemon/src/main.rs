@@ -30,7 +30,11 @@ pub struct AppState {
     pub cache: Arc<SessionCache>,
     pub core: herdrcore::CoreClient,
     pub core_focus: Arc<std::sync::Mutex<Option<herdrcore::CoreFocus>>>,
-    pub core_read: Arc<std::sync::Mutex<std::collections::HashSet<String>>>,
+    pub core_read: Arc<
+        std::sync::Mutex<
+            std::collections::HashMap<String, crate::herdrcore::CoreReadMark>,
+        >,
+    >,
     pub bus: Arc<EventBus>,
     pub terminals: Arc<terminal::TerminalRegistry>,
     pub updater: UpdateWatcher,
@@ -106,7 +110,7 @@ async fn main() -> Result<()> {
         cache,
         core,
         core_focus: Arc::new(std::sync::Mutex::new(None)),
-        core_read: Arc::new(std::sync::Mutex::new(std::collections::HashSet::new())),
+        core_read: Arc::new(std::sync::Mutex::new(std::collections::HashMap::new())),
         bus,
         terminals,
         updater,

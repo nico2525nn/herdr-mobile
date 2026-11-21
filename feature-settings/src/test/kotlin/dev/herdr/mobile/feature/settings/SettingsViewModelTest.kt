@@ -41,6 +41,9 @@ class SettingsViewModelTest {
         val added = mutableListOf<HostProfile>()
         val updated = mutableListOf<HostProfile>()
         val removed = mutableListOf<String>()
+        val deletedPasswords = mutableListOf<String>()
+        val deletedTokens = mutableListOf<String>()
+        val deletedKeys = mutableListOf<String>()
         var active: String? = null
 
         override suspend fun awaitLoaded() = Unit
@@ -51,11 +54,11 @@ class SettingsViewModelTest {
         }
 
         override suspend fun storePrivateKey(alias: String?, pem: String, label: String) = alias ?: "key"
-        override suspend fun deletePrivateKey(alias: String) = Unit
-        override suspend fun storeSshPassword(alias: String?, password: String): String? = alias
-        override suspend fun deleteSshPassword(alias: String) = Unit
+        override suspend fun deletePrivateKey(alias: String) { deletedKeys += alias }
+        override suspend fun storeSshPassword(alias: String?, password: String): String? = alias ?: "password"
+        override suspend fun deleteSshPassword(alias: String) { deletedPasswords += alias }
         override suspend fun storeBearerToken(alias: String?, token: String) = alias ?: "token"
-        override suspend fun deleteBearerToken(alias: String) = Unit
+        override suspend fun deleteBearerToken(alias: String) { deletedTokens += alias }
         override suspend fun storeKnownHosts(alias: String?, knownHosts: String) = alias ?: "kh"
 
         override suspend fun addProfile(profile: HostProfile) {
@@ -215,4 +218,52 @@ class SettingsViewModelTest {
         assertNotNull(model.uiState.value.error)
         assertEquals(true, repo.settings.value.dynamicColor)
     }
+    @Test
+    fun `an invalid direct URL is rejected before it replaces the saved one`() = runTest(dispatcher) {
+        val repo = FakeRepository()
+        val model = SettingsViewModel(repo)
+        advanceUntilIdle()
+
+        model.setDirectUrl("http://100.64.0.1:8765")
+        advanceUntilIdle()
+        assertNotNull(model.uiState.value.error)
+        assertEquals("http://127.0.0.1:8765", repo.settings.value.directUrl)
+
+        model.setDirectUrl("https://daemon.example:8765")
+        advanceUntilIdle()
+        assertEquals("https://daemon.example:8765", repo.settings.value.directUrl)
+
+        // REST and WebSocket build URLs differently from a base path, so a
+        // path/query that passes health can still break the event stream.
+        model.setDirectUrl("https://daemon.example:8765/api")
+        advanceUntilIdle()
+        assertNotNull(model.uiState.value.error)
+        assertEquals("https://daemon.example:8765", repo.settings.value.directUrl)
+
+        model.setDirectUrl("https://daemon.example:8765?token=x")
+        advanceUntilIdle()
+        assertNotNull(model.uiState.value.error)
+        assertEquals("https://daemon.example:8765", repo.settings.value.directUrl)
+    }
+
+    @Test
+    fun `a credential replacement uses a new alias and removes the old one after saving`() =
+        runTest(dispatcher) {
+            val old = profile("a").copy(passwordAlias = "old-password")
+            val repo = FakeRepository(AppSettings(hostProfiles = listOf(old)))
+            val model = SettingsViewModel(repo)
+            advanceUntilIdle()
+
+            model.saveProfileWithSecrets(
+                profile = profile("a"),
+                password = "new-secret",
+                token = null,
+            )
+            advanceUntilIdle()
+
+            val saved = repo.settings.value.hostProfiles.single()
+            assertEquals("password", saved.passwordAlias)
+            assertEquals(listOf("old-password"), repo.deletedPasswords)
+        }
+
 }

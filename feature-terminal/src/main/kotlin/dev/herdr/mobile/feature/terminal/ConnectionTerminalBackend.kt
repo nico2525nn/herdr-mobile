@@ -53,8 +53,8 @@ class ConnectionTerminalBackend(
 
     suspend fun resize(cols: Int, rows: Int) = inner.resize(cols, rows)
 
-    suspend fun scrollRemote(lines: Int, unit: String) =
-        inner.scrollRemote(lines, allowPageKey = false, unit = unit)
+    suspend fun scrollRemote(lines: Int, allowPageKey: Boolean, unit: String) =
+        inner.scrollRemote(lines, allowPageKey = allowPageKey, unit = unit)
 
     suspend fun scrollHostTo(offsetFromBottom: Long) =
         inner.scrollHostTo(offsetFromBottom)

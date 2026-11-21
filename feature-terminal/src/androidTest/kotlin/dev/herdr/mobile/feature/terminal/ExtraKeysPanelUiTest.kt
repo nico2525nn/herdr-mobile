@@ -2,12 +2,14 @@ package dev.herdr.mobile.feature.terminal
 
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.semantics.SemanticsActions
+import androidx.compose.ui.test.click
 import androidx.compose.ui.test.hasClickAction
 import androidx.compose.ui.test.hasText
 import androidx.compose.ui.test.junit4.createComposeRule
 import androidx.compose.ui.test.performClick
 import androidx.compose.ui.test.performTouchInput
 import androidx.compose.ui.test.swipe
+import androidx.compose.ui.test.swipeLeft
 import dev.herdr.mobile.core.designsystem.HerdrMobileTheme
 import dev.herdr.mobile.core.model.ThemeMode
 import org.junit.Assert.assertArrayEquals
@@ -83,6 +85,30 @@ class ExtraKeysPanelUiTest {
         render()
         compose.onNode(hasText("TAB") and hasClickAction()).performClick()
         assertEquals(1, sent.count { it.label == "TAB" })
+    }
+
+    @Test
+    fun touchTapNonDualKeySendsOnce() {
+        render()
+        compose.onNode(hasText("TAB") and hasClickAction()).performTouchInput { click() }
+        assertEquals(1, sent.count { it.label == "TAB" })
+    }
+
+    @Test
+    fun horizontalSwipeOverAKeyDoesNotSendIt() {
+        render()
+        // Keep the 400 ms hold timer from auto-advancing in the test clock;
+        // the swipe must cross slop first and cancel it.
+        compose.mainClock.autoAdvance = false
+        compose.onNode(hasText("TAB") and hasClickAction()).performTouchInput {
+            swipe(
+                start = center + Offset(10f, 0f),
+                end = center - Offset(120f, 0f),
+                durationMillis = 100,
+            )
+        }
+        compose.mainClock.advanceTimeBy(100)
+        assertTrue("a page swipe must not type the key under the finger, got $sent", sent.isEmpty())
     }
 
 }

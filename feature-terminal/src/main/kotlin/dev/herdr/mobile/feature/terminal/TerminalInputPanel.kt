@@ -2,7 +2,9 @@ package dev.herdr.mobile.feature.terminal
 
 import androidx.compose.foundation.gestures.awaitEachGesture
 import androidx.compose.foundation.gestures.awaitFirstDown
+import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
@@ -10,13 +12,18 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.pager.HorizontalPager
 import androidx.compose.foundation.pager.rememberPagerState
+import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
+import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.input.pointer.PointerEventPass
 import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.semantics.selected
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import dev.herdr.mobile.core.model.InputPanelPage
@@ -25,7 +32,6 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.rememberCoroutineScope
 import kotlinx.coroutines.launch
-import kotlin.math.abs
 
 @Composable
 internal fun BottomInputPanel(
@@ -85,10 +91,47 @@ internal fun BottomInputPanel(
             .padding(start = 12.dp, end = 12.dp, top = 8.dp, bottom = 6.dp),
     ) {
         Column(modifier = Modifier.padding(horizontal = 12.dp, vertical = 10.dp)) {
+            if (pages.size > 1 && settings.swipeBehavior != SwipeBehavior.PAGE) {
+                // With swipe disabled there is no other page switch. Keep the
+                // control scoped to that case so the normal PAGE flow stays
+                // swipe-only and the panel keeps its uncluttered height.
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.End,
+                ) {
+                    pages.forEach { page ->
+                        val selected = pagerState.currentPage == pages.indexOf(page)
+                        TextButton(
+                            onClick = {
+                                pagerScope.launch {
+                                    pagerState.animateScrollToPage(pages.indexOf(page))
+                                }
+                            },
+                            modifier = Modifier.semantics {
+                                // Colour alone does not convey the active page
+                                // to TalkBack; expose the selection state.
+                                this.selected = selected
+                            },
+                            colors = ButtonDefaults.textButtonColors(
+                                contentColor = if (selected) {
+                                    MaterialTheme.colorScheme.primary
+                                } else {
+                                    MaterialTheme.colorScheme.onSurfaceVariant
+                                },
+                            ),
+                        ) {
+                            Text(
+                                text = when (page) {
+                                    InputPanelPage.EXTRA_KEYS -> "Keys"
+                                    InputPanelPage.CJK_INPUT -> "Input"
+                                },
+                                style = MaterialTheme.typography.labelMedium,
+                            )
+                        }
+                    }
+                }
+            }
             if (pages.size > 1) {
-                // Honor the swipe setting: only PAGE switches panels. NONE and
-                // SCROLLBACK must not hijack horizontal swipes (the explicit
-                // page button remains available).
                 HorizontalPager(
                     state = pagerState,
                     modifier = Modifier.fillMaxWidth(),
@@ -113,17 +156,39 @@ internal fun BottomInputPanel(
                                         pass = PointerEventPass.Initial,
                                     )
                                     var totalX = 0f
+                                    var totalY = 0f
                                     var claimed = false
                                     while (true) {
                                         val event = awaitPointerEvent(PointerEventPass.Initial)
                                         val change = event.changes
                                             .firstOrNull { it.id == down.id } ?: break
                                         if (!change.pressed) break
+                                        if (change.isConsumed) {
+                                            // A vertical key detector already
+                                            // owns this gesture.
+                                            return@awaitEachGesture
+                                        }
                                         val dx = change.position.x - change.previousPosition.x
+                                        val dy = change.position.y - change.previousPosition.y
                                         if (!claimed) {
                                             totalX += dx
-                                            if (abs(totalX) > viewConfiguration.touchSlop) {
-                                                claimed = true
+                                            totalY += dy
+                                            // Wait for real travel (2x slop)
+                                            // before deciding: a one-pixel
+                                            // horizontal lead at slop used to
+                                            // lock the pager through a later
+                                            // deep downward flick.
+                                            when (resolveDragAxis(
+                                                totalX,
+                                                totalY,
+                                                viewConfiguration.touchSlop * 2f,
+                                            )) {
+                                                DragAxis.HORIZONTAL -> claimed = true
+                                                DragAxis.VERTICAL ->
+                                                    // Vertical gesture belongs to
+                                                    // the extra-key flick.
+                                                    return@awaitEachGesture
+                                                DragAxis.NONE -> Unit
                                             }
                                         }
                                         if (claimed) change.consume()

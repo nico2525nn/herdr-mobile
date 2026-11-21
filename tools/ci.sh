@@ -72,6 +72,7 @@ EXTERNAL_STATE="/sdcard/Android/data/$PKG/files/herdr-ci-state.json"
 SMOKE_STATUS=0
 ISOLATION_STATUS=0
 RESTORE_STATUS=0
+LIVE_ISOLATION=0
 INSTALLED=0
 REVERSE_SET=0
 OLD_REVERSE=""
@@ -112,18 +113,32 @@ health_ok() {
     python3 -c 'import json,sys; d=json.load(sys.stdin); sys.exit(0 if d.get("ok") and d.get("herdrConnected") else 1)' 2>/dev/null
 }
 
-# Stable signature: workspace ids+labels (sorted) and focused ids. Revisions,
-# agent statuses and timestamps move constantly and are not isolation evidence.
-snapshot_signature() {
-  local url="$1"
-  daemon_json "$url" /v1/snapshot 2>/dev/null |
+# Stable, READ-ONLY signature straight from the live Herdr session. The daemon
+# snapshot is cache-backed and does not subscribe to focus changes, so it could
+# return the same stale value before and after while the real session moved.
+# `herdr api snapshot` neither focuses nor writes: it is safe against the live
+# session and always reflects the current workspace/tab/pane focus.
+herdr_signature() {
+  "$HERDR" api snapshot 2>/dev/null |
     python3 -c '
 import json,sys
-d = json.load(sys.stdin)
+s = json.load(sys.stdin)["result"]["snapshot"]
 print(json.dumps({
-    "workspaces": sorted([w.get("id"), w.get("label", "")] for w in d.get("workspaces", [])),
-    "focused": sorted(w.get("id") for w in d.get("workspaces", []) if w.get("focused")),
+    "workspaces": sorted(
+        [w.get("workspace_id") or "", w.get("label") or ""]
+        for w in s.get("workspaces", [])
+    ),
+    "focused": [
+        s.get("focused_workspace_id"),
+        s.get("focused_tab_id"),
+        s.get("focused_pane_id"),
+    ],
 }, sort_keys=True))'
+}
+
+live_session_running() {
+  "$HERDR" session list 2>/dev/null |
+    awk '$1 == "default" && $2 == "running" { found = 1 } END { exit !found }'
 }
 
 pid_cmdline() {
@@ -136,10 +151,15 @@ pid_cmdline() {
 }
 
 is_our_daemon() {
-  local pid="$1"
-  local cmd
+  local pid="$1" cmd sock
   cmd="$(pid_cmdline "$pid")"
-  [[ "$cmd" == *herdr-mobile-daemon* && "$cmd" == *"127.0.0.1:${PRIVATE_PORT}"* ]]
+  sock="$(session_dir)/herdr.sock"
+  # Match the exact private socket as well as the port. A real daemon that
+  # happens to listen on the same loopback port is never ours and must not be
+  # killed by the stale-run guard.
+  [[ "$cmd" == *herdr-mobile-daemon* &&
+     "$cmd" == *"127.0.0.1:${PRIVATE_PORT}"* &&
+     "$cmd" == *"$sock"* ]]
 }
 
 pid_on_private_port() {
@@ -240,6 +260,12 @@ for w in d.get("result", {}).get("workspaces", []):
 stop_private_session() {
   local dir
   dir="$(session_dir)"
+  # The EXIT trap runs even when the ownership guard aborted the run. Never
+  # close or stop a session that this invocation did not create.
+  if [[ ! -e "$dir/.ci-owned" ]]; then
+    info "not stopping session '$PRIVATE_SESSION': no CI marker"
+    return 0
+  fi
   if session_running; then
     close_private_workspaces
     info "stopping private herdr session '$PRIVATE_SESSION'"
@@ -386,6 +412,28 @@ require python3
 require "$HERDR"
 python3 -c 'import PIL' 2>/dev/null ||
   die "python3 Pillow is required by tools/smoke.sh (pip install pillow)"
+
+# The stale-daemon guard identifies our process by port + binary. If the live
+# daemon shares that port, that match would stop the user's real session before
+# the isolation baseline is even captured. Refuse before anything can be
+# stopped; the private daemon is always loopback-only.
+LIVE_ADDR="$(python3 - "$LIVE_URL" <<'PY'
+import sys
+from urllib.parse import urlparse
+u = urlparse(sys.argv[1])
+host = u.hostname or ""
+port = u.port or (443 if u.scheme == "https" else 80)
+print(f"{host}:{port}")
+PY
+)"
+if [[ "$LIVE_ADDR" == "127.0.0.1:$PRIVATE_PORT" ||
+      "$LIVE_ADDR" == "localhost:$PRIVATE_PORT" ||
+      "$LIVE_ADDR" == "::1:$PRIVATE_PORT" ||
+      "$LIVE_ADDR" == "[::1]:$PRIVATE_PORT" ]]; then
+  die "LIVE_URL ($LIVE_URL) and the private daemon share 127.0.0.1:$PRIVATE_PORT.
+ci: set PRIVATE_PORT to a free port; refusing to run where stopping a stale
+ci: private daemon could stop the live daemon."
+fi
 
 if [[ -z "$SERIAL" ]]; then
   mapfile -t DEVICES < <("$ADB" devices 2>/dev/null | awk 'NR > 1 && $2 == "device" { print $1 }')
@@ -535,11 +583,17 @@ FOCUSED_COUNT="$("$HERDR" --session "$PRIVATE_SESSION" api snapshot 2>/dev/null 
 [[ "$FOCUSED_COUNT" == "1" ]] || die "private session has $FOCUSED_COUNT focused workspaces after creating the anchor"
 
 # ------------------------------------------------------------ isolation baseline
-say "capturing live daemon baseline from $LIVE_URL"
-LIVE_BEFORE="$(snapshot_signature "$LIVE_URL" 2>/dev/null)" || LIVE_BEFORE="unreachable"
-if [[ "$LIVE_BEFORE" == "unreachable" ]]; then
-  info "live daemon not reachable; baseline recorded as 'unreachable'"
+say "capturing live session baseline"
+LIVE_BEFORE="$(herdr_signature 2>/dev/null)" || LIVE_BEFORE=""
+if [[ -z "$LIVE_BEFORE" ]]; then
+  if live_session_running; then
+    die "the live Herdr session is running but its read-only snapshot failed.
+ci: refusing to claim isolation without a fresh baseline."
+  fi
+  LIVE_ISOLATION=0
+  info "no live Herdr session; isolation check not applicable"
 else
+  LIVE_ISOLATION=1
   info "live workspaces/focus: $LIVE_BEFORE"
 fi
 
@@ -614,14 +668,25 @@ fi
 
 # ------------------------------------------------------------- isolation proof
 say "verifying the live session was untouched"
-LIVE_AFTER="$(snapshot_signature "$LIVE_URL" 2>/dev/null)" || LIVE_AFTER="unreachable"
-if [[ "$LIVE_BEFORE" == "$LIVE_AFTER" ]]; then
-  info "live workspaces/focus unchanged: $LIVE_AFTER"
-else
-  printf '\nISOLATION FAILED\n' >&2
-  printf '  before: %s\n' "$LIVE_BEFORE" >&2
-  printf '  after:  %s\n' "$LIVE_AFTER" >&2
+if (( LIVE_ISOLATION )); then
+  LIVE_AFTER="$(herdr_signature 2>/dev/null)" || LIVE_AFTER=""
+  if [[ -z "$LIVE_AFTER" ]]; then
+    printf '\nISOLATION FAILED: the live session was readable before the run but not after\n' >&2
+    printf '  before: %s\n' "$LIVE_BEFORE" >&2
+    ISOLATION_STATUS=1
+  elif [[ "$LIVE_BEFORE" == "$LIVE_AFTER" ]]; then
+    info "live workspaces/focus unchanged: $LIVE_AFTER"
+  else
+    printf '\nISOLATION FAILED\n' >&2
+    printf '  before: %s\n' "$LIVE_BEFORE" >&2
+    printf '  after:  %s\n' "$LIVE_AFTER" >&2
+    ISOLATION_STATUS=1
+  fi
+elif live_session_running; then
+  printf '\nISOLATION FAILED: a live Herdr session appeared during the run\n' >&2
   ISOLATION_STATUS=1
+else
+  info "no live Herdr session; isolation check skipped"
 fi
 
 # --------------------------------------------------------------------- verdict

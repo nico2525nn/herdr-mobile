@@ -51,7 +51,6 @@ import dev.herdr.mobile.feature.settings.SettingsScreen
 import dev.herdr.mobile.feature.settings.SettingsViewModel
 import dev.herdr.mobile.feature.terminal.TerminalScreen
 import dev.herdr.mobile.feature.terminal.TerminalViewModel
-import dev.herdr.mobile.notifications.HerdrNotifications
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.serialization.Serializable
 
@@ -108,12 +107,8 @@ class MainActivity : ComponentActivity() {
         outState.putString(DEEP_LINK_STATE, encodeRoute(lastHandledDeepLink))
     }
 
-    private fun routeFromIntent(intent: Intent?): TerminalRoute? {
-        val workspace = intent?.getStringExtra(HerdrNotifications.EXTRA_WORKSPACE_ID) ?: return null
-        val tab = intent.getStringExtra(HerdrNotifications.EXTRA_TAB_ID)
-        val pane = intent.getStringExtra(HerdrNotifications.EXTRA_PANE_ID)
-        return TerminalRoute(workspace, tab, pane)
-    }
+    private fun NotificationDeepLink.Target.toRoute(): TerminalRoute =
+        TerminalRoute(workspaceId, tabId, paneId)
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -130,8 +125,9 @@ class MainActivity : ComponentActivity() {
         // Skipped on notification-tap landings: the prompt would cover the
         // deep-link target the user explicitly asked to see (grant state is
         // also surfaced in Settings with a system link).
+        val handoff = NotificationDeepLink.consume()
         val uiPrefs = getSharedPreferences(UI_PREFS, MODE_PRIVATE)
-        if (!restoring && routeFromIntent(intent) == null &&
+        if (!restoring && handoff == null &&
             Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
             checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) !=
                 PackageManager.PERMISSION_GRANTED &&
@@ -143,7 +139,7 @@ class MainActivity : ComponentActivity() {
             notificationPermission.launch(Manifest.permission.POST_NOTIFICATIONS)
         }
         val container = (application as HerdrApp).container
-        deepLinkTarget.value = if (restoring) null else routeFromIntent(intent)
+        deepLinkTarget.value = handoff?.toRoute()
         setContent {
             val settings by container.settingsRepository.settings.collectAsStateWithLifecycle()
             val deepLink by deepLinkTarget.collectAsStateWithLifecycle()
@@ -161,10 +157,12 @@ class MainActivity : ComponentActivity() {
     override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
         setIntent(intent)
-        // Notification deep link: open the target terminal after a foreground refresh.
-        routeFromIntent(intent)?.let {
-            lastHandledDeepLink = it
-            deepLinkTarget.value = it
+        // Notification deep link: the non-exported proxy published a one-shot
+        // target; never read terminal extras from this exported activity.
+        NotificationDeepLink.consume()?.let {
+            val route = it.toRoute()
+            lastHandledDeepLink = route
+            deepLinkTarget.value = route
         }
     }
 }
@@ -296,7 +294,6 @@ private fun AppNav(
         NavHost(
             navController = nav,
             startDestination = HomeRoute,
-            modifier = Modifier.padding(padding),
         ) {
             composable<HomeRoute> {
                 val vm: HomeViewModel = viewModel(
@@ -310,13 +307,14 @@ private fun AppNav(
                     onOpenTab = { workspaceId, tabId ->
                         nav.navigate(TerminalRoute(workspaceId, tabId))
                     },
+                    modifier = Modifier.padding(padding),
                 )
             }
             composable<SettingsRoute> {
                 val vm: SettingsViewModel = viewModel(
                     factory = SettingsViewModel.Factory(container.settingsRepository),
                 )
-                SettingsScreen(viewModel = vm)
+                SettingsScreen(viewModel = vm, modifier = Modifier.padding(padding))
             }
             composable<TerminalRoute> { entry ->
                 val route = entry.toRoute<TerminalRoute>()

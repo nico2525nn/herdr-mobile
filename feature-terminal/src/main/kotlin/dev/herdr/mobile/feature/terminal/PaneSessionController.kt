@@ -105,6 +105,10 @@ class PaneSessionController(
     // ---- target resolution -------------------------------------------
 
     private fun onSessionState(state: dev.herdr.mobile.core.network.HerdrClientState) {
+        // The screen is backgrounded: keep the cached target/snapshot but do
+        // not attach, retarget, or acknowledge DONE off-screen. The resume
+        // path re-evaluates the latest snapshot.
+        if (backgrounded) return
         val generation = session.targetGeneration
         if (generation != observedTargetGeneration) {
             observedTargetGeneration = generation
@@ -170,8 +174,7 @@ class PaneSessionController(
                 openTarget(decision.next, preserveMessage = true)
             }
             TargetReconcile.Clear -> {
-                backendFlow.value = null
-                targetFlow.value = null
+                clearTargetAndRelease()
                 onMessage(UiMessage.SessionClosed)
             }
         }
@@ -249,7 +252,7 @@ class PaneSessionController(
      * A drag produces one delta per cell crossing; the server needs rows, not
      * a frame per row. Coalesce for one scroll tick and send the sum.
      */
-    fun scrollRemote(rows: Int) {
+    fun scrollRemote(rows: Int, allowPageKey: Boolean = false) {
         if (rows == 0) return
         val backend = backendFlow.value
         if (backend == null) {
@@ -270,7 +273,7 @@ class PaneSessionController(
             val current = backendFlow.value ?: return@launch
             val currentGeneration = targetOwnerGeneration ?: return@launch
             if (delta == 0 || !isCurrent(current, currentGeneration)) return@launch
-            runCatching { current.scrollRemote(delta, "rows") }
+            runCatching { current.scrollRemote(delta, allowPageKey, "rows") }
         }
     }
 
@@ -379,6 +382,7 @@ class PaneSessionController(
      * leaving and reopening the terminal after the agent finished.
      */
     private fun maybeAckDone(pane: Pane, target: TerminalTarget, generation: Long) {
+        if (backgrounded) return
         if (pane.status != dev.herdr.mobile.core.model.AgentStatus.DONE) {
             if (readAckPaneId == pane.id) readAckPaneId = null
             return
@@ -578,9 +582,67 @@ class PaneSessionController(
      */
     fun resumeAfterBackground() {
         backgrounded = false
-        val target = targetFlow.value ?: return
+        val state = session.state.value
+        if (observedTargetGeneration != session.targetGeneration) {
+            observedTargetGeneration = session.targetGeneration
+            onTargetGenerationChanged(state.snapshot)
+            // A kept target was reopened above. If there was none (the first
+            // snapshot arrived while stopped), fall through and resolve it
+            // from the current snapshot instead of waiting for another emit.
+            if (targetFlow.value != null) return
+        }
+        // The first snapshot may have arrived while stopped (onSessionState
+        // returns early when backgrounded), leaving no target at all. Resolve
+        // it now instead of waiting for an unrelated later state change.
+        val target = targetFlow.value ?: run {
+            val snapshot = state.snapshot ?: return
+            val resolved = resolveTarget(
+                snapshot, initialWorkspaceId, initialTabId, initialPaneId,
+            ) ?: return
+            onMessage(null)
+            fallbackNotice(
+                initialWorkspaceId,
+                initialTabId,
+                initialPaneId,
+                snapshot,
+                resolved,
+            )?.let(onMessage)
+            openTarget(resolved, preserveMessage = true)
+            snapshot.pane(resolved.paneId)?.let { pane ->
+                maybeAckDone(pane, resolved, session.targetGeneration)
+            }
+            return
+        }
         if (backendFlow.value != null) return
-        if (targetOwnerGeneration != session.targetGeneration) return
+        if (targetOwnerGeneration != session.targetGeneration) {
+            onTargetGenerationChanged(state.snapshot)
+            return
+        }
+        // The snapshot may have moved while the stream was released. Resolve
+        // the kept target before re-attaching instead of attaching a closed
+        // pane, and acknowledge a DONE that arrived while away.
+        val snapshot = state.snapshot
+        if (snapshot != null) {
+            when (val decision = reconcileTarget(snapshot, target)) {
+                TargetReconcile.Keep -> Unit
+                is TargetReconcile.Retarget -> {
+                    val label = snapshot.workspace(decision.next.workspaceId)
+                        ?.label?.takeIf { it.isNotBlank() }
+                        ?: decision.next.workspaceId
+                    onMessage(UiMessage.WorkspaceClosed(label))
+                    openTarget(decision.next, preserveMessage = true)
+                    return
+                }
+                TargetReconcile.Clear -> {
+                    clearTargetAndRelease()
+                    onMessage(UiMessage.SessionClosed)
+                    return
+                }
+            }
+            snapshot.pane(target.paneId)?.let { pane ->
+                maybeAckDone(pane, target, session.targetGeneration)
+            }
+        }
         attachJob?.cancel()
         onMessage(null)
         attachJob = scope.launch {
@@ -591,6 +653,16 @@ class PaneSessionController(
             }
             openTarget(target)
         }
+    }
+
+    /** Clear the visible target and release the socket before the flow drops it. */
+    private fun clearTargetAndRelease() {
+        cancelAttachmentWork(clearInput = true)
+        val old = backendFlow.value
+        backendFlow.value = null
+        backendPaneId = null
+        targetFlow.value = null
+        old?.let { releaseInBackground(it) }
     }
 
     fun shutdown() {

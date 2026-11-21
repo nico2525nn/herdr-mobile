@@ -60,6 +60,12 @@ constexpr size_t kContinuationMaxBytes = 8 * 1024 * 1024;
 JavaVM* gJavaVm = nullptr;
 jclass gBitmapFactoryClass = nullptr;
 jmethodID gDecodeByteArray = nullptr;
+jclass gBitmapFactoryOptionsClass = nullptr;
+jmethodID gOptionsInit = nullptr;
+jmethodID gDecodeByteArrayOptions = nullptr;
+jfieldID gInJustDecodeBounds = nullptr;
+jfieldID gOutWidth = nullptr;
+jfieldID gOutHeight = nullptr;
 jclass gBitmapClass = nullptr;
 jmethodID gBitmapGetWidth = nullptr;
 jmethodID gBitmapGetHeight = nullptr;
@@ -70,10 +76,17 @@ jmethodID gClipboardHasText = nullptr;
 jmethodID gReadClipboardForProgram = nullptr;
 
 constexpr int64_t kMaxImagePixels = 100 * 1000 * 1000;
+// Peak allocation is the Bitmap (4 B/px), the jintArray (4 B/px) and the
+// ghostty output (4 B/px), plus the PNG byte array. Without a byte budget the
+// pixel cap alone allowed ~1.2 GB at the limit and an unreported OOM when
+// NewIntArray failed.
+constexpr size_t kImageAllocBudget = 256 * 1024 * 1024;
+constexpr size_t kImageBytesPerPixel = 12;
 
 bool decodePngCallback(void*, const GhosttyAllocator* allocator, const uint8_t* data,
                        size_t dataLen, GhosttySysImage* out) {
   if (gJavaVm == nullptr || data == nullptr || dataLen == 0) return false;
+  if (dataLen > kImageAllocBudget) return false;
   JNIEnv* env = nullptr;
   if (gJavaVm->GetEnv(reinterpret_cast<void**>(&env), JNI_VERSION_1_6) != JNI_OK) return false;
   if (env->PushLocalFrame(8) != 0) return false;
@@ -81,28 +94,68 @@ bool decodePngCallback(void*, const GhosttyAllocator* allocator, const uint8_t* 
   bool decoded = false;
   do {
     jbyteArray pngArray = env->NewByteArray(static_cast<jsize>(dataLen));
-    if (pngArray == nullptr) break;
+    if (pngArray == nullptr) {
+      env->ExceptionClear();
+      break;
+    }
     env->SetByteArrayRegion(pngArray, 0, static_cast<jsize>(dataLen),
                             reinterpret_cast<const jbyte*>(data));
-    jobject bitmap = env->CallStaticObjectMethod(gBitmapFactoryClass, gDecodeByteArray,
-                                                 pngArray, 0, static_cast<jint>(dataLen));
+    // Bounds first: BitmapFactory.decodeByteArray allocates width*height*4
+    // pixels before the size check, so a huge valid PNG could OOM before we
+    // reject it. inJustDecodeBounds reads only the dimensions.
+    jobject options = env->NewObject(gBitmapFactoryOptionsClass, gOptionsInit);
+    if (options == nullptr) break;
+    env->SetBooleanField(options, gInJustDecodeBounds, JNI_TRUE);
+    jobject probe = env->CallStaticObjectMethod(gBitmapFactoryClass, gDecodeByteArrayOptions,
+                                                pngArray, 0, static_cast<jint>(dataLen),
+                                                options);
+    if (env->ExceptionCheck()) {
+      env->ExceptionClear();
+      break;
+    }
+    if (probe != nullptr) {
+      env->CallVoidMethod(probe, gBitmapRecycle);
+      env->DeleteLocalRef(probe);
+    }
+    const jint width = env->GetIntField(options, gOutWidth);
+    const jint height = env->GetIntField(options, gOutHeight);
+    if (width <= 0 || height <= 0 ||
+        static_cast<int64_t>(width) * height > kMaxImagePixels) {
+      break;
+    }
+    const size_t expectedPixels = static_cast<size_t>(width) * static_cast<size_t>(height);
+    if (expectedPixels > (kImageAllocBudget - dataLen) / kImageBytesPerPixel) {
+      // Reject before allocating the Bitmap: the three buffers together must
+      // fit the budget, not just the pixel count.
+      break;
+    }
+    env->SetBooleanField(options, gInJustDecodeBounds, JNI_FALSE);
+    jobject bitmap = env->CallStaticObjectMethod(gBitmapFactoryClass, gDecodeByteArrayOptions,
+                                                 pngArray, 0, static_cast<jint>(dataLen),
+                                                 options);
     if (env->ExceptionCheck()) {
       env->ExceptionClear();
       break;
     }
     if (bitmap == nullptr) break;
-    const jint width = env->CallIntMethod(bitmap, gBitmapGetWidth);
-    const jint height = env->CallIntMethod(bitmap, gBitmapGetHeight);
-    if (width <= 0 || height <= 0 ||
-        static_cast<int64_t>(width) * height > kMaxImagePixels) {
+    const size_t pixelCount = static_cast<size_t>(width) * static_cast<size_t>(height);
+    if (pixelCount > (kImageAllocBudget - dataLen) / kImageBytesPerPixel) {
+      // The Bitmap is already allocated at this point. Reject before the
+      // jintArray doubles the peak and report OOM instead of returning a
+      // half-decoded image.
+      env->CallVoidMethod(bitmap, gBitmapRecycle);
       break;
     }
-    const size_t pixelCount = static_cast<size_t>(width) * static_cast<size_t>(height);
     jintArray pixelArray = env->NewIntArray(static_cast<jsize>(pixelCount));
-    if (pixelArray == nullptr) break;
+    if (pixelArray == nullptr) {
+      env->ExceptionClear();
+      env->CallVoidMethod(bitmap, gBitmapRecycle);
+      break;
+    }
     env->CallVoidMethod(bitmap, gBitmapGetPixels, pixelArray, 0, width, 0, 0, width, height);
     if (env->ExceptionCheck()) {
       env->ExceptionClear();
+      env->CallVoidMethod(bitmap, gBitmapRecycle);
       break;
     }
     env->CallVoidMethod(bitmap, gBitmapRecycle);
@@ -1138,7 +1191,13 @@ Java_io_github_sagernet_libghostty_GhosttyVt_nativeSnapshot(
           if (cellUnits + needed > kMaxCellTextUnits) break;
           const uint32_t written =
               appendUtf16(codepoints[i], textBlob, textUnits + cellUnits, textCapUnits);
-          if (written == 0) break;
+          if (written == 0) {
+            // The Kotlin buffer now reserves 32 units per cell (the JNI max),
+            // so this is a last-resort guard; mark the snapshot dirty rather
+            // than silently dropping text and claiming it fit.
+            truncated = true;
+            break;
+          }
           cellUnits += written;
         }
       }
@@ -1543,15 +1602,28 @@ JNIEXPORT jint JNICALL JNI_OnLoad(JavaVM* vm, void*) {
   jclass factoryClass = env->FindClass("android/graphics/BitmapFactory");
   jclass bitmapClass = env->FindClass("android/graphics/Bitmap");
   if (factoryClass == nullptr || bitmapClass == nullptr) return JNI_ERR;
+  jclass optionsClass = env->FindClass("android/graphics/BitmapFactory$Options");
+  if (optionsClass == nullptr) return JNI_ERR;
+  gBitmapFactoryOptionsClass = static_cast<jclass>(env->NewGlobalRef(optionsClass));
   gBitmapFactoryClass = static_cast<jclass>(env->NewGlobalRef(factoryClass));
   gBitmapClass = static_cast<jclass>(env->NewGlobalRef(bitmapClass));
   gDecodeByteArray = env->GetStaticMethodID(gBitmapFactoryClass, "decodeByteArray",
                                             "([BII)Landroid/graphics/Bitmap;");
+  gOptionsInit = env->GetMethodID(gBitmapFactoryOptionsClass, "<init>", "()V");
+  gDecodeByteArrayOptions = env->GetStaticMethodID(
+      gBitmapFactoryClass, "decodeByteArray",
+      "([BIILandroid/graphics/BitmapFactory$Options;)Landroid/graphics/Bitmap;");
+  gInJustDecodeBounds = env->GetFieldID(gBitmapFactoryOptionsClass, "inJustDecodeBounds", "Z");
+  gOutWidth = env->GetFieldID(gBitmapFactoryOptionsClass, "outWidth", "I");
+  gOutHeight = env->GetFieldID(gBitmapFactoryOptionsClass, "outHeight", "I");
   gBitmapGetWidth = env->GetMethodID(gBitmapClass, "getWidth", "()I");
   gBitmapGetHeight = env->GetMethodID(gBitmapClass, "getHeight", "()I");
   gBitmapGetPixels = env->GetMethodID(gBitmapClass, "getPixels", "([IIIIIII)V");
   gBitmapRecycle = env->GetMethodID(gBitmapClass, "recycle", "()V");
-  if (gDecodeByteArray == nullptr || gBitmapGetWidth == nullptr || gBitmapGetHeight == nullptr ||
+  if (gBitmapFactoryOptionsClass == nullptr || gOptionsInit == nullptr ||
+      gDecodeByteArrayOptions == nullptr || gInJustDecodeBounds == nullptr ||
+      gOutWidth == nullptr || gOutHeight == nullptr || gDecodeByteArray == nullptr ||
+      gBitmapGetWidth == nullptr || gBitmapGetHeight == nullptr ||
       gBitmapGetPixels == nullptr || gBitmapRecycle == nullptr) {
     return JNI_ERR;
   }

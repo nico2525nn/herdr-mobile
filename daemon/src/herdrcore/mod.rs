@@ -43,6 +43,53 @@ impl CoreFocus {
     }
 }
 
+/// Which completion has been read, not merely which pane.
+///
+/// Core's `done` is an unseen completion and has no focus/seen RPC, so the
+/// daemon presents it as idle after a read-ack. A pane-id set hid the NEXT
+/// completion when it arrived while no event subscriber was connected. Store
+/// the completion identity available on the terminal and only suppress a
+/// `done` whose identity still matches; a new completion (new seq/turn)
+/// surfaces immediately, with no dependence on subscriber ordering.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CoreReadMark {
+    state_change_seq: Option<i64>,
+    completion_seq: Option<i64>,
+    turn: Option<i64>,
+}
+
+impl CoreReadMark {
+    fn identity(terminal: &Value) -> Self {
+        fn number(value: &Value) -> Option<i64> {
+            value
+                .as_i64()
+                .or_else(|| value.as_str().and_then(|text| text.parse().ok()))
+        }
+        let seq = |key: &str| {
+            terminal
+                .get(key)
+                .and_then(number)
+                .or_else(|| terminal.pointer(&format!("/status/{key}")).and_then(number))
+        };
+        Self {
+            state_change_seq: seq("state_change_seq"),
+            completion_seq: seq("completion_seq"),
+            turn: seq("turn"),
+        }
+    }
+
+    /// A mark is only meaningful for a pane that is currently done; focusing a
+    /// working pane must not pre-acknowledge its future completion.
+    pub fn for_terminal(terminal: &Value) -> Option<Self> {
+        let state = terminal.pointer("/status/state").and_then(Value::as_str)?;
+        (state == "done").then(|| Self::identity(terminal))
+    }
+
+    pub fn matches(&self, terminal: &Value) -> bool {
+        *self == Self::identity(terminal)
+    }
+}
+
 #[derive(Clone, Debug)]
 pub struct CoreSnapshot {
     pub seq: i64,
@@ -170,8 +217,14 @@ impl CoreClient {
             .and_then(Value::as_array)
             .cloned()
             .unwrap_or_default();
+        // read_json_line may have read past the response line. Move any
+        // already-buffered bytes into our cancellation-safe line buffer.
+        let buffered = reader.buffer().to_vec();
+        reader.consume(buffered.len());
         Ok(CoreSubscription {
             reader,
+            read_buf: buffered,
+            scan_from: 0,
             initial: CoreSnapshot { seq, terminals, version: None },
         })
     }
@@ -227,7 +280,13 @@ impl CoreClient {
             .or_else(|| response.get("history"))
             .and_then(Value::as_u64)
             .unwrap_or(0) as u32;
-        Ok(CoreAttachment { stream, channel, terminal, history_rows })
+        Ok(CoreAttachment {
+            stream,
+            read_buf: Vec::new(),
+            channel,
+            terminal,
+            history_rows,
+        })
     }
 
     pub async fn send_input(&self, address: &str, bytes: &[u8]) -> Result<()> {
@@ -291,7 +350,7 @@ impl CoreClient {
         let core = self.snapshot().await?;
         let snapshot = translate_snapshot(
             core.seq, &core.terminals, core.version, None,
-            &std::collections::HashSet::new(),
+            &std::collections::HashMap::new(),
         );
         let workspace = snapshot.workspaces.iter().find(|workspace| workspace.id == workspace_id)
             .ok_or_else(|| anyhow!("not_found: workspace {workspace_id}"))?;
@@ -318,12 +377,16 @@ impl CoreClient {
     /// restart-safe source `translate_snapshot` sorts by.
     pub async fn move_workspace(&self, workspace_id: &str, insert_index: i64) -> Result<()> {
         let terminals = self.list(false).await?;
-        let mut order = ordered_ids(&terminals, workspace_id_of, SPACE_ORDER_LABEL);
+        let mut order = ordered_workspace_ids(&terminals);
         let Some(from) = order.iter().position(|id| id == workspace_id) else {
             bail!("not_found: workspace {workspace_id}");
         };
         let item = order.remove(from);
-        let to = insert_index.clamp(0, order.len() as i64) as usize;
+        // The wire index counts the list WITH the item still in it (the
+        // Kotlin Reorder.insertIndex contract). After remove() the target is
+        // one slot lower for a downward move.
+        let to = adjusted_insert_index(from, insert_index)
+            .clamp(0, order.len() as i64) as usize;
         order.insert(to, item);
         for (index, id) in order.iter().enumerate() {
             for terminal in terminals.iter().filter(|t| workspace_id_of(t).as_deref() == Some(id)) {
@@ -353,7 +416,8 @@ impl CoreClient {
             bail!("not_found: tab {tab_id}");
         };
         let item = order.remove(from);
-        let to = insert_index.clamp(0, order.len() as i64) as usize;
+        let to = adjusted_insert_index(from, insert_index)
+            .clamp(0, order.len() as i64) as usize;
         order.insert(to, item);
         for (index, id) in order.iter().enumerate() {
             for terminal in scoped.iter().filter(|t| tab_id_of(t).as_deref() == Some(id)) {
@@ -455,25 +519,64 @@ impl CoreClient {
 
 pub struct CoreSubscription {
     reader: BufReader<UnixStream>,
+    /// Bytes already read from the socket. `read_line` is not cancellation
+    /// safe: the events WebSocket selects on this future and a client frame
+    /// can drop it mid-line. Reading raw bytes with a cancel-safe `read` into
+    /// this buffer preserves a partial JSON line across select rounds.
+    read_buf: Vec<u8>,
+    /// Where the next newline search starts. A line-less stream must not make
+    /// every 8 KiB read rescan the whole buffer from byte zero.
+    scan_from: usize,
     pub initial: CoreSnapshot,
 }
 
+/// Upper bound for one JSON event line. Core sends compact status records;
+/// 16 MiB is far above any real event and still bounds a wedged/broken writer.
+const CORE_MAX_EVENT_LINE: usize = 16 * 1024 * 1024;
+
 impl CoreSubscription {
     pub async fn next(&mut self) -> Result<Option<Value>> {
-        let mut line = String::new();
-        let read = timeout(CORE_STREAM_IDLE_TIMEOUT, self.reader.read_line(&mut line))
+        loop {
+            let newline = self.read_buf[self.scan_from..]
+                .iter()
+                .position(|byte| *byte == b'\n')
+                .map(|offset| self.scan_from + offset);
+            if let Some(newline) = newline {
+                let line: Vec<u8> = self.read_buf.drain(..=newline).collect();
+                self.scan_from = 0;
+                let text = std::str::from_utf8(&line).context("herdr-core event is not UTF-8")?;
+                let message: Value = serde_json::from_str(text)
+                    .context("invalid herdr-core event notification")?;
+                return Ok(Some(message));
+            }
+            if self.read_buf.len() > CORE_MAX_EVENT_LINE {
+                bail!(
+                    "herdr-core event line exceeds {} bytes without a newline",
+                    CORE_MAX_EVENT_LINE
+                );
+            }
+            let mut chunk = [0u8; 8192];
+            // Bypass BufReader so a cancelled read cannot strand bytes in its
+            // internal buffer. `read` itself is cancel-safe.
+            let read = timeout(
+                CORE_STREAM_IDLE_TIMEOUT,
+                self.reader.get_mut().read(&mut chunk),
+            )
             .await
             .context("herdr-core event stream went idle")??;
-        if read == 0 {
-            return Ok(None);
+            if read == 0 {
+                return Ok(None);
+            }
+            self.scan_from = self.read_buf.len();
+            self.read_buf.extend_from_slice(&chunk[..read]);
         }
-        let message: Value = serde_json::from_str(&line).context("invalid herdr-core event notification")?;
-        Ok(Some(message))
     }
 }
 
 pub struct CoreAttachment {
     stream: UnixStream,
+    /// Partial frame bytes preserved across cancellation of `next_frame`.
+    read_buf: Vec<u8>,
     pub channel: u32,
     pub terminal: Value,
     /// History rows the server says it painted before live data.
@@ -508,9 +611,22 @@ impl CoreAttachment {
     }
 
     pub async fn next_frame(&mut self) -> Result<CoreFrame> {
-        timeout(CORE_STREAM_IDLE_TIMEOUT, read_frame(&mut self.stream))
-            .await
-            .context("herdr-core terminal stream went idle")?
+        loop {
+            if let Some(frame) = take_frame(&mut self.read_buf)? {
+                return Ok(frame);
+            }
+            let mut chunk = [0u8; 8192];
+            // `read_exact` is not cancellation safe. The terminal bridge
+            // selects this future against client input, so read raw bytes into
+            // our own buffer and only consume complete frames.
+            let read = timeout(CORE_STREAM_IDLE_TIMEOUT, self.stream.read(&mut chunk))
+                .await
+                .context("herdr-core terminal stream went idle")??;
+            if read == 0 {
+                bail!("herdr-core closed the terminal stream");
+            }
+            self.read_buf.extend_from_slice(&chunk[..read]);
+        }
     }
 }
 
@@ -561,6 +677,25 @@ async fn write_frame<W: AsyncWrite + Unpin>(writer: &mut W, channel: u32, kind: 
     Ok(())
 }
 
+fn take_frame(buffer: &mut Vec<u8>) -> Result<Option<CoreFrame>> {
+    if buffer.len() < FRAME_HEADER_LEN {
+        return Ok(None);
+    }
+    let channel = u32::from_le_bytes(buffer[..4].try_into().expect("4-byte channel"));
+    let kind = buffer[4];
+    let length = u32::from_le_bytes(buffer[5..FRAME_HEADER_LEN].try_into().expect("4-byte frame length")) as usize;
+    if length > MAX_FRAME_LEN {
+        return Err(anyhow!("herdr-core frame exceeds {} bytes", MAX_FRAME_LEN));
+    }
+    let total = FRAME_HEADER_LEN + length;
+    if buffer.len() < total {
+        return Ok(None);
+    }
+    let payload = buffer[FRAME_HEADER_LEN..total].to_vec();
+    buffer.drain(..total);
+    Ok(Some(CoreFrame { channel, kind, payload }))
+}
+
 async fn read_frame<R: AsyncRead + Unpin>(reader: &mut R) -> Result<CoreFrame> {
     let mut header = [0u8; FRAME_HEADER_LEN];
     reader.read_exact(&mut header).await?;
@@ -589,6 +724,14 @@ fn status(value: &Value) -> crate::model::AgentStatus {
 
 fn field_string<'a>(value: &'a Value, field: &str) -> Option<&'a str> {
     value.get(field).and_then(Value::as_str).filter(|s| !s.is_empty())
+}
+
+fn adjusted_insert_index(from: usize, insert_index: i64) -> i64 {
+    if (from as i64) < insert_index {
+        insert_index - 1
+    } else {
+        insert_index
+    }
 }
 
 fn split_where(value: Option<&str>) -> (Option<String>, Option<String>) {
@@ -648,12 +791,35 @@ fn ordered_ids(
     ids.into_iter().map(|(id, _)| id).collect()
 }
 
+/// Workspaces sort by `(space_order, min tab_order, first terminal index)` in
+/// `translate_snapshot`. Reordering must use the exact same key: sorting only
+/// by `(space_order, index)` desynchronized the saved order from the rendered
+/// order whenever two spaces had equal space labels.
+fn ordered_workspace_ids(terminals: &[Value]) -> Vec<String> {
+    let mut seen: HashMap<String, (usize, i64, i64)> = HashMap::new();
+    for (index, terminal) in terminals.iter().enumerate() {
+        let Some(id) = workspace_id_of(terminal) else { continue };
+        let labels = terminal.get("labels").unwrap_or(&Value::Null);
+        let space = order_label(labels, SPACE_ORDER_LABEL);
+        let tab = order_label(labels, TAB_ORDER_LABEL);
+        seen.entry(id)
+            .and_modify(|entry| {
+                entry.1 = entry.1.min(space);
+                entry.2 = entry.2.min(tab);
+            })
+            .or_insert((index, space, tab));
+    }
+    let mut ids: Vec<(String, (usize, i64, i64))> = seen.into_iter().collect();
+    ids.sort_by_key(|(_, (index, space, tab))| (*space, *tab, *index));
+    ids.into_iter().map(|(id, _)| id).collect()
+}
+
 pub fn translate_snapshot(
     seq: i64,
     terminals: &[Value],
     version: Option<String>,
     focus: Option<&CoreFocus>,
-    read_panes: &std::collections::HashSet<String>,
+    read_panes: &HashMap<String, CoreReadMark>,
 ) -> crate::model::SessionSnapshot {
     use crate::model::{AgentStatus, Focus, HerdrInfo, HerdrUpdate, Pane, SessionSnapshot, Tab, Workspace};
     use std::collections::BTreeMap;
@@ -705,9 +871,11 @@ pub fn translate_snapshot(
         let cwd = field_string(terminal, "cwd").map(str::to_owned);
         let mut status_value = terminal.pointer("/status/state").map(status).unwrap_or(AgentStatus::Unknown);
         // Core's `done` is an unseen completion (it has no focus/seen RPC).
-        // Once this daemon has focused the pane, present it as idle; a new
-        // status event clears the read mark.
-        if status_value == AgentStatus::Done && read_panes.contains(address) {
+        // Present only the completion this daemon actually read as idle; a
+        // later completion has a new identity and stays done.
+        if status_value == AgentStatus::Done
+            && read_panes.get(address).is_some_and(|mark| mark.matches(terminal))
+        {
             status_value = AgentStatus::Idle;
         }
         // Core `Status.app` is the OSC 7501 app identity consumed by AgentMatrix.
@@ -890,7 +1058,7 @@ mod tests {
             "address":"t7", "cwd":"/work", "title":"Codex", "state":"live", "turn":3,
             "status":{"state":"working","app":"codex"},
             "labels":{"herdr.space":"space-1","herdr.tab":"tab-1","where":"Project / 2"}
-        })], Some("0.1.14".to_owned()), None, &std::collections::HashSet::new());
+        })], Some("0.1.14".to_owned()), None, &std::collections::HashMap::new());
         assert_eq!(snapshot.seq, 17);
         assert_eq!(snapshot.workspaces[0].id, "space-1");
         assert_eq!(snapshot.workspaces[0].label, "Project");
@@ -902,13 +1070,36 @@ mod tests {
     }
 
     #[test]
+    fn workspace_reorder_uses_the_snapshot_tie_breaker() {
+        // Equal space_order is resolved by the minimum tab_order in both the
+        // rendered snapshot and the move source list. Raw enumeration order
+        // (A before B) must not win here.
+        let terminals = vec![
+            json!({"address":"a","labels":{"herdr.space":"A","herdr.space_order":0,"herdr.tab":"a1","herdr.tab_order":5}}),
+            json!({"address":"b","labels":{"herdr.space":"B","herdr.space_order":0,"herdr.tab":"b1","herdr.tab_order":0}}),
+        ];
+        let snapshot = translate_snapshot(1, &terminals, None, None, &std::collections::HashMap::new());
+        let rendered: Vec<_> = snapshot.workspaces.iter().map(|w| w.id.as_str()).collect();
+        assert_eq!(rendered, ["B", "A"]);
+        assert_eq!(ordered_workspace_ids(&terminals), ["B", "A"]);
+    }
+
+    #[test]
+    fn reorder_adjusts_for_the_removed_item() {
+        assert_eq!(adjusted_insert_index(0, 2), 1); // A to middle -> [B,A,C]
+        assert_eq!(adjusted_insert_index(0, 1), 0); // already there
+        assert_eq!(adjusted_insert_index(2, 0), 0); // upward
+        assert_eq!(adjusted_insert_index(0, 3), 2); // to end
+    }
+
+    #[test]
     fn core_foreground_process_is_not_mistaken_for_agent() {
         // Regression for bug class #2: `foreground.name` may be `sleep`, a shell,
         // or any other command; only the Status.app field selects AgentMatrix routing.
         let snapshot = translate_snapshot(18, &[json!({
             "address":"t8", "cwd":"/work", "state":"live",
             "foreground":{"name":"sleep"}, "status":null
-        })], None, None, &std::collections::HashSet::new());
+        })], None, None, &std::collections::HashMap::new());
         assert_eq!(snapshot.workspaces[0].tabs[0].panes[0].agent, None);
     }
 
@@ -945,7 +1136,7 @@ mod tests {
             json!({"address":"t3","labels":{"herdr.space":"b","herdr.space_label":"B","herdr.tab":"b2","herdr.tab_label":"2","herdr.space_order":0,"herdr.tab_order":1}}),
             json!({"address":"t4","labels":{"herdr.space":"a","herdr.space_label":"A","herdr.tab":"a2","herdr.tab_label":"2","herdr.space_order":2,"herdr.tab_order":0}}),
         ];
-        let snapshot = translate_snapshot(1, &terminals, None, None, &std::collections::HashSet::new());
+        let snapshot = translate_snapshot(1, &terminals, None, None, &std::collections::HashMap::new());
         let spaces: Vec<_> = snapshot.workspaces.iter().map(|w| w.label.as_str()).collect();
         assert_eq!(spaces, ["B", "A"]);
         let a_tabs: Vec<_> = snapshot.workspaces[1].tabs.iter().map(|t| t.id.as_str()).collect();
@@ -961,7 +1152,7 @@ mod tests {
             json!({"address":"t2","labels":{"where":"Project / 1"}}),
             json!({"address":"t3","labels":{"where":"Project / 2"}}),
         ];
-        let snapshot = translate_snapshot(1, &terminals, None, None, &std::collections::HashSet::new());
+        let snapshot = translate_snapshot(1, &terminals, None, None, &std::collections::HashMap::new());
         assert_eq!(snapshot.workspaces.len(), 1);
         assert_eq!(snapshot.workspaces[0].id, "where:Project");
         assert_eq!(snapshot.workspaces[0].tabs.len(), 2);
@@ -972,14 +1163,29 @@ mod tests {
     #[test]
     fn focused_done_pane_is_presented_as_read() {
         let terminals = vec![json!({
-            "address":"t1", "status":{"state":"done","app":"omp"},
+            "address":"t1", "turn":1, "status":{"state":"done","app":"omp"},
             "labels":{"herdr.space":"s1","herdr.tab":"tab1"}
         })];
-        let read = std::collections::HashSet::from(["t1".to_owned()]);
+        let read = std::collections::HashMap::from([(
+            "t1".to_owned(),
+            CoreReadMark::for_terminal(&terminals[0]).expect("done terminal has a mark"),
+        )]);
         let snapshot = translate_snapshot(1, &terminals, None, None, &read);
         assert_eq!(snapshot.workspaces[0].tabs[0].panes[0].status, crate::model::AgentStatus::Idle);
-        let unread = translate_snapshot(1, &terminals, None, None, &std::collections::HashSet::new());
+        let unread = translate_snapshot(1, &terminals, None, None, &std::collections::HashMap::new());
         assert_eq!(unread.workspaces[0].tabs[0].panes[0].status, crate::model::AgentStatus::Done);
+
+        // A new completion on the same pane id must not inherit the old read
+        // mark: this is the subscriber-independent fix.
+        let next = vec![json!({
+            "address":"t1", "turn":2, "status":{"state":"done","app":"omp"},
+            "labels":{"herdr.space":"s1","herdr.tab":"tab1"}
+        })];
+        let next_snapshot = translate_snapshot(2, &next, None, None, &read);
+        assert_eq!(
+            next_snapshot.workspaces[0].tabs[0].panes[0].status,
+            crate::model::AgentStatus::Done,
+        );
     }
 
     #[test]
@@ -992,7 +1198,7 @@ mod tests {
             tab_id: "tab1".into(),
             pane_id: "t1".into(),
         };
-        let snapshot = translate_snapshot(1, &terminals, None, Some(&focus), &std::collections::HashSet::new());
+        let snapshot = translate_snapshot(1, &terminals, None, Some(&focus), &std::collections::HashMap::new());
         assert!(snapshot.workspaces[0].focused);
         assert_eq!(snapshot.workspaces[0].active_tab_id.as_deref(), Some("tab1"));
         assert!(snapshot.workspaces[0].tabs[0].focused);

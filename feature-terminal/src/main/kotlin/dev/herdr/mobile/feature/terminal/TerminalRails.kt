@@ -21,6 +21,7 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
@@ -51,6 +52,7 @@ internal fun WorkspaceRail(
     onRenameMenu: (WorkspaceMenuTarget) -> Unit,
     onCloseMenu: (WorkspaceMenuTarget) -> Unit,
     modifier: Modifier = Modifier,
+    resetKey: Long = 0,
 ) {
     val snapshot = state.snapshot ?: return
     // Home stays pinned left while the workspace chips scroll under it.
@@ -72,6 +74,9 @@ internal fun WorkspaceRail(
             // would steal the gesture stream from the drag takeover.
             onLongPressWithoutMove = { ws -> onWorkspaceLongPress(ws.id, ws.label) },
         )
+        LaunchedEffect(resetKey) {
+            reorder.resetTo(snapshot.workspaces)
+        }
         androidx.compose.foundation.lazy.LazyRow(
             state = reorder.listState,
             modifier = Modifier
@@ -135,6 +140,7 @@ internal fun TabRail(
     onRenameMenu: (TabMenuTarget) -> Unit,
     onCloseMenu: (TabMenuTarget) -> Unit,
     modifier: Modifier = Modifier,
+    resetKey: Long = 0,
 ) {
     val workspace = state.workspace ?: return
 
@@ -156,6 +162,9 @@ internal fun TabRail(
                 onTabLongPress(workspace.id, tab.id, tab.displayLabel)
             },
         )
+        LaunchedEffect(resetKey) {
+            reorder.resetTo(workspace.tabs)
+        }
         androidx.compose.foundation.lazy.LazyRow(
             state = reorder.listState,
             modifier = Modifier

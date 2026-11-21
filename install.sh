@@ -87,7 +87,15 @@ if [ "$installed" -eq 0 ]; then
         "$BASE/archive/refs/tags/$VERSION.tar.gz" ||
         die "cannot download source for $VERSION"
     tar -xzf "$TMP/source.tar.gz" -C "$TMP"
-    src="$(find "$TMP" -maxdepth 1 -type d -name 'herdr-mobile-*' | head -n1)"
+    # The temp directory itself is named herdr-mobile-install.*; -mindepth
+    # prevents selecting it instead of the extracted source tree.
+    src=""
+    for candidate in "$TMP"/herdr-mobile-*; do
+        if [ -f "$candidate/daemon/Cargo.toml" ]; then
+            src="$candidate"
+            break
+        fi
+    done
     [ -n "$src" ] || die "source archive layout is unexpected"
     ( cd "$src/daemon" && cargo build --release )
     install -d "$PREFIX/bin"
@@ -128,12 +136,18 @@ if [ "$NO_SERVICE" != "1" ] && command -v systemctl >/dev/null 2>&1; then
         say "preserving existing $UNIT"
     fi
     systemctl --user daemon-reload >/dev/null 2>&1 || true
+    was_active=0
+    systemctl --user is-active --quiet herdr-mobile-daemon >/dev/null 2>&1 && was_active=1
     if systemctl --user enable --now herdr-mobile-daemon >/dev/null 2>&1; then
         # An already-running unit keeps the old inode after the binary update.
-        systemctl --user try-restart herdr-mobile-daemon >/dev/null 2>&1 || true
+        # A first install was just started by --now and must not be bounced.
+        if [ "$was_active" = "1" ]; then
+            systemctl --user try-restart herdr-mobile-daemon >/dev/null 2>&1 ||
+                die "herdr-mobile-daemon enabled but restart failed; run: systemctl --user status herdr-mobile-daemon"
+        fi
         say "herdr-mobile-daemon enabled (systemctl --user status herdr-mobile-daemon)"
     else
-        warn "could not enable herdr-mobile-daemon; start it with: systemctl --user enable --now herdr-mobile-daemon"
+        die "could not enable/start herdr-mobile-daemon; run: systemctl --user status herdr-mobile-daemon"
     fi
 else
     say "no systemd service installed; run: $BIN --bind 127.0.0.1:8765"

@@ -23,6 +23,8 @@ data class HomeUiState(
     val stale: Boolean = false,
     val error: String? = null,
     val lastSyncAt: Long = 0,
+    /** Increments when a reorder command fails so the list can restore order. */
+    val reorderReset: Long = 0,
 ) {
     val workspaceCount: Int get() = snapshot?.workspaces?.size ?: 0
     val tabCount: Int get() = snapshot?.tabCount ?: 0
@@ -49,6 +51,7 @@ class HomeViewModel(
 ) : ViewModel() {
     private val _message = kotlinx.coroutines.flow.MutableStateFlow<UiMessage?>(null)
     val message: StateFlow<UiMessage?> = _message
+    private val _reorderReset = kotlinx.coroutines.flow.MutableStateFlow(0L)
 
     fun closeTab(tabId: String) {
         viewModelScope.launch {
@@ -104,6 +107,7 @@ class HomeViewModel(
             }.onSuccess { _message.value = null }
                 .onFailure {
                     _message.value = UiMessage.CommandFailed(UiMessage.CommandFailed.Command.MOVE_WORKSPACE, it.message)
+                    _reorderReset.value += 1
                 }
         }
     }
@@ -135,17 +139,19 @@ class HomeViewModel(
         _message.value = null
     }
 
-    val uiState: StateFlow<HomeUiState> = client.state
-        .map { s: HerdrClientState ->
-            HomeUiState(
-                connection = s.connection,
-                snapshot = s.snapshot,
-                stale = s.stale,
-                error = s.error,
-                lastSyncAt = s.lastSyncAt,
-            )
-        }
-        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), HomeUiState())
+    val uiState: StateFlow<HomeUiState> = kotlinx.coroutines.flow.combine(
+        client.state,
+        _reorderReset,
+    ) { s: HerdrClientState, reset: Long ->
+        HomeUiState(
+            connection = s.connection,
+            snapshot = s.snapshot,
+            stale = s.stale,
+            error = s.error,
+            lastSyncAt = s.lastSyncAt,
+            reorderReset = reset,
+        )
+    }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), HomeUiState())
 
     class Factory(private val client: HerdrClient) : ViewModelProvider.Factory {
         @Suppress("UNCHECKED_CAST")

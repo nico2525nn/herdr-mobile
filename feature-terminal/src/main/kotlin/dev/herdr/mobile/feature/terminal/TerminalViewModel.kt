@@ -40,6 +40,8 @@ data class TerminalUiState(
     val statusMessage: UiMessage? = null,
     /** Sticky CTRL/ALT from Extra Keys: applies to the next extra key AND the next soft-keyboard char. */
     val stickyModifiers: Set<TerminalKeyEncoder.Modifier> = emptySet(),
+    /** Increments when a rail reorder fails so the local list can restore. */
+    val reorderReset: Long = 0,
 ) {
     val workspace: Workspace? get() = snapshot?.workspace(target?.workspaceId)
     val tab: Tab? get() = snapshot?.tab(target?.tabId)
@@ -100,6 +102,7 @@ class TerminalViewModel(
 
     private val pageFlow = MutableStateFlow(InputPanelPage.EXTRA_KEYS)
     private val messageFlow = MutableStateFlow<UiMessage?>(null)
+    private val _reorderReset = MutableStateFlow(0L)
     private val stickyFlow =
         MutableStateFlow<Set<TerminalKeyEncoder.Modifier>>(emptySet())
 
@@ -123,6 +126,7 @@ class TerminalViewModel(
         pageFlow,
         messageFlow,
         stickyFlow,
+        _reorderReset,
     ) { flows: Array<Any?> ->
         @Suppress("UNCHECKED_CAST")
         val clientState = flows[0] as dev.herdr.mobile.core.network.HerdrClientState
@@ -132,6 +136,7 @@ class TerminalViewModel(
         val page = flows[4] as InputPanelPage
         val message = flows[5] as UiMessage?
         val sticky = flows[6] as Set<TerminalKeyEncoder.Modifier>
+        val reset = flows[7] as Long
         TerminalUiState(
             snapshot = clientState.snapshot,
             connection = clientState.connection,
@@ -141,6 +146,7 @@ class TerminalViewModel(
             inputPage = page,
             statusMessage = message,
             stickyModifiers = sticky,
+            reorderReset = reset,
         )
     }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), TerminalUiState())
 
@@ -154,7 +160,8 @@ class TerminalViewModel(
     fun resizeBackend(cols: Int, rows: Int) = panes.resizeBackend(cols, rows)
 
     /** Host-owned scrollback: pane.scroll rows. */
-    fun scrollRemote(rows: Int) = panes.scrollRemote(rows)
+    fun scrollRemote(rows: Int, allowPageKey: Boolean = false) =
+        panes.scrollRemote(rows, allowPageKey)
 
     /** Host scrollbar drag: absolute rows from the live bottom. */
     fun scrollHostTo(offsetFromBottom: Long) = panes.scrollHostTo(offsetFromBottom)
@@ -399,7 +406,10 @@ class TerminalViewModel(
                     tabId,
                     dev.herdr.mobile.core.model.Reorder.insertIndex(from, toIndex, tabs.size),
                 )
-            }.onFailure { messageFlow.value = UiMessage.CommandFailed(UiMessage.CommandFailed.Command.MOVE_TAB, it.message) }
+            }.onFailure {
+                messageFlow.value = UiMessage.CommandFailed(UiMessage.CommandFailed.Command.MOVE_TAB, it.message)
+                _reorderReset.value += 1
+            }
         }
     }
 
@@ -413,7 +423,10 @@ class TerminalViewModel(
                     workspaceId,
                     dev.herdr.mobile.core.model.Reorder.insertIndex(from, toIndex, workspaces.size),
                 )
-            }.onFailure { messageFlow.value = UiMessage.CommandFailed(UiMessage.CommandFailed.Command.MOVE_WORKSPACE, it.message) }
+            }.onFailure {
+                messageFlow.value = UiMessage.CommandFailed(UiMessage.CommandFailed.Command.MOVE_WORKSPACE, it.message)
+                _reorderReset.value += 1
+            }
         }
     }
 

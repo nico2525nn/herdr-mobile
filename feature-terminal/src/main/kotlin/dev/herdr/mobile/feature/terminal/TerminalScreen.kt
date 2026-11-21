@@ -8,7 +8,7 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.ime
-import androidx.compose.foundation.layout.navigationBars
+import androidx.compose.foundation.layout.safeDrawing
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.union
 import androidx.compose.foundation.layout.windowInsetsPadding
@@ -160,28 +160,25 @@ fun TerminalScreen(
 
     // One inset, not two: navigationBarsPadding() + imePadding() stack when
     // the keyboard is up (the IME inset already includes the nav bar), which
-    // left a dead band under the floating panel. Their union takes the larger
-    // of the two, so the panel edge lands on the gesture area or the keyboard.
-    // With the keyboard hidden the raw gesture inset (48dp) leaves a second
-    // dead band under a floating card, so 24dp of it is handed back: the card
-    // hugs the pill the way the Home bottom bar does.
+    // left a dead band under the floating panel. Use the larger of the IME and
+    // the full safe-drawing bottom: subtracting a fixed 24dp from the
+    // navigation inset put the controls under three-button navigation and
+    // bottom cutouts.
     val screenDensity = androidx.compose.ui.platform.LocalDensity.current
     val layoutDirection = androidx.compose.ui.platform.LocalLayoutDirection.current
-    val navInsets = WindowInsets.navigationBars
+    // The terminal owns the full safe-drawing insets. Passing the app Scaffold
+    // padding as well double-counted the bottom/IME; passing only
+    // navigationBars left the status bar/cutout out.
+    val safeInsets = WindowInsets.safeDrawing
     val imeInsetPx = WindowInsets.ime.getBottom(screenDensity)
-    val navInsetPx = navInsets.getBottom(screenDensity)
-    val insetBottom = if (imeInsetPx > 0) {
-        imeInsetPx
-    } else {
-        (navInsetPx - with(screenDensity) { 24.dp.roundToPx() }).coerceAtLeast(0)
-    }
+    val insetBottom = maxOf(imeInsetPx, safeInsets.getBottom(screenDensity))
     Column(
         modifier = modifier.fillMaxSize()
             .windowInsetsPadding(
                 WindowInsets(
-                    left = navInsets.getLeft(screenDensity, layoutDirection),
-                    top = navInsets.getTop(screenDensity),
-                    right = navInsets.getRight(screenDensity, layoutDirection),
+                    left = safeInsets.getLeft(screenDensity, layoutDirection),
+                    top = safeInsets.getTop(screenDensity),
+                    right = safeInsets.getRight(screenDensity, layoutDirection),
                     bottom = insetBottom,
                 ),
             ),
@@ -212,6 +209,7 @@ fun TerminalScreen(
                 workspaceCloseTarget = it
                 workspaceMenu = null
             },
+            resetKey = state.reorderReset,
         )
         TabRail(
             state = state,
@@ -238,6 +236,7 @@ fun TerminalScreen(
                 val workspaceId = state.target?.workspaceId ?: return@TabRail
                 viewModel.moveTab(workspaceId, tabId, to)
             },
+            resetKey = state.reorderReset,
         )
         // A tab can hold several Herdr panes; the tab rail always opens the
         // active one, so this is the only way to reach the others.

@@ -11,6 +11,7 @@ import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.NonCancellable
+import kotlinx.coroutines.TimeoutCancellationException
 import kotlinx.coroutines.withTimeout
 
 /**
@@ -90,6 +91,10 @@ internal suspend fun awaitConnected(session: HerdrSession, timeoutMs: Long = 30_
         session.state.first { it.connection == ConnectionState.CONNECTED }
     }
     true
+} catch (_: TimeoutCancellationException) {
+    // withTimeout's own timeout is a CancellationException; rethrowing it
+    // skipped the ReconnectTimedOut message and left the screen waiting.
+    false
 } catch (e: CancellationException) {
     throw e
 } catch (_: Exception) {

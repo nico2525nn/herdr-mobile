@@ -17,7 +17,6 @@ import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import okhttp3.HttpUrl.Companion.toHttpUrl
-import java.net.ServerSocket
 import java.util.Properties
 import java.util.concurrent.atomic.AtomicReference
 
@@ -121,6 +120,10 @@ class SshTunnelProvider(
                 setProperty("ServerAliveCountMax", "3")
             },
         )
+        // JSch does not read these two from setConfig; use the typed setters or
+        // getServerAliveInterval() stays 0 and a half-open tunnel is reused.
+        session.setServerAliveInterval(15_000)
+        session.setServerAliveCountMax(3)
         session.setUserInfo(AcceptHostKeyUserInfo(profile.host, onUnknownHostKey))
         try {
             session.connect(15_000)
@@ -151,17 +154,19 @@ class SshTunnelProvider(
             }
             throw SshException(classifyConnect(e), "SSH connect failed: ${e.message}", e)
         }
-        // Race-free port pick: hold a ServerSocket open to reserve the port,
-        // read its number, then close it immediately before forwarding. The
-        // window is microseconds (vs. close-then-rebind-later), and JSch's
-        // setPortForwardingL needs a CLOSED port — forwarding onto a HELD
-        // socket fails with "cannot be bound".
-        val localPort = ServerSocket(0).use { it.localPort }
-        try {
-            session.setPortForwardingL(localPort, profile.daemonHost, profile.daemonPort)
+        // Let JSch bind port 0 itself and return the kernel-assigned port.
+        // Probing a free port with a temporary ServerSocket and closing it
+        // leaves a race where another connection takes the port between the
+        // close and JSch's bind, failing only after a successful SSH login.
+        val localPort = try {
+            session.setPortForwardingL(0, profile.daemonHost, profile.daemonPort)
         } catch (e: Exception) {
             runCatching { session.disconnect() }
             throw SshException(FailureKind.UNREACHABLE, "Port forward failed: ${e.message}", e)
+        }
+        if (localPort <= 0) {
+            runCatching { session.disconnect() }
+            throw SshException(FailureKind.UNREACHABLE, "Port forward returned no local port")
         }
         sessionRef.set(session)
         localPortRef.set(localPort)

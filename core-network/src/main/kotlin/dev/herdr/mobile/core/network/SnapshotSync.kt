@@ -31,6 +31,10 @@ internal class SnapshotSync(
      *
      * Single SharedFlow (never swapped): stale events are dropped at emit time by the
      * generation check in [accept], which is the only writer.
+     *
+     * Events are emitted AFTER the snapshot fold. Notifications therefore never see a
+     * state older than the event that triggered them, even though they collect on a
+     * different coroutine.
      */
     /** Concurrent manual refreshes must not race an older response over a newer one. */
     private val refetchMutex = Mutex()
@@ -79,26 +83,38 @@ internal class SnapshotSync(
 
     suspend fun applyEvent(event: SemanticEvent, generation: Long) {
         if (!accept(event, generation)) return
-        val current = state.state.value.snapshot ?: run {
-            refetch("event without snapshot", generation)
-            return
+        var outcome: SnapshotReducer.Outcome? = null
+        val updated = state.update(generation) { current ->
+            val snapshot = current.snapshot ?: return@update current
+            val result = SnapshotReducer.apply(snapshot, event)
+            outcome = result
+            when (result) {
+                is SnapshotReducer.Outcome.Applied -> current.copy(
+                    snapshot = result.snapshot,
+                    stale = false,
+                    lastSyncAt = clock.now(),
+                )
+
+                is SnapshotReducer.Outcome.Gap -> current.copy(
+                    connection = ConnectionState.STALE,
+                    stale = true,
+                )
+
+                SnapshotReducer.Outcome.Refetch -> current
+            }
         }
-        when (val outcome = SnapshotReducer.apply(current, event)) {
+        if (!updated) return
+        // Publish only after the fold, and only while this link is still live.
+        if (state.isCurrent(generation)) _events.tryEmit(event)
+        when (val result = outcome) {
             is SnapshotReducer.Outcome.Applied -> {
-                state.update(generation) {
-                    it.copy(
-                        snapshot = outcome.snapshot,
-                        stale = false,
-                        lastSyncAt = clock.now(),
-                    )
-                }
                 // Consistency tick: the reducer already advanced the cursor (ticks fold as
                 // no-ops), so a hash mismatch means the fold diverged despite contiguous
                 // seqs — refetch authoritatively. Match = proof, zero bytes beyond the tick.
                 if (event.type == SemanticEvent.TYPE_SNAPSHOT_TICK) {
                     state.markTick(generation)
                     val want = (event.detail?.get("hash") as? JsonPrimitive)?.content
-                    val have = outcome.snapshot.statusHash()
+                    val have = result.snapshot.statusHash()
                     if (want != null && want != have) {
                         refetch("tick hash drift (want $want, have $have)", generation)
                     }
@@ -106,15 +122,14 @@ internal class SnapshotSync(
             }
 
             is SnapshotReducer.Outcome.Gap -> {
-                state.update(generation) {
-                    it.copy(connection = ConnectionState.STALE, stale = true)
-                }
-                refetch("seq gap: expected ${outcome.expectedSeq}, got ${outcome.receivedSeq}", generation)
+                refetch("seq gap: expected ${result.expectedSeq}, got ${result.receivedSeq}", generation)
             }
 
             SnapshotReducer.Outcome.Refetch -> {
                 refetch("daemon requested refetch (${event.type})", generation)
             }
+
+            null -> refetch("event without snapshot", generation)
         }
     }
 
@@ -163,7 +178,7 @@ internal class SnapshotSync(
      * Returns false when the event belongs to a link that has already been replaced.
      */
     private fun accept(event: SemanticEvent, generation: Long): Boolean =
-        state.acceptActivity(generation) { _events.tryEmit(event) }
+        state.acceptActivity(generation) { }
 
     private suspend fun fetchSnapshot() =
         transport.snapshot(

@@ -142,8 +142,16 @@ internal fun TerminalSurface(
                     .wheelRowsPerEvent(state.pane?.agent)
                     .toFloat()
     }
-    LaunchedEffect(controller) {
-        controller.view.onRemoteScroll = { rows -> viewModel.scrollRemote(rows) }
+    LaunchedEffect(controller, settings.scrollMode) {
+        controller.view.onRemoteScroll = { rows ->
+            // An explicit Page-keys choice is the user overriding AUTO's
+            // shell protection; on Core it must reach the PTY even when the
+            // agent is unidentified. AUTO keeps allowPageKey=false.
+            viewModel.scrollRemote(
+                rows,
+                allowPageKey = settings.scrollMode == ScrollMode.PAGE,
+            )
+        }
     }
 
     // Theme, font and cursor follow settings live; each setter is cheap and

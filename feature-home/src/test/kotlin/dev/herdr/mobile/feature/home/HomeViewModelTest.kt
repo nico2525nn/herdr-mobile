@@ -111,6 +111,21 @@ class HomeViewModelTest {
         assertEquals(listOf("a" to Reorder.insertIndex(0, 2, 3)), session.moveWorkspaceCalls)
     }
 
+
+    @Test
+    fun `a rejected reorder bumps the list reset signal`() = runTest(dispatcher) {
+        val session = FakeHerdrSession(
+            snapshot(listOf(workspace("a"), workspace("b"), workspace("c"))),
+        ).apply { commandFailure = IllegalStateException("daemon said no") }
+        val model = start(session)
+        advanceUntilIdle()
+        val before = model.uiState.value.reorderReset
+
+        model.moveWorkspace("a", toIndex = 2)
+        advanceUntilIdle()
+
+        assertTrue(model.uiState.value.reorderReset > before)
+    }
     @Test
     fun `moving an unknown workspace or dropping it back is a no-op`() = runTest(dispatcher) {
         val session = FakeHerdrSession(snapshot(listOf(workspace("a"), workspace("b"))))

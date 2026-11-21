@@ -65,6 +65,10 @@ fun <T> rememberReorderState(
     // lifecycle alone: if end/cancel never run (UP stolen by a nested
     // clickable), a stuck arm would freeze resync forever.
     val lastDragAt = remember { mutableStateOf(0L) }
+    // A server rejection can land mid-drag. Applying it then would fight the
+    // finger (or be skipped and never replayed), so hold the latest
+    // authoritative order and apply it when the drag ends.
+    val pendingReset = remember { mutableStateOf<List<T>?>(null) }
     LaunchedEffect(items) {
         // Resync when idle — or when the arm is older than 2s without motion
         // (stuck arm self-heals; a live drag moves faster than that).
@@ -72,6 +76,7 @@ fun <T> rememberReorderState(
             System.currentTimeMillis() - lastDragAt.value > 2_000
         ) {
             order.value = items
+            pendingReset.value = null
         }
     }
     val dragOffsetPx = remember { mutableFloatStateOf(0f) }
@@ -84,6 +89,14 @@ fun <T> rememberReorderState(
     val movedPastSlop = remember { mutableStateOf(false) }
     val scrollDir = remember { mutableIntStateOf(0) }
     LaunchedEffect(draggingKey.value) {
+        if (draggingKey.value == null) {
+            // Apply a rejection that arrived mid-drag to the final gesture.
+            pendingReset.value?.let {
+                order.value = it
+                pendingReset.value = null
+            }
+            return@LaunchedEffect
+        }
         while (draggingKey.value != null) {
             val dir = scrollDir.intValue
             if (dir != 0) listState.scrollBy(dir * 18f)
@@ -243,7 +256,17 @@ fun <T> rememberReorderState(
                         scrollDir.intValue = 0
                         dragOffsetPx.floatValue = 0f
                         if (moved) {
-                            if (to >= 0) currentOnDrop.value(item, to)
+                            // A rejection arrived while this drag was active:
+                            // the server order wins, and sending another move
+                            // derived from the rejected local order would just
+                            // compound the error.
+                            val pending = pendingReset.value
+                            if (pending != null) {
+                                order.value = pending
+                                pendingReset.value = null
+                            } else if (to >= 0) {
+                                currentOnDrop.value(item, to)
+                            }
                         } else if (currentOnLongPress.value != null) {
                             // Deferred past the gesture: opening a menu
                             // synchronously inside UP-handling lets the
@@ -256,6 +279,16 @@ fun <T> rememberReorderState(
                             }
                         }
                     }
+                }
+            },
+            // Server rejection/rollback path: restore the authoritative list
+            // when no drag is active. Mid-drag snapshots are held and applied
+            // when the finger lifts (an ignored reset used to be lost).
+            resetTo = { next ->
+                pendingReset.value = next
+                if (draggingKey.value == null) {
+                    order.value = next
+                    pendingReset.value = null
                 }
             },
         )
@@ -283,6 +316,8 @@ class ReorderState<T>(
     val scrollBlocker: androidx.compose.ui.input.nestedscroll.NestedScrollConnection,
     /** Gesture modifier for the item's drag handle (or whole item). */
     val handleModifier: (T) -> Modifier,
+    /** Restore the server list after a rejected move (no-op mid-drag). */
+    val resetTo: (List<T>) -> Unit,
 ) {
     /** True while [item] is the dragged one. */
     fun isDragging(item: T, key: (T) -> Any): Boolean = draggingKey.value == key(item)

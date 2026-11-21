@@ -27,6 +27,7 @@ One signed APK per ABI. Never build or attach a universal APK.
 4. **Build and copy each ABI before the next build overwrites the output.**
    ```bash
    export HERDR_RELEASE_KEYSTORE_PASSWORD="$(cat ~/.config/herdr-mobile/keystore.password)"
+   mkdir -p build/release
    ./gradlew :app:assembleRelease -PrequireSigning --offline
    cp app/build/outputs/apk/release/app-release.apk build/release/herdr-mobile-X.Y.Z-arm64-v8a.apk
    ./gradlew :app:assembleRelease -PrequireSigning -Pabi=armeabi-v7a --offline

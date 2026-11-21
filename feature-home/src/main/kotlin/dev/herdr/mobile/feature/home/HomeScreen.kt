@@ -165,6 +165,7 @@ fun HomeScreen(
                             screenOrigin = screenOrigin,
                             onTabMenu = { tabMenu = it },
                             onWsMenu = { wsMenu = it },
+                            resetKey = state.reorderReset,
                         )
                     } else {
                         LazyVerticalGrid(

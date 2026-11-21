@@ -22,6 +22,7 @@ import kotlinx.coroutines.test.setMain
 import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNotNull
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Before
 import org.junit.Test
@@ -380,4 +381,97 @@ class TerminalViewModelBehaviourTest {
         controller.shutdown()
         controllerScope.cancel()
     }
+    @Test
+    fun `a done transition while backgrounded is not acknowledged`() = runTest(dispatcher) {
+        val working = oneWorkspace()
+        val session = FakeHerdrSession(snapshot(working))
+        val vm = TerminalViewModel(session, null, null, null, settings())
+        observe(vm)
+        advanceUntilIdle()
+        val initialFocus = session.paneFocusCalls.size
+
+        vm.releaseForBackground()
+        advanceUntilIdle()
+        val done = working.copy(
+            tabs = working.tabs.map { tab ->
+                tab.copy(panes = tab.panes.map { it.copy(status = AgentStatus.DONE) })
+            },
+        )
+        session.setSnapshot(snapshot(done))
+        advanceUntilIdle()
+
+        assertEquals(
+            "a pane finishing off-screen must not be marked read",
+            initialFocus,
+            session.paneFocusCalls.size,
+        )
+
+        vm.resumeAfterBackground()
+        advanceUntilIdle()
+        assertTrue(
+            "returning to the visible DONE pane should acknowledge it",
+            session.paneFocusCalls.size > initialFocus,
+        )
+    }
+
+    @Test
+    fun `a snapshot that arrives while stopped is resolved on resume`() = runTest(dispatcher) {
+        val session = FakeHerdrSession(snapshot = null, connection = ConnectionState.CONNECTING)
+        val vm = TerminalViewModel(session, null, null, null, settings())
+        observe(vm)
+        advanceUntilIdle()
+        assertNull(vm.uiState.value.target)
+
+        vm.releaseForBackground()
+        advanceUntilIdle()
+        session.publish(
+            HerdrClientState(
+                connection = ConnectionState.CONNECTED,
+                snapshot = snapshot(oneWorkspace()),
+            ),
+        )
+        advanceUntilIdle()
+        assertNull("the stopped screen must not attach", vm.uiState.value.target)
+
+        vm.resumeAfterBackground()
+        advanceUntilIdle()
+        assertEquals(listOf("w1:w1:t1"), session.openedPanes)
+        assertEquals("w1:w1:t1", vm.uiState.value.target?.paneId)
+    }
+
+    @Test
+    fun `a reconnect wait that times out shows the retry message`() = runTest(dispatcher) {
+        val session = FakeHerdrSession(snapshot(oneWorkspace()))
+        val vm = TerminalViewModel(session, null, null, null, settings())
+        observe(vm)
+        advanceUntilIdle()
+
+        vm.releaseForBackground()
+        advanceUntilIdle()
+        session.setConnection(ConnectionState.CONNECTING)
+        vm.resumeAfterBackground()
+        advanceTimeBy(30_001)
+        advanceUntilIdle()
+
+        assertEquals(
+            dev.herdr.mobile.core.designsystem.UiMessage.ReconnectTimedOut,
+            vm.uiState.value.statusMessage,
+        )
+    }
+
+    @Test
+    fun `removing the last pane releases the terminal socket`() = runTest(dispatcher) {
+        val session = FakeHerdrSession(snapshot(oneWorkspace()))
+        val vm = TerminalViewModel(session, null, null, null, settings())
+        observe(vm)
+        advanceUntilIdle()
+        val connection = session.connections.single()
+
+        session.setSnapshot(snapshot())
+        advanceUntilIdle()
+
+        assertNull(vm.uiState.value.target)
+        assertEquals("the orphaned stream must be released", 1, connection.released)
+    }
+
 }

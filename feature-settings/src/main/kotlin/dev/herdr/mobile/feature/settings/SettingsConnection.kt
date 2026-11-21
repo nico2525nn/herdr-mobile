@@ -75,7 +75,7 @@ internal fun LazyListScope.settingsConnectionSection(
                 }
                 SettingsRow(
                     headline = "Daemon URL",
-                    supporting = "Direct origin, e.g. http://100.x.y.z:8765",
+                    supporting = "HTTPS origin off-device; use SSH for the plain daemon",
                     showDivider = true,
                     trailing = {
                         TextButton(onClick = { viewModel.setDirectUrl(editingUrl) }) {

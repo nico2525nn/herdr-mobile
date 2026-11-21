@@ -71,6 +71,7 @@ class DebugDaemonUrlActivity : ComponentActivity() {
                                     backup.edit()
                                         .putString(KEY_TRANSPORT, current.transportMode.wire)
                                         .putString(KEY_URL, current.directUrl)
+                                        .putString(KEY_BACKEND, current.directBackendMode.wire)
                                         .commit(),
                                 ) { "cannot write the settings backup" }
                                 repository.update { settings ->

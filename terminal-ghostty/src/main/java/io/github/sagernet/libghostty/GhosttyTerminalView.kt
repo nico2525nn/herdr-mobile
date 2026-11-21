@@ -2412,7 +2412,7 @@ public class GhosttyTerminalView @JvmOverloads constructor(
         private const val HEADER_BYTES = 60
         private const val ROW_HEADER_BYTES = 16
         private const val CELL_RECORD_BYTES = 16
-        private const val TEXT_UNITS_PER_CELL = 4
+        private const val TEXT_UNITS_PER_CELL = 32
         private const val DIRTY_FULL = 2
         private const val SNAPSHOT_SYNC_DEFERRED = -2
 

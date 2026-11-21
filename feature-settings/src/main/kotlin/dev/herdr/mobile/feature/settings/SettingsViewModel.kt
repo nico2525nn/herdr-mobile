@@ -19,6 +19,8 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import java.util.UUID
 
 /** Per-action message wrapper for the generic "could not save" paths. */
@@ -52,6 +54,8 @@ class SettingsViewModel(
     val uiState: StateFlow<SettingsUiState> = _ui.asStateFlow()
 
     private var testJob: Job? = null
+    /** Serializes secret replacement so an older alias cannot be resurrected. */
+    private val saveMutex = Mutex()
 
     init {
         viewModelScope.launch {
@@ -96,7 +100,20 @@ class SettingsViewModel(
             })
         }
     }
-    fun setDirectUrl(url: String) = edit { it.copy(directUrl = url.trim()) }
+    fun setDirectUrl(url: String) {
+        val trimmed = url.trim()
+        val problem = directUrlProblem(trimmed)
+        if (problem != null) {
+            _ui.value = _ui.value.copy(
+                error = UiMessage.CommandFailed(
+                    UiMessage.CommandFailed.Command.SAVE_SETTINGS,
+                    problem,
+                ),
+            )
+            return
+        }
+        edit { it.copy(directUrl = trimmed) }
+    }
     fun setActiveProfile(id: String?) {
         viewModelScope.launch {
             runCatching { repository.setActiveProfile(id) }
@@ -146,27 +163,42 @@ class SettingsViewModel(
         keyLabel: String? = null,
     ) {
         viewModelScope.launch {
+            // Two saves for the same profile can overlap: the editor closes
+            // before the suspend write finishes. Serialize read -> persist ->
+            // old-alias cleanup, otherwise the second save reads the first
+            // save's soon-to-be-deleted alias and resurrects it in DataStore.
+            saveMutex.withLock {
+            val old = repository.settings.value.hostProfiles.firstOrNull { it.id == profile.id }
+            val oldPassword = old?.passwordAlias
+            val oldToken = old?.bearerTokenAlias
+            val oldKey = old?.privateKeyAlias
+            val passwordChanged = password != null
+            val tokenChanged = !token.isNullOrBlank()
+            val keyChanged = !keyPem.isNullOrBlank()
+            var newPassword: String? = null
+            var newToken: String? = null
+            var newKey: String? = null
             runCatching {
-                var base = repository.settings.value.hostProfiles
-                    .firstOrNull { it.id == profile.id }
-                    ?: profile
-                // Secrets first (need current aliases), then ONE profile write.
-                if (password != null) {
-                    val alias = repository.storeSshPassword(base.passwordAlias, password)
-                    base = base.copy(passwordAlias = alias)
+                var base = old ?: profile
+                // New aliases only: never overwrite the credential that the
+                // still-persisted profile points at. The old alias is deleted
+                // only after the durable profile write succeeds.
+                if (passwordChanged) {
+                    if (password!!.isBlank()) {
+                        base = base.copy(passwordAlias = null)
+                    } else {
+                        newPassword = repository.storeSshPassword(null, password)
+                        base = base.copy(passwordAlias = newPassword)
+                    }
                 }
-                if (!token.isNullOrBlank()) {
-                    val alias = repository.storeBearerToken(base.bearerTokenAlias, token)
-                    base = base.copy(bearerTokenAlias = alias)
+                if (tokenChanged) {
+                    newToken = repository.storeBearerToken(null, token!!)
+                    base = base.copy(bearerTokenAlias = newToken)
                 }
-                if (!keyPem.isNullOrBlank()) {
-                    val alias = repository.storePrivateKey(
-                        base.privateKeyAlias,
-                        keyPem.trim(),
-                        keyLabel ?: profile.label,
-                    )
+                if (keyChanged) {
+                    newKey = repository.storePrivateKey(null, keyPem!!.trim(), keyLabel ?: profile.label)
                     base = base.copy(
-                        privateKeyAlias = alias,
+                        privateKeyAlias = newKey,
                         privateKeyLabel = keyLabel ?: profile.label,
                     )
                 }
@@ -176,37 +208,76 @@ class SettingsViewModel(
                     privateKeyAlias = base.privateKeyAlias,
                     privateKeyLabel = base.privateKeyLabel,
                 )
-                if (repository.settings.value.hostProfiles.any { it.id == merged.id }) {
-                    repository.updateProfile(merged)
-                } else {
-                    repository.addProfile(merged)
+                if (old != null) repository.updateProfile(merged) else repository.addProfile(merged)
+            }.onSuccess {
+                if (passwordChanged && oldPassword != null && oldPassword != newPassword) {
+                    runCatching { repository.deleteSshPassword(oldPassword) }
                 }
-            }.onSuccess { clearSaveError() }
-                .onFailure { _ui.value = _ui.value.copy(error = saveFailed(it)) }
+                if (tokenChanged && oldToken != null && oldToken != newToken) {
+                    runCatching { repository.deleteBearerToken(oldToken) }
+                }
+                if (keyChanged && oldKey != null && oldKey != newKey) {
+                    runCatching { repository.deletePrivateKey(oldKey) }
+                }
+                clearSaveError()
+            }.onFailure { failure ->
+                newPassword?.let { runCatching { repository.deleteSshPassword(it) } }
+                newToken?.let { runCatching { repository.deleteBearerToken(it) } }
+                newKey?.let { runCatching { repository.deletePrivateKey(it) } }
+                _ui.value = _ui.value.copy(error = saveFailed(failure))
+            }
+            }
         }
     }
 
     fun importPrivateKey(profileId: String, pem: String, label: String) {
         viewModelScope.launch {
+            saveMutex.withLock {
+            val current = repository.settings.value.hostProfiles.firstOrNull { it.id == profileId }
+            val oldAlias = current?.privateKeyAlias
+            var newAlias: String? = null
             runCatching {
-                val current = repository.settings.value.hostProfiles.firstOrNull { it.id == profileId }
-                val alias = repository.storePrivateKey(current?.privateKeyAlias, pem, label)
+                newAlias = repository.storePrivateKey(null, pem, label)
                 val base = current ?: HostProfile(id = profileId, label = label, host = "", username = "")
-                repository.updateProfile(base.copy(privateKeyAlias = alias, privateKeyLabel = label))
-            }.onSuccess { clearSaveError() }
-                .onFailure { _ui.value = _ui.value.copy(error = saveFailed(it)) }
+                repository.updateProfile(base.copy(privateKeyAlias = newAlias, privateKeyLabel = label))
+            }.onSuccess {
+                if (oldAlias != null && oldAlias != newAlias) {
+                    runCatching { repository.deletePrivateKey(oldAlias) }
+                }
+                clearSaveError()
+            }.onFailure { failure ->
+                newAlias?.let { runCatching { repository.deletePrivateKey(it) } }
+                _ui.value = _ui.value.copy(error = saveFailed(failure))
+            }
+            }
         }
     }
 
     fun saveBearerToken(profileId: String, token: String) {
         viewModelScope.launch {
+            saveMutex.withLock {
+            val current = repository.settings.value.hostProfiles.firstOrNull { it.id == profileId }
+            val oldAlias = current?.bearerTokenAlias
+            var newAlias: String? = null
             runCatching {
-                val current = repository.settings.value.hostProfiles.firstOrNull { it.id == profileId }
-                val alias = repository.storeBearerToken(current?.bearerTokenAlias, token)
-                val base = current ?: HostProfile(id = profileId, label = profileId, host = "", username = "")
-                repository.updateProfile(base.copy(bearerTokenAlias = alias))
-            }.onSuccess { clearSaveError() }
-                .onFailure { _ui.value = _ui.value.copy(error = saveFailed(it)) }
+                if (token.isBlank()) {
+                    val base = current ?: HostProfile(id = profileId, label = profileId, host = "", username = "")
+                    repository.updateProfile(base.copy(bearerTokenAlias = null))
+                } else {
+                    newAlias = repository.storeBearerToken(null, token)
+                    val base = current ?: HostProfile(id = profileId, label = profileId, host = "", username = "")
+                    repository.updateProfile(base.copy(bearerTokenAlias = newAlias))
+                }
+            }.onSuccess {
+                if (oldAlias != null && oldAlias != newAlias) {
+                    runCatching { repository.deleteBearerToken(oldAlias) }
+                }
+                clearSaveError()
+            }.onFailure { failure ->
+                newAlias?.let { runCatching { repository.deleteBearerToken(it) } }
+                _ui.value = _ui.value.copy(error = saveFailed(failure))
+            }
+            }
         }
     }
 
@@ -217,13 +288,29 @@ class SettingsViewModel(
      */
     fun saveSshPassword(profileId: String, password: String) {
         viewModelScope.launch {
+            saveMutex.withLock {
+            val current = repository.settings.value.hostProfiles.firstOrNull { it.id == profileId }
+            val oldAlias = current?.passwordAlias
+            var newAlias: String? = null
             runCatching {
-                val current = repository.settings.value.hostProfiles.firstOrNull { it.id == profileId }
-                val alias = repository.storeSshPassword(current?.passwordAlias, password)
-                val base = current ?: HostProfile(id = profileId, label = profileId, host = "", username = "")
-                repository.updateProfile(base.copy(passwordAlias = alias))
-            }.onSuccess { clearSaveError() }
-                .onFailure { _ui.value = _ui.value.copy(error = saveFailed(it)) }
+                if (password.isBlank()) {
+                    val base = current ?: HostProfile(id = profileId, label = profileId, host = "", username = "")
+                    repository.updateProfile(base.copy(passwordAlias = null))
+                } else {
+                    newAlias = repository.storeSshPassword(null, password)
+                    val base = current ?: HostProfile(id = profileId, label = profileId, host = "", username = "")
+                    repository.updateProfile(base.copy(passwordAlias = newAlias))
+                }
+            }.onSuccess {
+                if (oldAlias != null && oldAlias != newAlias) {
+                    runCatching { repository.deleteSshPassword(oldAlias) }
+                }
+                clearSaveError()
+            }.onFailure { failure ->
+                newAlias?.let { runCatching { repository.deleteSshPassword(it) } }
+                _ui.value = _ui.value.copy(error = saveFailed(failure))
+            }
+            }
         }
     }
 
@@ -238,6 +325,29 @@ class SettingsViewModel(
     fun setNotifyBlocked(enabled: Boolean) = edit { it.copy(notifyBlocked = enabled) }
     fun setBackgroundMonitoring(enabled: Boolean) = edit { it.copy(backgroundMonitoring = enabled) }
     fun setShowScrollDiagnostics(enabled: Boolean) = edit { it.copy(showScrollDiagnostics = enabled) }
+
+    /** Reject Direct URLs that cannot work with the plain-HTTP daemon. */
+    private fun directUrlProblem(raw: String): String? {
+        val uri = runCatching { java.net.URI(raw) }.getOrNull()
+            ?: return "Enter a valid daemon URL"
+        if (uri.scheme !in setOf("http", "https") || uri.host.isNullOrBlank()) {
+            return "Use an http(s)://host:port daemon URL"
+        }
+        // REST resolves the API path against this base while the WebSocket
+        // concatenates it, so a non-root path or query can validate against
+        // one transport and fail on the other. Accept an origin only.
+        if (!uri.path.isNullOrEmpty() && uri.path != "/") {
+            return "Use only scheme://host:port; the daemon URL cannot contain a path"
+        }
+        if (uri.query != null || uri.fragment != null || uri.userInfo != null) {
+            return "Use only scheme://host:port; remove query, fragment, or credentials"
+        }
+        val loopback = uri.host in setOf("127.0.0.1", "localhost", "::1", "[::1]")
+        if (uri.scheme == "http" && !loopback) {
+            return "Plain HTTP is only allowed on loopback; use HTTPS or the SSH tunnel"
+        }
+        return null
+    }
 
     fun testConnection() {
         testJob?.cancel()

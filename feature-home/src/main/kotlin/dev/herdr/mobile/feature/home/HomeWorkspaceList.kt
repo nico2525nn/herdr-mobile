@@ -121,6 +121,7 @@ internal fun ReorderableWorkspaceList(
     onTabMenu: (HomeTabMenuTarget) -> Unit,
     onWsMenu: (HomeWsMenuTarget) -> Unit,
     modifier: Modifier = Modifier,
+    resetKey: Long = 0,
 ) {
     WorkspaceList(
         state = state,
@@ -131,6 +132,7 @@ internal fun ReorderableWorkspaceList(
         onTabMenu = onTabMenu,
         onWsMenu = onWsMenu,
         modifier = modifier,
+        resetKey = resetKey,
     )
 }
 
@@ -148,6 +150,7 @@ internal fun WorkspaceList(
     onTabMenu: (HomeTabMenuTarget) -> Unit,
     onWsMenu: (HomeWsMenuTarget) -> Unit,
     modifier: Modifier = Modifier,
+    resetKey: Long = 0,
 ) {
     val snapshot = state.snapshot ?: return
     val reorder = dev.herdr.mobile.core.designsystem.rememberReorderState(
@@ -155,6 +158,9 @@ internal fun WorkspaceList(
         key = { it.id },
         onDrop = { ws, to -> onMoveWorkspace(ws.id, to) },
     )
+    androidx.compose.runtime.LaunchedEffect(resetKey) {
+        reorder.resetTo(snapshot.workspaces)
+    }
     LazyColumn(
         state = reorder.listState,
         modifier = modifier

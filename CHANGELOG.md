@@ -1,5 +1,52 @@
 # Changelog
 
+## Unreleased — post-2.2.0 deep-review fixes
+
+- **CI safety:** `tools/ci.sh` never closes/stops a Herdr session without its
+  own `.ci-owned` marker, refuses a private port that matches the live daemon,
+  and matches a stale daemon by its exact private socket as well as the port.
+  Isolation now compares a fresh read-only `herdr api snapshot` (workspaces and
+  focused workspace/tab/pane) before and after; a running live session whose
+  snapshot cannot be read fails the run instead of being skipped.
+- **Extra keys:** normal keys use one pointer path (no onClick/PressInteraction
+  double send) and send on tap release or a real 400ms hold, so a page swipe
+  starting on a key no longer types it. PGUP tap/flick/accessibility coverage
+  remains, with ratio-based axis arbitration (1.5x dominance, 2x slop for the
+  pager) so a downward flick that starts slightly sideways is not stolen.
+- **CJK panel:** when `Panel swipe` is not PAGE, an explicit Keys/Input switch
+  appears so the CJK page remains reachable, and the page buttons expose the
+  selected state to accessibility services.
+- **Terminal lifecycle:** snapshots that arrive while stopped are resolved on
+  resume (no empty terminal after a background return), a reconnect wait
+  timeout now surfaces `ReconnectTimedOut`, the last pane removal releases its
+  socket, and the terminal owns the full safe-drawing/IME bottom inset.
+- **Data integrity:** SnapshotSync folds events atomically with the current
+  snapshot; the notification relay keeps its cursor and notification update in
+  one critical section, resets the cursor on a redial/daemon restart, and
+  ignores older event/snapshot cursors. Credential saves are serialized per
+  view model so an older alias cannot be resurrected, and Direct URLs reject
+  paths/queries that REST and WebSocket would resolve differently.
+- **Reorder:** a rejected Home/Terminal move that lands mid-drag is held and
+  applied when the finger lifts; the Core workspace move uses the same
+  `(space_order, min tab_order, index)` tie-breaker as the snapshot.
+- **Daemon:** Core event lines are scanned from the new tail and capped at
+  16 MiB; a completion read-mark stores the completion identity (seq/turn) so
+  the next DONE on the same pane is not hidden, independent of subscribers.
+  `stream.ready` uses the cursor captured with its subscription; shutdown
+  rejects new attaches and keeps registry entries until teardown; terminal
+  teardown keeps its entry until the close reason is set; `restore_cols=0`
+  remains distinct from "learn the layout".
+- **JNI:** PNG dimensions are checked before allocating pixels and the
+  Bitmap+jintArray+output allocation has a 256 MiB byte budget; a failed
+  `NewIntArray`/`GetPixels` clears the exception and recycles the Bitmap. The
+  per-cell text buffer still reserves the JNI maximum and marks truncation.
+- **Installer/deploy:** source fallback ignores the temp directory; an existing
+  unit is restarted only when it was active and the restart result is checked;
+  a failed service start now exits non-zero; deploy health uses the bearer
+  token (env or unit) and parses the top-level `ok`/`herdrConnected` JSON flags;
+  the notification tap goes through a non-exported proxy instead of the
+  exported launcher activity.
+
 ## 2.2.0 — 2026-11-20
 
 - Home uses the expressive large-title header (`displaySmall` 36/44 +

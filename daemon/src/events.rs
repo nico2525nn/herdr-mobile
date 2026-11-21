@@ -39,6 +39,14 @@ impl EventBus {
         self.tx.subscribe()
     }
 
+    /// Atomically read the cursor and subscribe. A publisher cannot slip an
+    /// event between the two: the same lock serializes both paths, so a
+    /// newcomer's `stream.ready` cursor plus the receiver cover every event.
+    pub fn subscribe_with_cursor(&self) -> (i64, broadcast::Receiver<SemanticEvent>) {
+        let _guard = self.publish_lock.lock().expect("event sequencer poisoned");
+        (self.cursor(), self.tx.subscribe())
+    }
+
     /// Sequenced broadcast for a normal cache event. The snapshot cursor is
     /// advanced after the send so a refetch observes the event as current.
     pub fn publish(&self, cache: &SessionCache, event: SemanticEvent) {
@@ -164,4 +172,18 @@ mod tests {
         assert_eq!(bus.cursor(), 32);
         assert_eq!(cache.seq(), 32);
     }
+    #[tokio::test]
+    async fn subscribe_with_cursor_cannot_miss_an_event() {
+        let cache = Arc::new(SessionCache::new(crate::herdr::HerdrClient::new(
+            "/nonexistent.sock".into(),
+            "herdr".into(),
+        )));
+        let bus = EventBus::new();
+        bus.publish(&cache, event());
+        let (cursor, mut rx) = bus.subscribe_with_cursor();
+        assert_eq!(cursor, 1);
+        bus.publish(&cache, event());
+        assert_eq!(rx.recv().await.unwrap().seq, 2);
+    }
+
 }
