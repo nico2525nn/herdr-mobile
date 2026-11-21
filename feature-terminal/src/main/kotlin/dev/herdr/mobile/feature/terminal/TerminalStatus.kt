@@ -4,8 +4,12 @@ import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.material3.Button
 import androidx.compose.material3.MaterialTheme
@@ -14,12 +18,91 @@ import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.semantics.LiveRegionMode
+import androidx.compose.ui.semantics.liveRegion
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import dev.herdr.mobile.core.designsystem.ExpressiveStatusGlyph
+import dev.herdr.mobile.core.designsystem.LinkTone
 import dev.herdr.mobile.core.designsystem.UiMessage
 import dev.herdr.mobile.core.model.ConnectionState
+
+/**
+ * The one link row under the terminal rails. It exists only while the link or
+ * the attachment is degraded, so the grid owns the extra 32dp only then.
+ */
+internal val TerminalLinkRowHeight = 32.dp
+
+internal data class TerminalLinkStatus(
+    val text: String,
+    val tone: LinkTone,
+)
+
+internal fun terminalLinkStatus(
+    connection: ConnectionState,
+    stale: Boolean,
+    failure: UiMessage?,
+    detachedReason: String?,
+    elapsedSeconds: Long,
+    hasBackend: Boolean,
+): TerminalLinkStatus? {
+    if (!hasBackend) return null
+    val terminalFailure = failure is UiMessage.AttachFailed ||
+        failure is UiMessage.ReconnectTimedOut ||
+        failure is UiMessage.StreamChanged
+    // A live link with an authoritative attach failure is rendered by the
+    // failure block; adding the row would duplicate the same state.
+    if (connection == ConnectionState.CONNECTED && terminalFailure) return null
+    val text = when {
+        connection == ConnectionState.FAILED -> "Link down"
+        connection == ConnectionState.RECONNECTING ->
+            if (elapsedSeconds > 0) "Reconnecting… ${elapsedSeconds}s" else "Reconnecting…"
+        connection == ConnectionState.CONNECTING -> "Connecting…"
+        stale -> "Refreshing…"
+        detachedReason != null ->
+            if (detachedReason == "lagged_resync") "Resyncing…" else "Reattaching…"
+        else -> return null
+    }
+    val tone = when {
+        connection == ConnectionState.FAILED -> LinkTone.ERROR
+        stale -> LinkTone.WARNING
+        else -> LinkTone.BUSY
+    }
+    return TerminalLinkStatus(text, tone)
+}
+
+@Composable
+internal fun TerminalLinkRow(
+    status: TerminalLinkStatus,
+    modifier: Modifier = Modifier,
+) {
+    Row(
+        modifier = modifier
+            .fillMaxWidth()
+            .height(TerminalLinkRowHeight)
+            .padding(horizontal = 16.dp)
+            .semantics(mergeDescendants = true) { liveRegion = LiveRegionMode.Polite },
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        if (status.tone == LinkTone.BUSY) {
+            ExpressiveStatusGlyph(
+                color = MaterialTheme.colorScheme.primary,
+                size = 12.dp,
+            )
+            Spacer(Modifier.width(9.dp))
+        }
+        Text(
+            text = status.text,
+            style = MaterialTheme.typography.bodySmall.copy(fontSize = 12.sp),
+            color = MaterialTheme.colorScheme.onSurface,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+        )
+    }
+}
 
 /**
  * The region between the rails and the input panel when no terminal is

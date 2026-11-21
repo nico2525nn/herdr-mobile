@@ -61,6 +61,7 @@ import androidx.compose.ui.layout.positionInWindow
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.semantics.LiveRegionMode
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.liveRegion
@@ -70,8 +71,6 @@ import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import dev.herdr.mobile.core.designsystem.ExpressiveStatusGlyph
 import dev.herdr.mobile.core.designsystem.HerdrTheme
-import dev.herdr.mobile.core.designsystem.LinkRule
-import dev.herdr.mobile.core.designsystem.LinkTone
 import dev.herdr.mobile.core.designsystem.PeerTabChip
 import dev.herdr.mobile.core.designsystem.StatusDot
 import dev.herdr.mobile.core.designsystem.contentDescription
@@ -228,18 +227,13 @@ internal fun HomeHeader(
         workspaceCount == 1 -> "1 workspace · $tabs"
         else -> "$workspaceCount workspaces · $tabs"
     }
-    val tone = when {
-        failed -> LinkTone.ERROR
-        stale -> LinkTone.WARNING
-        busy -> LinkTone.BUSY
-        else -> LinkTone.NONE
-    }
     // A plain wrapping header instead of LargeTopAppBar: Material3 1.4.0's
     // public large bar reuses its title slot as the collapsed row, so a
     // subtitle/error column would inflate both rows and clip at large font
     // scales. The flexible title+subtitle bar is internal in 1.4.0.
     Surface(
-        color = MaterialTheme.colorScheme.surface,
+        color = Color.Transparent,
+        tonalElevation = 0.dp,
         modifier = modifier.fillMaxWidth(),
     ) {
         Column {
@@ -281,7 +275,6 @@ internal fun HomeHeader(
                     )
                 }
             }
-            LinkRule(tone = tone)
         }
     }
 }

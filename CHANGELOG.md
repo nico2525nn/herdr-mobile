@@ -1,5 +1,18 @@
 # Changelog
 
+## 2.5.0 — 2026-11-22
+
+- Connection chrome now uses the candle-light treatment: a six-second animated
+  amber/red gradient behind the status bar and header, with the inline M3
+  Expressive glyph. The 2dp rule and the bottom strip are gone.
+- Home keeps the state in the header's second line and the light reaches the
+  status bar (edge-to-edge). Failure uses the same light in red.
+- Terminal puts the link row directly under the tab rail, only while the link
+  or attach is degraded. The terminal view is translated with a graphics layer
+  so showing or hiding the row never resizes the PTY or clears the last frame;
+  the same light is overlaid on the terminal top so the chrome and terminal
+  background never meet at a hard colour edge.
+
 ## 2.4.0 — 2026-11-22
 
 - Connection state now uses existing chrome instead of a new surface: the Home

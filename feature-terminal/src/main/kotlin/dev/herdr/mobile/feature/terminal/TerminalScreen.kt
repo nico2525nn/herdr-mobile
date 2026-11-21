@@ -6,6 +6,7 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.ime
 import androidx.compose.foundation.layout.safeDrawing
@@ -27,15 +28,14 @@ import androidx.compose.runtime.saveable.Saver
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clipToBounds
 import androidx.compose.ui.semantics.LiveRegionMode
 import androidx.compose.ui.semantics.liveRegion
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
-import dev.herdr.mobile.core.designsystem.LinkRule
-import dev.herdr.mobile.core.designsystem.LinkStrip
-import dev.herdr.mobile.core.designsystem.LinkTone
+import dev.herdr.mobile.core.designsystem.CandleGlow
 import dev.herdr.mobile.core.designsystem.LocalUiCopy
 import dev.herdr.mobile.core.designsystem.rememberElapsedSeconds
 import dev.herdr.mobile.core.designsystem.UiMessage
@@ -287,14 +287,23 @@ fun TerminalScreen(
         val busyLink = state.connection == ConnectionState.CONNECTING ||
             state.connection == ConnectionState.RECONNECTING
         val elapsed = rememberElapsedSeconds(busyLink && state.backend != null)
-        val ruleTone = when {
-            state.connection == ConnectionState.FAILED -> LinkTone.ERROR
-            state.connection == ConnectionState.STALE -> LinkTone.WARNING
-            busyLink || detached != null -> LinkTone.BUSY
-            else -> LinkTone.NONE
-        }
-        LinkRule(tone = ruleTone)
-        Box(modifier = Modifier.weight(1f).fillMaxWidth()) {
+        val linkStatus = terminalLinkStatus(
+            connection = state.connection,
+            stale = state.stale,
+            failure = state.statusMessage,
+            detachedReason = detached?.reason,
+            elapsedSeconds = elapsed,
+            hasBackend = state.backend != null,
+        )
+        // The row overlays the terminal and the terminal view is shifted down
+        // by the same 32dp with a graphics translation. No layout height and
+        // no PTY resize change when the row appears or disappears.
+        Box(
+            modifier = Modifier
+                .weight(1f)
+                .fillMaxWidth()
+                .clipToBounds(),
+        ) {
             val backend = state.backend
             if (backend == null) {
                 val permanent = (state.statusMessage as? UiMessage.AttachFailed)
@@ -316,6 +325,7 @@ fun TerminalScreen(
                     onRetry = { viewModel.retryAttach() },
                     onBack = onNavigateHome,
                     onBackendState = { backendState = it },
+                    linkRowVisible = linkStatus != null,
                     keyboardShowRequest = keyboardShowRequest,
                     keyboardShowHandled = keyboardShowHandled,
                     onKeyboardShowHandled = { keyboardShowHandled = it },
@@ -324,33 +334,21 @@ fun TerminalScreen(
                     cjkFieldFocused = cjkFieldFocused,
                 )
             }
-            // Overlay, not a layout row: a 32dp height change resized the
-            // PTY and the reflow wiped the visible screen. Anchoring the
-            // strip to the bottom keeps the last frame frozen through a drop.
-            // With no backend the placeholder already carries the state.
-            val strip = if (backend == null) null else when {
-                // While the link is down the surface keeps the last frame and
-                // the strip is the only status. Only a failure on a live link
-                // replaces the content with the failure block.
-                state.connection == ConnectionState.CONNECTED && terminalFailure -> null
-                state.connection == ConnectionState.FAILED -> "Link down"
-                state.connection == ConnectionState.RECONNECTING ->
-                    if (elapsed > 0) "Reconnecting… ${elapsed}s" else "Reconnecting…"
-                state.connection == ConnectionState.CONNECTING -> "Connecting…"
-                state.connection == ConnectionState.STALE -> "Refreshing…"
-                detached != null ->
-                    if (detached.reason == "lagged_resync") "Resyncing…" else "Reattaching…"
-                else -> null
+            // The light continues over the terminal top; the row sits on it.
+            if (state.backend != null && linkStatus != null) {
+                CandleGlow(
+                    tone = linkStatus.tone,
+                    intensity = 0.5f,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(190.dp)
+                        .align(Alignment.TopCenter),
+                )
             }
-            if (strip != null) {
-                LinkStrip(
-                    text = strip,
-                    tone = when {
-                        state.connection == ConnectionState.FAILED -> LinkTone.ERROR
-                        state.connection == ConnectionState.STALE -> LinkTone.WARNING
-                        else -> LinkTone.BUSY
-                    },
-                    modifier = Modifier.align(Alignment.BottomCenter),
+            if (linkStatus != null) {
+                TerminalLinkRow(
+                    status = linkStatus,
+                    modifier = Modifier.align(Alignment.TopCenter),
                 )
             }
             val transient = state.statusMessage

@@ -26,6 +26,7 @@ import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.hapticfeedback.HapticFeedbackType
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.unit.dp
@@ -58,6 +59,7 @@ internal fun TerminalSurface(
     onRetry: () -> Unit,
     onBack: () -> Unit,
     onBackendState: (BackendState) -> Unit,
+    linkRowVisible: Boolean,
     keyboardShowRequest: Int,
     keyboardShowHandled: Int,
     onKeyboardShowHandled: (Int) -> Unit,
@@ -362,7 +364,17 @@ internal fun TerminalSurface(
     // AndroidView captures `factory` on first composition; without this key a
     // tab/workspace switch (new backend → new controller) kept the OLD view,
     // still bound to the closed session, so the terminal looked dead.
-    androidx.compose.foundation.layout.Box(modifier = modifier.fillMaxSize()) {
+    androidx.compose.foundation.layout.Box(
+        modifier = modifier
+            .fillMaxSize()
+            .graphicsLayer {
+                translationY = if (linkRowVisible) {
+                    TerminalLinkRowHeight.toPx()
+                } else {
+                    0f
+                }
+            },
+    ) {
         key(controller) {
             AndroidView(
                 factory = { controller.view },

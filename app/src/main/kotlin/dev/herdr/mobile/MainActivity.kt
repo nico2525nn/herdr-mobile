@@ -10,8 +10,11 @@ import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Home
@@ -31,8 +34,10 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.SideEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.remember
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalView
+import androidx.compose.ui.unit.dp
 import androidx.core.view.WindowCompat
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
@@ -43,10 +48,13 @@ import androidx.navigation.compose.composable
 import androidx.navigation.compose.currentBackStackEntryAsState
 import androidx.navigation.compose.rememberNavController
 import androidx.navigation.toRoute
+import dev.herdr.mobile.core.designsystem.CandleGlow
 import dev.herdr.mobile.core.designsystem.HerdrMobileTheme
 import dev.herdr.mobile.core.designsystem.HerdrTheme
+import dev.herdr.mobile.core.designsystem.LinkTone
 import dev.herdr.mobile.feature.home.HomeScreen
 import dev.herdr.mobile.feature.home.HomeViewModel
+import dev.herdr.mobile.core.model.ConnectionState
 import dev.herdr.mobile.feature.settings.SettingsScreen
 import dev.herdr.mobile.feature.settings.SettingsViewModel
 import dev.herdr.mobile.feature.terminal.TerminalScreen
@@ -194,6 +202,7 @@ private fun AppNav(
     val nav = rememberNavController()
     val backStack by nav.currentBackStackEntryAsState()
     val destination = backStack?.destination
+    val clientState by container.client.state.collectAsStateWithLifecycle()
 
     // A deep link arriving while the app runs (notification tap on a live
     // singleTask activity) navigates immediately; the start destination only
@@ -214,7 +223,21 @@ private fun AppNav(
     // outlined icons for inactive ones; the selected label alone is shown.
     val homeSelected = destination?.hierarchy?.any { it.hasRoute(HomeRoute::class) } == true
     val settingsSelected = destination?.hierarchy?.any { it.hasRoute(SettingsRoute::class) } == true
+    val terminalSelected = destination?.hierarchy?.any { it.hasRoute(TerminalRoute::class) } == true
     val showBar = homeSelected || settingsSelected
+    // D's light is connection chrome, not a permanent background. It spans the
+    // status bar because the app is edge-to-edge and the Scaffold content
+    // layer sits behind the safe-inset padding.
+    val glowTone = when {
+        !(homeSelected || terminalSelected) -> LinkTone.NONE
+        clientState.connection == ConnectionState.FAILED -> LinkTone.ERROR
+        clientState.connection == ConnectionState.CONNECTING && clientState.error != null ->
+            LinkTone.ERROR
+        clientState.stale -> LinkTone.WARNING
+        clientState.connection == ConnectionState.CONNECTING ||
+            clientState.connection == ConnectionState.RECONNECTING -> LinkTone.BUSY
+        else -> LinkTone.NONE
+    }
     val amoled = HerdrTheme.amoled
     // Midnight maps secondaryContainer (the active indicator) to black.
     // A translucent primary wash keeps the pill visible without a grey band;
@@ -285,63 +308,72 @@ private fun AppNav(
             }
         },
     ) { padding ->
-        // Static start: routing ALL links (cold start included) through the
-        // LaunchedEffect above. Tying startDestination to the link (startTerminal
-        // ?: HomeRoute) resets the NavHost every time the link changes — the
-        // navigate-then-snap-back-to-Home bug. Cold start works identically:
-        // onCreate sets the value before first composition, the effect fires
-        // once and navigates.
-        NavHost(
-            navController = nav,
-            startDestination = HomeRoute,
-        ) {
-            composable<HomeRoute> {
-                val vm: HomeViewModel = viewModel(
-                    factory = HomeViewModel.Factory(container.client),
-                )
-                HomeScreen(
-                    viewModel = vm,
-                    onOpenWorkspace = { workspaceId, tabId ->
-                        nav.navigate(TerminalRoute(workspaceId, tabId))
-                    },
-                    onOpenTab = { workspaceId, tabId ->
-                        nav.navigate(TerminalRoute(workspaceId, tabId))
-                    },
-                    modifier = Modifier.padding(padding),
-                )
-            }
-            composable<SettingsRoute> {
-                val vm: SettingsViewModel = viewModel(
-                    factory = SettingsViewModel.Factory(container.settingsRepository),
-                )
-                SettingsScreen(viewModel = vm, modifier = Modifier.padding(padding))
-            }
-            composable<TerminalRoute> { entry ->
-                val route = entry.toRoute<TerminalRoute>()
-                // Key the ViewModel on the target so switching panes gets a fresh attachment.
-                val key = "${route.workspaceId}/${route.tabId}/${route.paneId}"
-                val vm: TerminalViewModel = viewModel(
-                    key = key,
-                    factory = remember(route.workspaceId, route.tabId, route.paneId) {
-                        TerminalViewModel.Factory(
-                            container.client,
-                            route.workspaceId,
-                            route.tabId,
-                            route.paneId,
-                            container.settingsRepository.settings,
-                            container::persistFontSize,
-                        )
-                    },
-                )
-                TerminalScreen(
-                    viewModel = vm,
-                    onNavigateHome = {
-                        nav.navigate(HomeRoute) {
-                            popUpTo(HomeRoute) { inclusive = true }
-                            launchSingleTop = true
-                        }
-                    },
-                )
+        Box(modifier = Modifier.fillMaxSize()) {
+            CandleGlow(
+                tone = glowTone,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(280.dp)
+                    .align(Alignment.TopCenter),
+            )
+            // Static start: routing ALL links (cold start included) through the
+            // LaunchedEffect above. Tying startDestination to the link (startTerminal
+            // ?: HomeRoute) resets the NavHost every time the link changes — the
+            // navigate-then-snap-back-to-Home bug. Cold start works identically:
+            // onCreate sets the value before first composition, the effect fires
+            // once and navigates.
+            NavHost(
+                navController = nav,
+                startDestination = HomeRoute,
+            ) {
+                composable<HomeRoute> {
+                    val vm: HomeViewModel = viewModel(
+                        factory = HomeViewModel.Factory(container.client),
+                    )
+                    HomeScreen(
+                        viewModel = vm,
+                        onOpenWorkspace = { workspaceId, tabId ->
+                            nav.navigate(TerminalRoute(workspaceId, tabId))
+                        },
+                        onOpenTab = { workspaceId, tabId ->
+                            nav.navigate(TerminalRoute(workspaceId, tabId))
+                        },
+                        modifier = Modifier.padding(padding),
+                    )
+                }
+                composable<SettingsRoute> {
+                    val vm: SettingsViewModel = viewModel(
+                        factory = SettingsViewModel.Factory(container.settingsRepository),
+                    )
+                    SettingsScreen(viewModel = vm, modifier = Modifier.padding(padding))
+                }
+                composable<TerminalRoute> { entry ->
+                    val route = entry.toRoute<TerminalRoute>()
+                    // Key the ViewModel on the target so switching panes gets a fresh attachment.
+                    val key = "${route.workspaceId}/${route.tabId}/${route.paneId}"
+                    val vm: TerminalViewModel = viewModel(
+                        key = key,
+                        factory = remember(route.workspaceId, route.tabId, route.paneId) {
+                            TerminalViewModel.Factory(
+                                container.client,
+                                route.workspaceId,
+                                route.tabId,
+                                route.paneId,
+                                container.settingsRepository.settings,
+                                container::persistFontSize,
+                            )
+                        },
+                    )
+                    TerminalScreen(
+                        viewModel = vm,
+                        onNavigateHome = {
+                            nav.navigate(HomeRoute) {
+                                popUpTo(HomeRoute) { inclusive = true }
+                                launchSingleTop = true
+                            }
+                        },
+                    )
+                }
             }
         }
     }
