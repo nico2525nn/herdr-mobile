@@ -79,6 +79,38 @@ PY
   printf '%s' "${HERDR_MOBILE_TOKEN:-}"
 }
 
+# Read the token from the actually running process. systemctl's ExecStart text
+# loses quoting details; /proc argv/environ are authoritative.
+running_service_token() {
+  local pid
+  pid="$(systemctl --user show "$SERVICE" -p MainPID --value 2>/dev/null || true)"
+  [[ "$pid" =~ ^[1-9][0-9]*$ ]] || return 0
+  python3 - "$pid" <<'PY' 2>/dev/null || true
+import sys
+pid = sys.argv[1]
+token = ""
+try:
+    args = open(f"/proc/{pid}/cmdline", "rb").read().split(b"\0")
+    args = [a.decode("utf-8", "replace") for a in args if a]
+    for i, arg in enumerate(args):
+        if arg == "--token" and i + 1 < len(args):
+            token = args[i + 1]
+        elif arg.startswith("--token="):
+            token = arg.split("=", 1)[1]
+except OSError:
+    pass
+if not token:
+    try:
+        for line in open(f"/proc/{pid}/environ", "rb").read().split(b"\0"):
+            text = line.decode("utf-8", "replace")
+            if text.startswith("HERDR_MOBILE_TOKEN="):
+                token = text.split("=", 1)[1]
+    except OSError:
+        pass
+print(token, end="")
+PY
+}
+
 TOKEN="$(resolve_deploy_token)"
 
 die() { printf 'deploy: %s\n' "$*" >&2; exit 1; }
@@ -166,6 +198,10 @@ sys.exit(0 if d.get("ok") is True and d.get("herdrConnected") is True else 1)' \
 }
 
 for _ in $(seq 1 20); do
+  RUNNING_TOKEN="$(running_service_token || true)"
+  if [[ -n "$RUNNING_TOKEN" ]]; then
+    TOKEN="$RUNNING_TOKEN"
+  fi
   if health_ok; then
     RESTORING=0
     trap - EXIT INT TERM

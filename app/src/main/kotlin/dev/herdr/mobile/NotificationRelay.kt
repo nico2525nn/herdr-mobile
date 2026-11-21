@@ -118,6 +118,10 @@ class NotificationRelay(
                     paneId, status, event.workspaceId, event,
                     connectionEpoch = stamped.connectionEpoch,
                     fromEvent = true,
+                    // Before seed the persisted map is not merged yet; record
+                    // the live state but let seed emit the one authoritative
+                    // notification (avoids DONE/BLOCKED reposting).
+                    suppressNotify = synchronized(transitionLock) { !seeded },
                 )
             }
         }
@@ -312,6 +316,7 @@ class NotificationRelay(
         tabLabel: String? = null,
         connectionEpoch: Long,
         fromEvent: Boolean = false,
+        suppressNotify: Boolean = false,
     ): Boolean = synchronized(transitionLock) {
         val accepted = if (fromEvent) {
             acceptEventLocked(event.seq, connectionEpoch)
@@ -327,7 +332,7 @@ class NotificationRelay(
         }
         lastNotified[paneId] = NotifiedState(status, workspaceId, event.seq)
         persistLocked()
-        maybeNotify(event, workspaceLabel, tabLabel)
+        if (!suppressNotify) maybeNotify(event, workspaceLabel, tabLabel)
         if (fromEvent) {
             // A snapshot may already have folded past this event (a short
             // working->done->working). Apply its newer state now rather than

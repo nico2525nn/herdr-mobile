@@ -47,6 +47,15 @@
   the notification tap goes through a non-exported proxy instead of the
   exported launcher activity.
 
+### Release-gate fixes (fourth pass)
+
+- Deploy resolves the bearer from the running service's `/proc/<pid>/cmdline`
+  and `/proc/<pid>/environ` after restart, so systemctl's lossy ExecStart text
+  cannot break quoted `;`/apostrophe tokens.
+- Notifications before the first seed record state but suppress posting; the
+  seed emits the single authoritative transition, preventing DONE/BLOCKED
+  reposting during initial sync.
+
 ### Release-gate fixes (third pass)
 
 - Terminal create-tab rechecks the target generation after the snapshot wait.
