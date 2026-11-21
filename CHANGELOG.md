@@ -47,6 +47,20 @@
   the notification tap goes through a non-exported proxy instead of the
   exported launcher activity.
 
+### Release-gate fixes (second pass)
+
+- Core where ids escape both components unambiguously.
+- TUI waits for the first controller record before geometry Ready; prelude
+  history metadata survives into Attached.
+- Terminal create/close/move/rename/read-ack check the target generation after
+  success before navigating, so an old host response cannot open a same-id pane
+  on the new host.
+- Deploy parses the first `--token` (including values containing `--token`).
+- Notification persistence is versioned (`v2;`) so old `%3B`/`%2B` values are
+  read literally; seed retracts only the old status notification id.
+- CI startup stale cleanup is not retried by the EXIT trap; installer doubles
+  `%` for systemd.
+
 ### Release-gate fixes
 
 - **Core ids:** where-derived tab ids escape `%`/`:` in both components, so

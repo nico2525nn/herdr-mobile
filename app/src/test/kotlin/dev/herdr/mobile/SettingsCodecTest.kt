@@ -129,7 +129,7 @@ class SettingsCodecTest {
     @Test
     fun notifiedMapRoundTrip() {
         val map = mapOf("pane-1" to "done", "pane-2" to "blocked", "pane-3" to "failed")
-        assertEquals("pane-1=done;pane-2=blocked;pane-3=failed", encodeNotifiedMap(map))
+        assertEquals("v2;pane-1=done;pane-2=blocked;pane-3=failed", encodeNotifiedMap(map))
         assertEquals(map, decodeNotifiedMap(encodeNotifiedMap(map)))
     }
 
@@ -146,7 +146,7 @@ class SettingsCodecTest {
     }
 
     @Test
-    fun emptyNotifiedMapEncodesToEmptyString() {
-        assertEquals("", encodeNotifiedMap(emptyMap()))
+    fun emptyNotifiedMapEncodesToVersionMarker() {
+        assertEquals("v2;", encodeNotifiedMap(emptyMap()))
     }
 }

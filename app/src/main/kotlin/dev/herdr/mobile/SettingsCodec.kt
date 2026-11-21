@@ -165,16 +165,20 @@ internal fun MutablePreferences.writeSettings(
  */
 internal fun decodeNotifiedMap(raw: String?): Map<String, String> {
     if (raw.isNullOrEmpty()) return emptyMap()
-    return raw.split(';')
+    val versioned = raw.startsWith(NOTIFIED_PREFIX)
+    val body = if (versioned) raw.removePrefix(NOTIFIED_PREFIX) else raw
+    return body.split(';')
         .mapNotNull { part ->
             val eq = part.indexOf('=')
             if (eq <= 0) return@mapNotNull null
-            // Only our own %3B/%25 escapes are decoded. Old values may
-            // legitimately contain '+' or '%' (Build+C++, 100%).
-            unescape(part.take(eq)) to unescape(part.substring(eq + 1))
+            val key = part.take(eq)
+            val value = part.substring(eq + 1)
+            if (versioned) unescape(key) to unescape(value) else key to value
         }
         .toMap()
 }
+
+private const val NOTIFIED_PREFIX = "v2;"
 
 private fun unescape(value: String): String =
     value.replace("%3B", ";", ignoreCase = true)
@@ -184,6 +188,6 @@ private fun escape(value: String): String =
     value.replace("%", "%25").replace(";", "%3B")
 
 internal fun encodeNotifiedMap(map: Map<String, String>): String =
-    map.entries.joinToString(";") { (key, value) ->
+    NOTIFIED_PREFIX + map.entries.joinToString(";") { (key, value) ->
         escape(key) + "=" + escape(value)
     }

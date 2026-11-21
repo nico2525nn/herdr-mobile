@@ -29,7 +29,8 @@ resolve_deploy_token() {
   # then the service environment, then the deploy shell override.
   exec="$(systemctl --user show "$SERVICE" -p ExecStart --value 2>/dev/null || true)"
   token="$(printf '%s' "$exec" |
-    sed -n 's/.*--token[= ]*"\?\([^" ;]*\)"\?.*/\1/p' | tr -d "\"'" | head -n1)"
+    grep -o -- '--token[= ]"\?[^" ;]*' | head -n1 |
+    sed 's/^--token[= ]"\?//' | tr -d "\"'" )"
   if [[ -n "$token" ]]; then
     printf '%s' "$token"
     return

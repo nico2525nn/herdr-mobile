@@ -340,6 +340,7 @@ class TerminalViewModel(
         viewModelScope.launch {
             runCatching { client.createTabAt(workspaceId, label, true, targetGeneration) }
                 .onSuccess { tabId ->
+                    if (client.targetGeneration != targetGeneration) return@onSuccess
                     // The snapshot lacks the new tab until the structural event
                     // (or refetch) lands: wait for it, or openTab's lookup
                     // silently returns and the new tab never opens.
@@ -359,6 +360,7 @@ class TerminalViewModel(
         viewModelScope.launch {
             runCatching { client.closeTabAt(tabId, targetGeneration) }
                 .onSuccess {
+                    if (client.targetGeneration != targetGeneration) return@onSuccess
                     // Move to a surviving tab; the closed one disappears on the next event.
                     val snapshot = client.state.value.snapshot
                     val workspace = snapshot?.workspace(workspaceId)
@@ -389,6 +391,7 @@ class TerminalViewModel(
         viewModelScope.launch {
             runCatching { client.closeWorkspaceAt(workspaceId, targetGeneration) }
                 .onSuccess {
+                    if (client.targetGeneration != targetGeneration) return@onSuccess
                     // Move to a surviving workspace's active tab, like closeTab.
                     val snapshot = client.state.value.snapshot ?: return@onSuccess
                     val remaining = snapshot.workspaces.firstOrNull { it.id != workspaceId }
