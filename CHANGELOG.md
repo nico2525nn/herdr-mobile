@@ -47,6 +47,36 @@
   the notification tap goes through a non-exported proxy instead of the
   exported launcher activity.
 
+### Third deep-review pass
+
+- **CI ownership/teardown:** process matching now compares exact argv
+  boundaries (binary basename, `--bind`, `--herdr-socket`), so a
+  `herdr.sock.other` process is never stopped. Session stop/delete failures or
+  an unreadable session list keep the `.ci-owned` marker and fail the run; the
+  live signature is taken after all private teardown.
+- **Core ordering/shutdown:** reorder uses the same aggregated
+  `(space_order, tab_order, index)` keys as the snapshot, serializes concurrent
+  reorders, restores every target on an uncertain write, and Core attach no
+  longer marks a DONE read before the WebSocket succeeds.
+- **Connection epoch:** target invalidation and every redial advance the epoch
+  immediately; fold, GET result, and emit are guarded by both generation and
+  epoch, so a late REST response or queued old event cannot overwrite a new
+  daemon's snapshot.
+- **Shutdown:** one shared 5s deadline for all sessions, child writes bounded,
+  and the select no longer prioritizes input over child output/resize.
+- **Notifications:** seed compares live event seq, retracts a DONE that a newer
+  snapshot shows as working, and avoids re-notifying the same DONE after a
+  persisted WORKING seed.
+- **Credentials:** edits are update-only (a deleted profile is not re-created),
+  the current record supplies host-key/other fields, and TOFU/save/remove share
+  one repository lock. Secret-only edits fail for a deleted profile.
+- **Deploy:** token priority matches the daemon (`--token`, then Environment,
+  then `EnvironmentFiles` plural); curl receives the bearer through stdin
+  `--config -`, never argv; the success body reuses the authenticated response.
+- **Input/reorder/URL:** a Compose pointer cancel (pressed=false, consumed) no
+  longer sends a key; a long-press without motion adopts the latest remote list;
+  Direct errors no longer echo a legacy URL's userinfo.
+
 ### Second deep-review pass
 
 - **Core completion identity:** the read mark now includes Core's `status_ms`

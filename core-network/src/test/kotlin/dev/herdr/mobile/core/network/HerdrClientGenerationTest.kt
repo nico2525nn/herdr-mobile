@@ -55,6 +55,43 @@ class HerdrClientGenerationTest {
     }
 
     @Test
+    fun lateRestSnapshotFromThePreviousAttemptCannotOverwriteTheNewOne() = runBlocking {
+        val clock = ManualClock()
+        val transport = FakeDaemonTransport()
+        val state = LinkState(clock)
+        val sync = SnapshotSync(state, transport, clock)
+        val generation = state.linkGeneration
+        state.beginConnection(generation)
+        assertTrue(
+            state.update(generation) {
+                it.copy(
+                    connection = ConnectionState.CONNECTED,
+                    snapshot = SessionSnapshot(revision = 1, seq = 0),
+                )
+            },
+        )
+        assertTrue(state.installEndpoint(generation, transport.endpoint))
+
+        val started = CompletableDeferred<Unit>()
+        val release = CompletableDeferred<Unit>()
+        transport.onSnapshot = {
+            started.complete(Unit)
+            release.await()
+        }
+        transport.snapshot = SessionSnapshot(revision = 2, seq = 100)
+        val request = launch(Dispatchers.Default) { sync.refetch("race", generation) }
+        started.await()
+
+        // Automatic retry starts a new epoch while the old GET is in flight.
+        state.beginConnection(generation)
+        release.complete(Unit)
+        request.join()
+
+        assertEquals(0L, state.state.value.snapshot?.seq)
+        assertEquals(2L, state.state.value.connectionEpoch)
+    }
+
+    @Test
     fun connectionEpochChangesPerAttemptAndRejectsStaleEvents() {
         val state = LinkState(ManualClock())
         val generation = state.linkGeneration

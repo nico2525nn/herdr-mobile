@@ -84,7 +84,9 @@ fun SettingsScreen(
             profile = profile,
             onDismiss = { editingProfileId = null },
             onSave = { updated, password, token, keyPem, keyLabel ->
-                viewModel.saveProfileWithSecrets(updated, password, token, keyPem, keyLabel)
+                viewModel.saveProfileWithSecrets(
+                    updated, password, token, keyPem, keyLabel, isNew = false,
+                )
                 editingProfileId = null
             },
         )
@@ -99,7 +101,9 @@ fun SettingsScreen(
             ),
             onDismiss = { showAddProfile = false },
             onSave = { created, password, token, keyPem, keyLabel ->
-                viewModel.saveProfileWithSecrets(created, password, token, keyPem, keyLabel)
+                viewModel.saveProfileWithSecrets(
+                    created, password, token, keyPem, keyLabel, isNew = true,
+                )
                 showAddProfile = false
             },
         )

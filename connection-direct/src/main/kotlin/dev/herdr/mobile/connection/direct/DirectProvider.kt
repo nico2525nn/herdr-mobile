@@ -26,8 +26,10 @@ class DirectProvider(
     override suspend fun open(): DaemonEndpoint {
         val url = try {
             baseUrl.toHttpUrl()
-        } catch (e: Exception) {
-            throw IllegalArgumentException("Invalid daemon URL: $baseUrl", e)
+        } catch (_: Exception) {
+            // Never echo the raw value: a legacy userinfo URL would leak its
+            // credentials into the Home error banner.
+            throw IllegalArgumentException("Invalid daemon URL")
         }
         // REST resolves API paths against this base while the WebSocket
         // concatenates them. A saved legacy URL with a path/query would pass
@@ -36,7 +38,7 @@ class DirectProvider(
             url.username.isNotEmpty() || url.password.isNotEmpty()
         ) {
             throw IllegalArgumentException(
-                "Daemon URL must be an origin (scheme://host:port), not $baseUrl",
+                "Daemon URL must be an origin (scheme://host:port)",
             )
         }
         val token = bearerToken()

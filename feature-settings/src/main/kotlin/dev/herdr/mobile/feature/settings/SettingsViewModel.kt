@@ -158,6 +158,7 @@ class SettingsViewModel(
         token: String?,
         keyPem: String? = null,
         keyLabel: String? = null,
+        isNew: Boolean = false,
     ) {
         viewModelScope.launch {
             // Two saves for the same profile can overlap: the editor closes
@@ -176,6 +177,9 @@ class SettingsViewModel(
             var newToken: String? = null
             var newKey: String? = null
             runCatching {
+                if (!isNew && old == null) {
+                    error("The profile was deleted before this save completed")
+                }
                 var base = old ?: profile
                 // New aliases only: never overwrite the credential that the
                 // still-persisted profile points at. The old alias is deleted
@@ -199,13 +203,24 @@ class SettingsViewModel(
                         privateKeyLabel = keyLabel ?: profile.label,
                     )
                 }
-                val merged = profile.copy(
+                // Merge only the fields this dialog owns into the CURRENT
+                // record. Copying the whole dialog record would overwrite a
+                // host key accepted by TOFU while the dialog was open.
+                val merged = base.copy(
+                    label = profile.label,
+                    host = profile.host,
+                    port = profile.port,
+                    username = profile.username,
+                    daemonPort = profile.daemonPort,
+                    daemonHost = profile.daemonHost,
+                    useTls = profile.useTls,
+                    backendMode = profile.backendMode,
                     passwordAlias = base.passwordAlias,
                     bearerTokenAlias = base.bearerTokenAlias,
                     privateKeyAlias = base.privateKeyAlias,
                     privateKeyLabel = base.privateKeyLabel,
                 )
-                if (old != null) repository.updateProfile(merged) else repository.addProfile(merged)
+                if (isNew) repository.addProfile(merged) else repository.updateProfile(merged)
             }.onSuccess {
                 if (passwordChanged && oldPassword != null && oldPassword != newPassword) {
                     runCatching { repository.deleteSshPassword(oldPassword) }
@@ -234,8 +249,8 @@ class SettingsViewModel(
             val oldAlias = current?.privateKeyAlias
             var newAlias: String? = null
             runCatching {
+                val base = current ?: error("No such profile: $profileId")
                 newAlias = repository.storePrivateKey(null, pem, label)
-                val base = current ?: HostProfile(id = profileId, label = label, host = "", username = "")
                 repository.updateProfile(base.copy(privateKeyAlias = newAlias, privateKeyLabel = label))
             }.onSuccess {
                 if (oldAlias != null && oldAlias != newAlias) {
@@ -257,12 +272,11 @@ class SettingsViewModel(
             val oldAlias = current?.bearerTokenAlias
             var newAlias: String? = null
             runCatching {
+                val base = current ?: error("No such profile: $profileId")
                 if (token.isBlank()) {
-                    val base = current ?: HostProfile(id = profileId, label = profileId, host = "", username = "")
                     repository.updateProfile(base.copy(bearerTokenAlias = null))
                 } else {
                     newAlias = repository.storeBearerToken(null, token)
-                    val base = current ?: HostProfile(id = profileId, label = profileId, host = "", username = "")
                     repository.updateProfile(base.copy(bearerTokenAlias = newAlias))
                 }
             }.onSuccess {
@@ -290,12 +304,11 @@ class SettingsViewModel(
             val oldAlias = current?.passwordAlias
             var newAlias: String? = null
             runCatching {
+                val base = current ?: error("No such profile: $profileId")
                 if (password.isBlank()) {
-                    val base = current ?: HostProfile(id = profileId, label = profileId, host = "", username = "")
                     repository.updateProfile(base.copy(passwordAlias = null))
                 } else {
                     newAlias = repository.storeSshPassword(null, password)
-                    val base = current ?: HostProfile(id = profileId, label = profileId, host = "", username = "")
                     repository.updateProfile(base.copy(passwordAlias = newAlias))
                 }
             }.onSuccess {

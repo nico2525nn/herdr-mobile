@@ -102,8 +102,8 @@ internal class SnapshotSync(
     ) {
         if (!accept(event, generation, connectionEpoch)) return
         var outcome: SnapshotReducer.Outcome? = null
-        val updated = state.update(generation) { current ->
-            val snapshot = current.snapshot ?: return@update current
+        val updated = state.updateAt(generation, connectionEpoch) { current ->
+            val snapshot = current.snapshot ?: return@updateAt current
             val result = SnapshotReducer.apply(snapshot, event)
             outcome = result
             when (result) {
@@ -123,7 +123,7 @@ internal class SnapshotSync(
         }
         if (!updated) return
         // Publish only after the fold, and only while this link is still live.
-        if (state.isCurrent(generation)) {
+        if (state.isCurrentEpoch(generation, connectionEpoch)) {
             _events.tryEmit(event)
             _stampedEvents.tryEmit(StampedEvent(connectionEpoch, event))
         }
@@ -156,11 +156,16 @@ internal class SnapshotSync(
 
     /** Force an authoritative snapshot (presence check, cursor drift, gap, manual refresh). */
     suspend fun refetch(reason: String, generation: Long) {
+        // Capture the attempt with the endpoint. An automatic retry can start
+        // (and advance the epoch) while this GET is in flight; a late response
+        // from the old daemon must not overwrite the new snapshot.
+        val endpoint = state.endpoint ?: return
+        val connectionEpoch = state.currentConnectionEpoch()
         refetchMutex.withLock {
-            if (!state.isCurrent(generation)) return
+            if (!state.isCurrentEpoch(generation, connectionEpoch)) return
             try {
-                val snapshot = fetchSnapshot()
-                state.update(generation) { current ->
+                val snapshot = transport.snapshot(endpoint)
+                state.updateAt(generation, connectionEpoch) { current ->
                     // Events may have folded past a slow GET. Installing the
                     // older response would regress seq and force a gap refetch.
                     if (snapshot.seq < (current.snapshot?.seq ?: Long.MIN_VALUE)) {
@@ -178,7 +183,7 @@ internal class SnapshotSync(
             } catch (e: CancellationException) {
                 throw e
             } catch (e: Exception) {
-                state.update(generation) {
+                state.updateAt(generation, connectionEpoch) {
                     it.copy(
                         connection = if (it.snapshot != null) {
                             ConnectionState.RECONNECTING
@@ -201,8 +206,4 @@ internal class SnapshotSync(
     private fun accept(event: SemanticEvent, generation: Long, connectionEpoch: Long): Boolean =
         state.acceptActivity(generation, connectionEpoch) { }
 
-    private suspend fun fetchSnapshot() =
-        transport.snapshot(
-            state.endpoint ?: throw DaemonException("not_connected", "No endpoint is open"),
-        )
 }

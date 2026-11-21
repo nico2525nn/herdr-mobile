@@ -170,15 +170,18 @@ internal class LinkLifecycle(
                 }
 
                 val snapshot = transport.snapshot(endpoint)
-                if (!state.isCurrent(generation)) return
-                state.update(generation) {
-                    it.copy(
-                        connection = ConnectionState.CONNECTED,
-                        snapshot = snapshot,
-                        stale = false,
-                        error = null,
-                        lastSyncAt = clock.now(),
-                    )
+                if (!state.isCurrentEpoch(generation, connectionEpoch)) return
+                if (!state.updateAt(generation, connectionEpoch) {
+                        it.copy(
+                            connection = ConnectionState.CONNECTED,
+                            snapshot = snapshot,
+                            stale = false,
+                            error = null,
+                            lastSyncAt = clock.now(),
+                        )
+                    }
+                ) {
+                    return
                 }
                 // Do not reset on bootstrap alone: an endpoint that accepts
                 // then immediately closes the event stream would redial at

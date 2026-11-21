@@ -59,6 +59,25 @@ internal class LinkState(private val clock: LinkClock) {
 
     fun currentConnectionEpoch(): Long = connectionEpoch
 
+    fun isCurrentEpoch(generation: Long, connectionEpoch: Long): Boolean =
+        synchronized(lock) {
+            linkGeneration == generation && this.connectionEpoch == connectionEpoch
+        }
+
+    /** Publish a state transform only while both the link and attempt are live. */
+    fun updateAt(
+        generation: Long,
+        connectionEpoch: Long,
+        transform: (HerdrClientState) -> HerdrClientState,
+    ): Boolean = synchronized(lock) {
+        if (linkGeneration != generation || this.connectionEpoch != connectionEpoch) {
+            false
+        } else {
+            _state.update(transform)
+            true
+        }
+    }
+
     /**
      * Start a new connection attempt inside [generation] and publish its id.
      * Automatic retries reuse a generation, but a restarted daemon's seq can
@@ -158,6 +177,7 @@ internal class LinkState(private val clock: LinkClock) {
                 invalidateTargetLocked()
             } else {
                 clearSecondaryState()
+                connectionEpoch++
                 _state.update {
                     it.copy(
                         connection = if (it.snapshot == null) {
@@ -167,6 +187,7 @@ internal class LinkState(private val clock: LinkClock) {
                         },
                         stale = it.snapshot != null,
                         error = null,
+                        connectionEpoch = connectionEpoch,
                     )
                 }
             }
@@ -202,6 +223,9 @@ internal class LinkState(private val clock: LinkClock) {
         targetGeneration++
         targetInvalidated = true
         clearSecondaryState()
+        // Reject events queued for the host we just left before the next
+        // connection attempt has a chance to run.
+        connectionEpoch++
         _state.update {
             it.copy(
                 connection = ConnectionState.CONNECTING,
@@ -210,6 +234,7 @@ internal class LinkState(private val clock: LinkClock) {
                 error = null,
                 endpointDescription = null,
                 lastSyncAt = 0,
+                connectionEpoch = connectionEpoch,
             )
         }
     }

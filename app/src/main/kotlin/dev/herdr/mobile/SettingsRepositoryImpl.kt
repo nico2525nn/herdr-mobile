@@ -195,10 +195,14 @@ class SettingsRepositoryImpl(
 
     override suspend fun updateProfile(profile: HostProfile) {
         preservedProfilesRaw = null
+        // Update-only: an edit whose profile was deleted must not re-create it
+        // with stale aliases. New profiles go through addProfile explicitly.
         update { s ->
-            val profiles = s.hostProfiles.map { if (it.id == profile.id) profile else it }
-            val withAdded = if (profiles.any { it.id == profile.id }) profiles else profiles + profile
-            s.copy(hostProfiles = withAdded)
+            s.copy(
+                hostProfiles = s.hostProfiles.map {
+                    if (it.id == profile.id) profile else it
+                },
+            )
         }
     }
 

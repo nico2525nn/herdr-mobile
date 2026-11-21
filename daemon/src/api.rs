@@ -1015,7 +1015,7 @@ async fn terminal_ws(
         // Attaching the terminal is the app's focus signal on core: update the
         // daemon focus so the next snapshot marks the right workspace/tab/pane.
         if let Ok(terminals) = core.list(false).await {
-            if let Some((terminal, focus)) = terminals
+            if let Some((_terminal, focus)) = terminals
                 .iter()
                 .find(|terminal| {
                     terminal.get("address").and_then(|v| v.as_str()) == Some(address.as_str())
@@ -1024,7 +1024,8 @@ async fn terminal_ws(
                     Some((terminal, crate::herdrcore::CoreFocus::from_terminal(terminal)?))
                 })
             {
-                record_core_read(&state, terminal, &focus.pane_id);
+                // Do NOT mark read here: the WebSocket may still fail to
+                // attach. The app's explicit pane-scoped focus is the ack.
                 if let Ok(mut current) = state.core_focus.lock() {
                     *current = Some(focus);
                 }

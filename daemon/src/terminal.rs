@@ -128,8 +128,15 @@ impl TerminalRegistry {
             session.shutdown.notify_one();
             closed.push(rx);
         }
+        // One shared deadline, not 5s per session: two stuck panes must not
+        // turn shutdown into a 10s wait.
+        let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(5);
         for mut rx in closed {
-            let _ = tokio::time::timeout(std::time::Duration::from_secs(5), rx.recv()).await;
+            let now = tokio::time::Instant::now();
+            if now >= deadline {
+                break;
+            }
+            let _ = tokio::time::timeout(deadline - now, rx.recv()).await;
         }
     }
 
@@ -454,7 +461,6 @@ async fn run_session(
     let mut end_reason = String::from("detached");
     loop {
         tokio::select! {
-            biased;
             _ = session.shutdown.notified() => {
                 end_reason = "released".to_string();
                 break;
@@ -489,7 +495,14 @@ async fn run_session(
                     SessionCommand::Scroll(action) => {
                         let host_handled = match action {
                             ScrollAction::PageKey { up, rows } => {
-                                registry.host_scroll(&pane_id, up, rows).await
+                                // Bound the RPC so a wedged Herdr cannot pin
+                                // shutdown or starve the child's output.
+                                tokio::time::timeout(
+                                    std::time::Duration::from_secs(2),
+                                    registry.host_scroll(&pane_id, up, rows),
+                                )
+                                .await
+                                .unwrap_or(false)
                             }
                             // Wheel routing is the app's own viewport, never
                             // the host scrollback.
@@ -505,10 +518,14 @@ async fn run_session(
                                     None => {
                                         // Unknown (RPC error): stay safe and do
                                         // not type PgUp/PgDn into a shell.
-                                        let is_shell = herdr
-                                            .pane_foreground_is_shell(&pane_id)
-                                            .await
-                                            .unwrap_or(true);
+                                        let is_shell = tokio::time::timeout(
+                                            std::time::Duration::from_secs(2),
+                                            herdr.pane_foreground_is_shell(&pane_id),
+                                        )
+                                        .await
+                                        .ok()
+                                        .and_then(Result::ok)
+                                        .unwrap_or(true);
                                         shell_probe = Some((is_shell, tokio::time::Instant::now()));
                                         is_shell
                                     }
@@ -523,10 +540,18 @@ async fn run_session(
                         }
                     }
                     SessionCommand::HostScroll(offset) => {
-                        match herdr.pane_scroll(&pane_id, offset).await {
-                            Ok(Some(_)) | Ok(None) => {}
-                            Err(error) => {
+                        match tokio::time::timeout(
+                            std::time::Duration::from_secs(2),
+                            herdr.pane_scroll(&pane_id, offset),
+                        )
+                        .await
+                        {
+                            Ok(Ok(Some(_))) | Ok(Ok(None)) => {}
+                            Ok(Err(error)) => {
                                 warn!("pane.scroll absolute {offset} failed for {pane_id}: {error:#}");
+                            }
+                            Err(_) => {
+                                warn!("pane.scroll absolute {offset} timed out for {pane_id}");
                             }
                         }
                     }

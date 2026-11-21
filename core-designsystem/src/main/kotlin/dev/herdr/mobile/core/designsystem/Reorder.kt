@@ -69,18 +69,25 @@ fun <T> rememberReorderState(
     // finger (or be skipped and never replayed), so hold the latest
     // authoritative order and apply it when the drag ends.
     val pendingReset = remember { mutableStateOf<List<T>?>(null) }
+    val scrollDir = remember { mutableIntStateOf(0) }
+    // Always retain the latest authoritative list, even mid-drag. A stuck arm
+    // ends here after 2s of no motion instead of replacing the list under a
+    // live finger.
+    val latestItems = remember { mutableStateOf(items) }
     LaunchedEffect(items) {
-        // Resync when idle — or when the arm is older than 2s without motion
-        // (stuck arm self-heals; a live drag moves faster than that).
-        if (draggingKey.value == null ||
+        latestItems.value = items
+        if (draggingKey.value != null &&
             System.currentTimeMillis() - lastDragAt.value > 2_000
         ) {
+            draggingKey.value = null
+            scrollDir.intValue = 0
+        }
+        if (draggingKey.value == null) {
             order.value = items
             pendingReset.value = null
         } else if (pendingReset.value != null) {
-            // A rollback is pending and the server sent a newer list while
-            // the finger was still down. Keep the newest one, not the list
-            // captured at rejection time, for the drag-end apply.
+            // A rollback is pending: keep the newest list for the drag-end
+            // apply rather than the list captured at rejection time.
             pendingReset.value = items
         }
     }
@@ -92,7 +99,6 @@ fun <T> rememberReorderState(
     val anchorSizePx = remember { mutableFloatStateOf(0f) }
     val anchorViewportPx = remember { mutableFloatStateOf(0f) }
     val movedPastSlop = remember { mutableStateOf(false) }
-    val scrollDir = remember { mutableIntStateOf(0) }
     LaunchedEffect(draggingKey.value) {
         if (draggingKey.value == null) {
             // Apply a rejection that arrived mid-drag to the final gesture.
@@ -272,15 +278,27 @@ fun <T> rememberReorderState(
                             } else if (to >= 0) {
                                 currentOnDrop.value(item, to)
                             }
-                        } else if (currentOnLongPress.value != null) {
-                            // Deferred past the gesture: opening a menu
-                            // synchronously inside UP-handling lets the
-                            // in-flight UP interact with the newborn UI
-                            // (instant suicide-dismiss or phantom clicks).
-                            val cb = currentOnLongPress.value
-                            scope.launch {
-                                kotlinx.coroutines.delay(50)
-                                cb?.invoke(item)
+                        } else {
+                            // No move: adopt a remote update that arrived
+                            // during the press instead of dropping it until
+                            // the next list refresh.
+                            val pending = pendingReset.value
+                            if (pending != null) {
+                                order.value = pending
+                                pendingReset.value = null
+                            } else {
+                                order.value = latestItems.value
+                            }
+                            if (currentOnLongPress.value != null) {
+                                // Deferred past the gesture: opening a menu
+                                // synchronously inside UP-handling lets the
+                                // in-flight UP interact with the newborn UI
+                                // (instant suicide-dismiss or phantom clicks).
+                                val cb = currentOnLongPress.value
+                                scope.launch {
+                                    kotlinx.coroutines.delay(50)
+                                    cb?.invoke(item)
+                                }
                             }
                         }
                     }

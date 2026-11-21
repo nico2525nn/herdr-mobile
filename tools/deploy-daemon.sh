@@ -14,26 +14,30 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 WORK="${WORK:-$HOME/herdr-mobile-work}"
 SERVICE="${SERVICE:-herdr-mobile-daemon}"
 HEALTH="${HEALTH:-http://127.0.0.1:8765/v1/health}"
+token_from_env_text() {
+  printf '%s' "$1" | tr ' ' '\n' |
+    sed -n 's/^HERDR_MOBILE_TOKEN=//p' | tr -d '"' | head -n1
+}
+
 resolve_deploy_token() {
-  local token="" env exec envfiles file
+  local token="" exec env envfiles file
   if [[ -n "${HERDR_MOBILE_TOKEN:-}" ]]; then
     printf '%s' "$HERDR_MOBILE_TOKEN"
     return
   fi
   command -v systemctl >/dev/null 2>&1 || return
-  # systemd may hold the token in Environment=, an EnvironmentFile=, or the
-  # daemon's own --token argument. Health rejects unauthenticated calls when
-  # any of them is configured; missing it looked like a broken daemon.
-  env="$(systemctl --user show "$SERVICE" -p Environment --value 2>/dev/null || true)"
-  token="$(printf '%s' "$env" | tr ' ' '\n' |
-    sed -n 's/^HERDR_MOBILE_TOKEN=//p' | tr -d '"' | head -n1)"
+  # Match the daemon's own priority: --token wins over the environment, and
+  # the environment comes from Environment= plus EnvironmentFile(s).
+  exec="$(systemctl --user show "$SERVICE" -p ExecStart --value 2>/dev/null || true)"
+  token="$(printf '%s' "$exec" |
+    sed -n 's/.*--token[= ]\([^ ;"]*\).*/\1/p' | tr -d '"' | head -n1)"
   if [[ -z "$token" ]]; then
-    exec="$(systemctl --user show "$SERVICE" -p ExecStart --value 2>/dev/null || true)"
-    token="$(printf '%s' "$exec" |
-      sed -n 's/.*--token[= ]\([^ ;"]*\).*/\1/p' | tr -d '"' | head -n1)"
+    env="$(systemctl --user show "$SERVICE" -p Environment --value 2>/dev/null || true)"
+    token="$(token_from_env_text "$env")"
   fi
   if [[ -z "$token" ]]; then
-    envfiles="$(systemctl --user show "$SERVICE" -p EnvironmentFile --value 2>/dev/null || true)"
+    # systemd exposes this property as EnvironmentFiles (plural).
+    envfiles="$(systemctl --user show "$SERVICE" -p EnvironmentFiles --value 2>/dev/null || true)"
     for file in $envfiles; do
       [[ -r "$file" ]] || continue
       token="$(sed -n 's/^[[:space:]]*\(export[[:space:]]\{1,\}\)\?HERDR_MOBILE_TOKEN=//p' "$file" |
@@ -76,12 +80,31 @@ if [[ "${NO_RESTART:-0}" == "1" ]]; then
   exit 0
 fi
 
+health_curl() {
+  local token="$1" url="$2"
+  if [[ -n "$token" ]]; then
+    # Do not put the bearer in curl's argv: /proc/<pid>/cmdline is readable.
+    printf 'header = "Authorization: Bearer %s"\n' "$token" |
+      curl -fsS --max-time 2 --config - "$url"
+  else
+    curl -fsS --max-time 2 "$url"
+  fi
+}
+
+health_body() {
+  health_curl "$TOKEN" "$HEALTH" 2>/dev/null
+}
+
 if [[ -z "$TOKEN" ]]; then
   HEALTH_CODE="$(curl -s -o /dev/null -w '%{http_code}' --max-time 2 "$HEALTH" 2>/dev/null || true)"
   if [[ "$HEALTH_CODE" == "401" ]]; then
     die "the health endpoint requires a bearer token, but none could be resolved.
-deploy: set HERDR_MOBILE_TOKEN (or put it in Environment=/EnvironmentFile=/--token)."
+deploy: set HERDR_MOBILE_TOKEN (or put it in Environment=/EnvironmentFiles=/--token)."
   fi
+elif ! health_body >/dev/null; then
+  # A new unit token legitimately differs from the still-running daemon;
+  # warn instead of blocking the restart that applies it.
+  echo "deploy: warning: resolved bearer was rejected by the running daemon; the restart will apply the unit's current value" >&2
 fi
 
 echo "== restarting $SERVICE"
@@ -101,11 +124,8 @@ RESTORING=1
 systemctl --user restart "$SERVICE"
 
 health_ok() {
-  local body args=(-fsS --max-time 2)
-  if [[ -n "$TOKEN" ]]; then
-    args+=(-H "Authorization: Bearer $TOKEN")
-  fi
-  body="$(curl "${args[@]}" "$HEALTH" 2>/dev/null)" || return 1
+  local body
+  body="$(health_body)" || return 1
   # Parse the top-level JSON flags, not a substring match: a nested field or
   # an error body mentioning "true" must not pass as a healthy daemon.
   printf '%s' "$body" |
@@ -119,11 +139,7 @@ for _ in $(seq 1 20); do
   if health_ok; then
     RESTORING=0
     trap - EXIT INT TERM
-    if [[ -n "$TOKEN" ]]; then
-      echo "== healthy: $(curl -s --max-time 2 -H "Authorization: Bearer $TOKEN" "$HEALTH" | head -c 120)"
-    else
-      echo "== healthy: $(curl -s --max-time 2 "$HEALTH" | head -c 120)"
-    fi
+    echo "== healthy: $(health_body | head -c 120)"
     exit 0
   fi
   sleep 0.5

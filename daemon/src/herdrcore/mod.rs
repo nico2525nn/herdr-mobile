@@ -1,5 +1,6 @@
 use std::collections::HashMap;
 use std::path::PathBuf;
+use std::sync::Arc;
 
 use anyhow::{anyhow, bail, Context, Result};
 use serde_json::{json, Value};
@@ -26,6 +27,9 @@ const TAB_ORDER_LABEL: &str = "herdr.tab_order";
 #[derive(Clone, Debug)]
 pub struct CoreClient {
     socket_path: PathBuf,
+    /// Serializes label read/update/compensation. Cloned clients share it, so
+    /// two HTTP reorder requests cannot restore over each other's success.
+    reorder_lock: Arc<tokio::sync::Mutex<()>>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -140,7 +144,10 @@ const CORE_STREAM_IDLE_TIMEOUT: Duration = Duration::from_secs(45);
 
 impl CoreClient {
     pub fn new(socket_path: impl Into<PathBuf>) -> Self {
-        Self { socket_path: socket_path.into() }
+        Self {
+            socket_path: socket_path.into(),
+            reorder_lock: Arc::new(tokio::sync::Mutex::new(())),
+        }
     }
 
     pub fn socket_path(&self) -> &PathBuf {
@@ -388,30 +395,29 @@ impl CoreClient {
         key: &str,
         updates: &[(String, Option<i64>, i64)],
     ) -> Result<()> {
-        let mut applied: Vec<&(String, Option<i64>, i64)> = Vec::new();
         for update in updates {
             let mut labels = serde_json::Map::new();
             labels.insert(key.to_owned(), Value::String(update.2.to_string()));
-            match self.label(&update.0, Value::Object(labels)).await {
-                Ok(_) => applied.push(update),
-                Err(error) => {
-                    for done in applied.into_iter().rev() {
-                        let mut labels = serde_json::Map::new();
-                        labels.insert(
-                            key.to_owned(),
-                            Value::String(done.1.unwrap_or(i64::MAX).to_string()),
+            if let Err(error) = self.label(&update.0, Value::Object(labels)).await {
+                // A failed response does not prove the write did not land
+                // (timeout/lost reply). Restore EVERY target, not only RPCs
+                // that answered Ok, so an uncertain last write is covered too.
+                for done in updates.iter().rev() {
+                    let mut labels = serde_json::Map::new();
+                    labels.insert(
+                        key.to_owned(),
+                        Value::String(done.1.unwrap_or(i64::MAX).to_string()),
+                    );
+                    if let Err(restore_error) =
+                        self.label(&done.0, Value::Object(labels)).await
+                    {
+                        tracing::warn!(
+                            "cannot restore {key} label on {}: {restore_error:#}",
+                            done.0
                         );
-                        if let Err(restore_error) =
-                            self.label(&done.0, Value::Object(labels)).await
-                        {
-                            tracing::warn!(
-                                "cannot restore {key} label on {}: {restore_error:#}",
-                                done.0
-                            );
-                        }
                     }
-                    return Err(error);
                 }
+                return Err(error);
             }
         }
         Ok(())
@@ -421,6 +427,7 @@ impl CoreClient {
     /// space. Core has no native ordering method; labels are the durable,
     /// restart-safe source `translate_snapshot` sorts by.
     pub async fn move_workspace(&self, workspace_id: &str, insert_index: i64) -> Result<()> {
+        let _guard = self.reorder_lock.lock().await;
         let terminals = self.list(false).await?;
         let mut order = ordered_workspace_ids(&terminals);
         let Some(from) = order.iter().position(|id| id == workspace_id) else {
@@ -449,6 +456,7 @@ impl CoreClient {
 
     /// Reorder tabs inside one workspace using the same label mechanism.
     pub async fn move_tab(&self, tab_id: &str, insert_index: i64) -> Result<()> {
+        let _guard = self.reorder_lock.lock().await;
         let terminals = self.list(false).await?;
         let workspace = terminals
             .iter()
@@ -461,7 +469,7 @@ impl CoreClient {
             .filter(|t| workspace_id_of(t).as_deref() == Some(workspace.as_str()))
             .cloned()
             .collect();
-        let mut order = ordered_ids(&scoped, tab_id_of, TAB_ORDER_LABEL);
+        let mut order = ordered_tab_ids(&scoped);
         let Some(from) = order.iter().position(|id| id == tab_id) else {
             bail!("not_found: tab {tab_id}");
         };
@@ -841,22 +849,41 @@ fn order_label(labels: &Value, key: &str) -> i64 {
         .unwrap_or(i64::MAX)
 }
 
-fn ordered_ids(
+fn aggregate_order(
     terminals: &[Value],
     id_of: impl Fn(&Value) -> Option<String>,
     order_key: &str,
-) -> Vec<String> {
-    let mut seen: HashMap<String, (usize, i64)> = HashMap::new();
-    for (index, terminal) in terminals.iter().enumerate() {
+) -> HashMap<String, i64> {
+    let mut orders: HashMap<String, i64> = HashMap::new();
+    for terminal in terminals {
         let Some(id) = id_of(terminal) else { continue };
         let labels = terminal.get("labels").unwrap_or(&Value::Null);
         let order = order_label(labels, order_key);
-        seen.entry(id)
-            .and_modify(|entry| entry.1 = entry.1.min(order))
-            .or_insert((index, order));
+        orders
+            .entry(id)
+            .and_modify(|current| *current = (*current).min(order))
+            .or_insert(order);
     }
-    let mut ids: Vec<(String, (usize, i64))> = seen.into_iter().collect();
-    ids.sort_by_key(|(_, (index, order))| (*order, *index));
+    orders
+}
+
+fn ordered_tab_ids(terminals: &[Value]) -> Vec<String> {
+    let tab_orders = aggregate_order(terminals, tab_id_of, TAB_ORDER_LABEL);
+    let mut seen: HashMap<String, (i64, usize)> = HashMap::new();
+    for (index, terminal) in terminals.iter().enumerate() {
+        let Some(id) = tab_id_of(terminal) else { continue };
+        let order = tab_orders.get(&id).copied().unwrap_or(i64::MAX);
+        let key = (order, index);
+        seen.entry(id)
+            .and_modify(|current| {
+                if key < *current {
+                    *current = key;
+                }
+            })
+            .or_insert(key);
+    }
+    let mut ids: Vec<(String, (i64, usize))> = seen.into_iter().collect();
+    ids.sort_by_key(|(_, key)| *key);
     ids.into_iter().map(|(id, _)| id).collect()
 }
 
@@ -865,19 +892,19 @@ fn ordered_ids(
 /// by `(space_order, index)` desynchronized the saved order from the rendered
 /// order whenever two spaces had equal space labels.
 fn ordered_workspace_ids(terminals: &[Value]) -> Vec<String> {
-    // A workspace's position in translate_snapshot is the minimum
-    // (space_order, tab_order, terminal index) over all of its terminals.
-    // Using the first terminal's index instead of the index of the terminal
-    // with the winning tab_order still diverged when tabs tied on order.
+    // translate_snapshot aggregates space_order per workspace and tab_order
+    // per tab, then sorts terminals. Reusing raw per-terminal labels here
+    // picked a different terminal when a group had mixed order labels.
+    let spaces = aggregate_order(terminals, workspace_id_of, SPACE_ORDER_LABEL);
+    let tabs = aggregate_order(terminals, tab_id_of, TAB_ORDER_LABEL);
     let mut seen: HashMap<String, (i64, i64, usize)> = HashMap::new();
     for (index, terminal) in terminals.iter().enumerate() {
         let Some(id) = workspace_id_of(terminal) else { continue };
-        let labels = terminal.get("labels").unwrap_or(&Value::Null);
-        let key = (
-            order_label(labels, SPACE_ORDER_LABEL),
-            order_label(labels, TAB_ORDER_LABEL),
-            index,
-        );
+        let space = spaces.get(&id).copied().unwrap_or(i64::MAX);
+        let tab = tab_id_of(terminal)
+            .and_then(|tab| tabs.get(&tab).copied())
+            .unwrap_or(i64::MAX);
+        let key = (space, tab, index);
         seen.entry(id)
             .and_modify(|current| {
                 if key < *current {
@@ -1162,6 +1189,22 @@ mod tests {
         let rendered: Vec<_> = snapshot.workspaces.iter().map(|w| w.id.as_str()).collect();
         assert_eq!(rendered, ["B", "A"]);
         assert_eq!(ordered_workspace_ids(&terminals), ["B", "A"]);
+    }
+
+    #[test]
+    fn reorder_uses_snapshot_aggregated_group_keys() {
+        // A's winning space_order and tab_order live on different terminals.
+        // The snapshot aggregates each key per group; a per-terminal minimum
+        // tuple picks A's (0,5,2) instead of the rendered (0,0,0).
+        let terminals = vec![
+            json!({"address":"a1","labels":{"herdr.space":"A","herdr.space_order":5,"herdr.tab":"a1","herdr.tab_order":0}}),
+            json!({"address":"b1","labels":{"herdr.space":"B","herdr.space_order":0,"herdr.tab":"b1","herdr.tab_order":0}}),
+            json!({"address":"a2","labels":{"herdr.space":"A","herdr.space_order":0,"herdr.tab":"a2","herdr.tab_order":5}}),
+        ];
+        let snapshot = translate_snapshot(1, &terminals, None, None, &std::collections::HashMap::new());
+        let rendered: Vec<_> = snapshot.workspaces.iter().map(|w| w.id.as_str()).collect();
+        assert_eq!(rendered, ["A", "B"]);
+        assert_eq!(ordered_workspace_ids(&terminals), ["A", "B"]);
     }
 
     #[test]

@@ -50,6 +50,8 @@ class NotificationRelay(
     private data class NotifiedState(
         val status: AgentStatus,
         val workspaceId: String?,
+        /** Seq of the live event that recorded this; -1 for persisted state. */
+        val seq: Long = -1,
     )
 
     // Concurrent: the event path and the snapshot-diff path run on
@@ -147,6 +149,9 @@ class NotificationRelay(
                 }
                 synchronized(transitionLock) {
                     if (epoch != resetEpoch) return@collect
+                    if (state.connectionEpoch != client.state.value.connectionEpoch) {
+                        return@collect
+                    }
                     if (!acceptSeqLocked(snapshot.seq, state.connectionEpoch)) return@collect
                     val current = snapshot.workspaces
                         .flatMap { it.tabs }
@@ -155,46 +160,64 @@ class NotificationRelay(
                     if (!seeded) {
                         // After a host switch the persisted map belongs to the
                         // old host; seed silently instead of diffing two hosts.
-                        if (persisted.isEmpty()) {
-                            for (pane in snapshot.workspaces.flatMap { it.tabs }.flatMap { it.panes }) {
-                                lastNotified[pane.id] =
-                                    NotifiedState(pane.status, pane.workspaceId)
-                            }
-                        } else {
-                            for (pane in snapshot.workspaces.flatMap { it.tabs }.flatMap { it.panes }) {
-                                val old = persisted[pane.id]
-                                // An event processed while the persisted map
-                                // was loading is newer than this snapshot.
-                                val live = lastNotified[pane.id]
-                                if (live != null && live.status != pane.status) continue
-                                lastNotified[pane.id] =
-                                    NotifiedState(pane.status, pane.workspaceId)
-                                if (old != null && old.status != pane.status) {
-                                    // Changed while dead: retract the stale shade
-                                    // entry, then alert the new state once.
-                                    HerdrNotifications.dismissPane(context, old.workspaceId, pane.id)
-                                    val tab = snapshot.tab(pane.tabId)
-                                    val workspace = snapshot.workspace(pane.workspaceId)
-                                    maybeNotify(
-                                        SemanticEvent(
-                                            seq = snapshot.seq,
-                                            type = SemanticEvent.TYPE_PANE_STATUS_CHANGED,
-                                            workspaceId = pane.workspaceId,
-                                            tabId = pane.tabId,
-                                            paneId = pane.id,
-                                            status = pane.status,
-                                        ),
-                                        workspace?.label,
-                                        tab?.displayLabel,
+                        for (pane in snapshot.workspaces.flatMap { it.tabs }.flatMap { it.panes }) {
+                            val live = lastNotified[pane.id]
+                            val old = persisted[pane.id]
+                            if (live != null) {
+                                // A live event processed while the persisted
+                                // map was loading is newer unless this snapshot
+                                // has a higher seq. Never overwrite it blindly:
+                                // that left a DONE alert alive when the newer
+                                // snapshot said working.
+                                if (live.seq > snapshot.seq) continue
+                                if (live.status != pane.status) {
+                                    val event = SemanticEvent(
+                                        seq = snapshot.seq,
+                                        type = SemanticEvent.TYPE_PANE_STATUS_CHANGED,
+                                        workspaceId = pane.workspaceId,
+                                        tabId = pane.tabId,
+                                        paneId = pane.id,
+                                        status = pane.status,
                                     )
-                                }
-                            }
-                            for ((paneId, old) in persisted) {
-                                if (!current.containsKey(paneId)) {
-                                    HerdrNotifications.dismissPane(
-                                        context, old.workspaceId, paneId,
+                                    transitionAndNotify(
+                                        pane.id,
+                                        pane.status,
+                                        pane.workspaceId,
+                                        event,
+                                        connectionEpoch = state.connectionEpoch,
                                     )
+                                } else {
+                                    lastNotified[pane.id] = live.copy(seq = snapshot.seq)
                                 }
+                                continue
+                            }
+                            lastNotified[pane.id] =
+                                NotifiedState(pane.status, pane.workspaceId, snapshot.seq)
+                            if (old != null && old.status != pane.status) {
+                                // Changed while dead: retract the stale shade
+                                // entry, then alert the new state once.
+                                HerdrNotifications.dismissPane(context, old.workspaceId, pane.id)
+                                val tab = snapshot.tab(pane.tabId)
+                                val workspace = snapshot.workspace(pane.workspaceId)
+                                maybeNotify(
+                                    SemanticEvent(
+                                        seq = snapshot.seq,
+                                        type = SemanticEvent.TYPE_PANE_STATUS_CHANGED,
+                                        workspaceId = pane.workspaceId,
+                                        tabId = pane.tabId,
+                                        paneId = pane.id,
+                                        status = pane.status,
+                                    ),
+                                    workspace?.label,
+                                    tab?.displayLabel,
+                                )
+                            }
+                        }
+                        for ((paneId, old) in persisted) {
+                            if (!current.containsKey(paneId)) {
+                                HerdrNotifications.dismissPane(
+                                    context, old.workspaceId, paneId,
+                                )
                             }
                         }
                         persistLocked()
@@ -274,7 +297,7 @@ class NotificationRelay(
         if (prev != null) {
             HerdrNotifications.dismissPane(context, prev.workspaceId, paneId)
         }
-        lastNotified[paneId] = NotifiedState(status, workspaceId)
+        lastNotified[paneId] = NotifiedState(status, workspaceId, event.seq)
         persistLocked()
         maybeNotify(event, workspaceLabel, tabLabel)
         true

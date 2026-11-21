@@ -96,9 +96,25 @@ session_sock() {
   "$HERDR" --session "$PRIVATE_SESSION" status 2>/dev/null |
     awk '/^[[:space:]]*socket:/ { print $2; exit }'
 }
+# 0 = running, 1 = stopped/absent, 2 = could not ask.
+session_state() {
+  local out
+  out="$("$HERDR" session list 2>/dev/null)" || return 2
+  printf '%s' "$out" |
+    awk -v name="$PRIVATE_SESSION" '
+      $1 == name {
+        found = 1
+        if ($2 == "running") running = 1
+      }
+      END {
+        if (running) exit 0
+        if (found) exit 1
+        exit 1
+      }'
+}
+
 session_running() {
-  "$HERDR" --session "$PRIVATE_SESSION" api snapshot 2>/dev/null |
-    grep -q '"session_snapshot"'
+  session_state
 }
 
 daemon_json() {
@@ -146,30 +162,30 @@ live_session_state() {
     awk '$1 == "default" && $2 == "running" { found = 1 } END { exit !found }'
 }
 
-redacted_cmdline() {
-  pid_cmdline "$1" |
-    sed -E 's/(--token[= ])[^ ]+/\1<redacted>/g; s/(HERDR_MOBILE_TOKEN=)[^ ]+/\1<redacted>/g'
-}
-
-pid_cmdline() {
-  local pid="$1"
-  if [[ -r "/proc/$pid/cmdline" ]]; then
-    tr '\0' ' ' < "/proc/$pid/cmdline"
-  else
-    ps -o command= -p "$pid" 2>/dev/null || true
-  fi
+proc_exe() {
+  readlink "/proc/$1/exe" 2>/dev/null || printf 'unknown'
 }
 
 is_our_daemon() {
-  local pid="$1" cmd sock
-  cmd="$(pid_cmdline "$pid")"
+  local pid="$1" sock expected_bind args=() arg i bind="" socket=""
+  [[ -r "/proc/$pid/cmdline" ]] || return 1
+  mapfile -d '' -t args < "/proc/$pid/cmdline" 2>/dev/null || return 1
+  ((${#args[@]} > 0)) || return 1
+  [[ "$(basename -- "${args[0]}")" == "herdr-mobile-daemon" ]] || return 1
+  expected_bind="127.0.0.1:${PRIVATE_PORT}"
   sock="$(session_dir)/herdr.sock"
-  # Match the exact private socket as well as the port. A real daemon that
-  # happens to listen on the same loopback port is never ours and must not be
-  # killed by the stale-run guard.
-  [[ "$cmd" == *herdr-mobile-daemon* &&
-     "$cmd" == *"127.0.0.1:${PRIVATE_PORT}"* &&
-     "$cmd" == *"$sock"* ]]
+  # Argument-boundary comparison: a substring match killed a process whose
+  # --herdr-socket merely started with our path (e.g. herdr.sock.other).
+  for ((i = 0; i < ${#args[@]}; i++)); do
+    arg="${args[i]}"
+    case "$arg" in
+      --bind) bind="${args[i + 1]:-}" ;;
+      --bind=*) bind="${arg#--bind=}" ;;
+      --herdr-socket) socket="${args[i + 1]:-}" ;;
+      --herdr-socket=*) socket="${arg#--herdr-socket=}" ;;
+    esac
+  done
+  [[ "$bind" == "$expected_bind" && "$socket" == "$sock" ]]
 }
 
 pid_on_private_port() {
@@ -228,7 +244,7 @@ stop_private_daemon() {
       info "stopping stale private daemon (pid $pid)"
       kill_pid "$pid"
     else
-      die "pid $pid from $PIDFILE is not the private daemon: $(redacted_cmdline "$pid")"
+      die "pid $pid from $PIDFILE is not the private daemon: $(proc_exe "$pid")"
     fi
   fi
   rm -f "$PIDFILE"
@@ -243,7 +259,7 @@ ci: refusing to start a second daemon on it; stop the listener or set PRIVATE_PO
       info "stopping stale private daemon on port $PRIVATE_PORT (pid $pid)"
       kill_pid "$pid"
     else
-      die "port $PRIVATE_PORT is already held by pid $pid: $(redacted_cmdline "$pid")
+      die "port $PRIVATE_PORT is already held by pid $pid: $(proc_exe "$pid")
 ci: refusing to kill an unrelated process; stop it or set PRIVATE_PORT"
     fi
   fi
@@ -276,20 +292,39 @@ stop_private_session() {
     info "not stopping session '$PRIVATE_SESSION': no CI marker"
     return 0
   fi
-  if session_running; then
+  if session_state; then
     close_private_workspaces
     info "stopping private herdr session '$PRIVATE_SESSION'"
     "$HERDR" --session "$PRIVATE_SESSION" server stop >/dev/null 2>&1 || true
     for _ in $(seq 1 100); do
-      session_running || break
+      if ! session_state; then break; fi
       sleep 0.1
     done
+  else
+    local state=$?
+    if (( state == 2 )); then
+      printf "ci: cannot verify whether session '%s' stopped; keeping its CI marker\n" \
+        "$PRIVATE_SESSION" >&2
+      return 1
+    fi
+  fi
+  if session_state; then
+    printf "ci: session '%s' is still responding after stop; keeping its CI marker\n" \
+      "$PRIVATE_SESSION" >&2
+    return 1
+  else
+    local final_state=$?
+    if (( final_state == 2 )); then
+      printf "ci: cannot verify that session '%s' stopped; keeping its CI marker\n" \
+        "$PRIVATE_SESSION" >&2
+      return 1
+    fi
   fi
   if [[ -d "$dir" ]]; then
     if [[ -e "$dir/.ci-owned" ]]; then
       "$HERDR" session delete "$PRIVATE_SESSION" >/dev/null 2>&1 || true
-      # session delete only handles sessions herdr knows about; an orphaned dir
-      # left by a hard kill is ours (marker) and must not wedge the next run.
+      # Only remove the directory once the session is confirmed stopped. A
+      # still-running server would lose its ownership marker here.
       if [[ -d "$dir" ]]; then
         rm -rf "$dir"
       fi
@@ -297,6 +332,7 @@ stop_private_session() {
       info "warning: $dir has no CI marker; leaving it alone"
     fi
   fi
+  return 0
 }
 
 read_override_state() {
