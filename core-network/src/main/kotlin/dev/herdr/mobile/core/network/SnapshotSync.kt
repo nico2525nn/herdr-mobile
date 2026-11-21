@@ -18,6 +18,9 @@ import kotlinx.serialization.json.JsonPrimitive
  * Every public entry point carries the link generation it was started with. Anything that
  * arrives after a redial is dropped before it can touch the cache or the notification bus.
  */
+/** One semantic event plus the connection attempt that produced it. */
+data class StampedEvent(val connectionEpoch: Long, val event: SemanticEvent)
+
 internal class SnapshotSync(
     private val state: LinkState,
     private val transport: DaemonTransport,
@@ -46,12 +49,23 @@ internal class SnapshotSync(
     )
     val events: SharedFlow<SemanticEvent> = _events
 
+    private val _stampedEvents = MutableSharedFlow<StampedEvent>(
+        replay = 0,
+        extraBufferCapacity = 64,
+        onBufferOverflow = BufferOverflow.DROP_OLDEST,
+    )
+    val stampedEvents: SharedFlow<StampedEvent> = _stampedEvents
+
     /**
      * Collect the event stream for [generation] until it dies (throws) or the link is
      * replaced. `stream.ready` carries the daemon cursor with no replay, so a cursor that
      * moved past our snapshot forces a refetch before consuming.
      */
-    suspend fun consume(generation: Long, onStreamEvent: () -> Unit = {}) {
+    suspend fun consume(
+        generation: Long,
+        connectionEpoch: Long = state.currentConnectionEpoch(),
+        onStreamEvent: () -> Unit = {},
+    ) {
         if (!state.isCurrent(generation)) {
             throw DaemonException("not_connected", "Connection was replaced")
         }
@@ -72,7 +86,7 @@ internal class SnapshotSync(
                     // by the retry policy to reset backoff only once a stream
                     // actually delivers an event.
                     onStreamEvent()
-                    applyEvent(signal.event, generation)
+                    applyEvent(signal.event, generation, connectionEpoch)
                 }
 
                 is EventSocket.Signal.Closed ->
@@ -81,8 +95,12 @@ internal class SnapshotSync(
         }
     }
 
-    suspend fun applyEvent(event: SemanticEvent, generation: Long) {
-        if (!accept(event, generation)) return
+    suspend fun applyEvent(
+        event: SemanticEvent,
+        generation: Long,
+        connectionEpoch: Long = state.currentConnectionEpoch(),
+    ) {
+        if (!accept(event, generation, connectionEpoch)) return
         var outcome: SnapshotReducer.Outcome? = null
         val updated = state.update(generation) { current ->
             val snapshot = current.snapshot ?: return@update current
@@ -105,7 +123,10 @@ internal class SnapshotSync(
         }
         if (!updated) return
         // Publish only after the fold, and only while this link is still live.
-        if (state.isCurrent(generation)) _events.tryEmit(event)
+        if (state.isCurrent(generation)) {
+            _events.tryEmit(event)
+            _stampedEvents.tryEmit(StampedEvent(connectionEpoch, event))
+        }
         when (val result = outcome) {
             is SnapshotReducer.Outcome.Applied -> {
                 // Consistency tick: the reducer already advanced the cursor (ticks fold as
@@ -177,8 +198,8 @@ internal class SnapshotSync(
      * Emit the event and record stream activity, atomically with the generation check.
      * Returns false when the event belongs to a link that has already been replaced.
      */
-    private fun accept(event: SemanticEvent, generation: Long): Boolean =
-        state.acceptActivity(generation) { }
+    private fun accept(event: SemanticEvent, generation: Long, connectionEpoch: Long): Boolean =
+        state.acceptActivity(generation, connectionEpoch) { }
 
     private suspend fun fetchSnapshot() =
         transport.snapshot(

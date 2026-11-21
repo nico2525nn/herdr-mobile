@@ -77,6 +77,11 @@ fun <T> rememberReorderState(
         ) {
             order.value = items
             pendingReset.value = null
+        } else if (pendingReset.value != null) {
+            // A rollback is pending and the server sent a newer list while
+            // the finger was still down. Keep the newest one, not the list
+            // captured at rejection time, for the drag-end apply.
+            pendingReset.value = items
         }
     }
     val dragOffsetPx = remember { mutableFloatStateOf(0f) }

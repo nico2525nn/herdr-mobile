@@ -22,4 +22,13 @@ class DragAxisTest {
     fun `a diagonal stays unclaimed`() {
         assertEquals(DragAxis.NONE, resolveDragAxis(40f, 35f, 16f))
     }
+
+    @Test
+    fun `a horizontal lead below the pager threshold does not end a dual-key flick`() {
+        // 1.6x slop horizontally is HORIZONTAL for the generic classifier, but
+        // the key must keep waiting: the pager only decides at 2x slop, and a
+        // subsequent deep downward move is a PGDN flick.
+        assertEquals(DragAxis.NONE, keyDragAxis(25.6f, 0f, 16f))
+        assertEquals(DragAxis.VERTICAL, keyDragAxis(25.6f, 80f, 16f))
+    }
 }

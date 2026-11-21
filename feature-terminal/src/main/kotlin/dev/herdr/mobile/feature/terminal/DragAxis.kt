@@ -22,3 +22,16 @@ internal fun resolveDragAxis(dx: Float, dy: Float, threshold: Float): DragAxis {
         else -> DragAxis.NONE
     }
 }
+
+/**
+ * A dual-action key only ever claims a vertical gesture. A horizontal lead
+ * below the pager's 2x-slop threshold is left unclaimed so the same gesture can
+ * still become a downward flick; once the pager claims it, consumption cancels
+ * the key detector.
+ */
+internal fun keyDragAxis(dx: Float, dy: Float, slop: Float): DragAxis =
+    if (resolveDragAxis(dx, dy, slop * 1.5f) == DragAxis.VERTICAL) {
+        DragAxis.VERTICAL
+    } else {
+        DragAxis.NONE
+    }

@@ -53,6 +53,7 @@ class SettingsRepositoryImpl(
      * in DataStore.
      */
     private val updateMutex = kotlinx.coroutines.sync.Mutex()
+    private val profileMutex = kotlinx.coroutines.sync.Mutex()
 
     // These MUST be declared before init: property initializers run in source
     // order, and load() runs on another dispatcher. Launching it first let a
@@ -111,6 +112,9 @@ class SettingsRepositoryImpl(
         val raw = encodeNotifiedMap(map)
         context.dataStore.edit { prefs -> prefs[SettingsKeys.NOTIFIED_MAP] = raw }
     }
+
+    override suspend fun <T> withProfileLock(block: suspend () -> T): T =
+        profileMutex.withLock { block() }
 
     override suspend fun update(transform: (AppSettings) -> AppSettings) {
         loaded.await()
@@ -175,13 +179,14 @@ class SettingsRepositoryImpl(
             resolved
         }
 
-    override suspend fun acceptHostKey(profileId: String, knownHostsLine: String): String {
-        val current = _settings.value.hostProfiles.firstOrNull { it.id == profileId }
-            ?: throw IllegalArgumentException("No such profile: $profileId")
-        val alias = storeKnownHosts(current.hostKeyAlias, knownHostsLine.trim())
-        updateProfile(current.copy(hostKeyAlias = alias))
-        return alias
-    }
+    override suspend fun acceptHostKey(profileId: String, knownHostsLine: String): String =
+        profileMutex.withLock {
+            val current = _settings.value.hostProfiles.firstOrNull { it.id == profileId }
+                ?: throw IllegalArgumentException("No such profile: $profileId")
+            val alias = storeKnownHosts(current.hostKeyAlias, knownHostsLine.trim())
+            updateProfile(current.copy(hostKeyAlias = alias))
+            alias
+        }
 
     override suspend fun addProfile(profile: HostProfile) {
         preservedProfilesRaw = null
@@ -198,6 +203,7 @@ class SettingsRepositoryImpl(
     }
 
     override suspend fun removeProfile(profileId: String) {
+        profileMutex.withLock {
         val current = _settings.value.hostProfiles.firstOrNull { it.id == profileId }
         val keyAlias = current?.privateKeyAlias
         val tokenAlias = current?.bearerTokenAlias
@@ -219,6 +225,7 @@ class SettingsRepositoryImpl(
         runCatching { tokenAlias?.let { deleteBearerToken(it) } }
         runCatching { hostAlias?.let { secrets.delete(it) } }
         runCatching { passwordSecretAlias?.let { deleteSshPassword(it) } }
+        }
     }
 
     override suspend fun setActiveProfile(profileId: String?) {

@@ -140,6 +140,10 @@ internal class LinkLifecycle(
     private suspend fun run(generation: Long) {
         val backoff = BackoffSequence(policy, jitter)
         while (coroutineContext.isActive && state.isCurrent(generation) && !state.targetInvalidated) {
+            // Automatic retries keep the same link generation, but each new
+            // daemon stream may restart seq at 0. Stamp this attempt so event
+            // and snapshot consumers can reset their cursor.
+            val connectionEpoch = state.beginConnection(generation) ?: return
             try {
                 state.update(generation) {
                     it.copy(
@@ -181,7 +185,7 @@ internal class LinkLifecycle(
                 // the initial 500ms forever. Only a delivered event proves the
                 // long-lived stream is healthy.
                 var streamProven = false
-                sync.consume(generation) {
+                sync.consume(generation, connectionEpoch) {
                     if (!streamProven) {
                         streamProven = true
                         backoff.reset()

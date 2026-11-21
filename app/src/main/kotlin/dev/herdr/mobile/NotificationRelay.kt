@@ -2,6 +2,7 @@ package dev.herdr.mobile
 
 import android.content.Context
 import dev.herdr.mobile.core.model.AgentStatus
+import dev.herdr.mobile.core.model.ConnectionState
 import dev.herdr.mobile.core.model.SemanticEvent
 import dev.herdr.mobile.core.model.UiFocusState
 import dev.herdr.mobile.core.network.HerdrClient
@@ -88,21 +89,29 @@ class NotificationRelay(
             persistRequests.filterNotNull().collectLatest { runCatching { settings.saveNotified(it) } }
         }
         scope.launch {
-            client.events.collect { event ->
+            client.stampedEvents.collect { stamped ->
+                val event = stamped.event
                 val paneId = event.paneId
-                if (!event.isAlertWorthy || paneId == null) {
-                    // Still advance the cursor for uninteresting events; the
-                    // transition path below does seq + notification state in
-                    // one critical section.
-                    synchronized(transitionLock) { acceptSeqLocked(event.seq) }
+                val status = event.status
+                if (paneId == null || status == null) {
+                    // Still advance the cursor for non-status events; the
+                    // transition path does seq + notification state in one
+                    // critical section.
+                    synchronized(transitionLock) {
+                        acceptSeqLocked(event.seq, stamped.connectionEpoch)
+                    }
                     return@collect
                 }
-                val status = event.status ?: return@collect
-                transitionAndNotify(paneId, status, event.workspaceId, event)
+                // Process working/idle too, not only alert-worthy statuses:
+                // a DONE alert must be retracted as soon as the pane leaves
+                // done, even if no snapshot diff observed the intermediate.
+                transitionAndNotify(
+                    paneId, status, event.workspaceId, event,
+                    connectionEpoch = stamped.connectionEpoch,
+                )
             }
         }
         scope.launch {
-            var previous: Map<String, AgentStatus> = emptyMap()
             var seenEpoch = resetEpoch
             // Persisted map from the last process: diffed at seed so dead-window
             // completions alert once instead of being blanket-suppressed. Fresh
@@ -112,6 +121,10 @@ class NotificationRelay(
             // Values are "wire|workspaceId|tabId" (pre-dismiss builds wrote bare
             // wire — those parse with null ids and simply skip retraction).
             client.state.collect { state ->
+                // A snapshot left behind during a redial is not authoritative;
+                // processing it under the new connection epoch would reset the
+                // cursor and could replay stale alerts.
+                if (state.connection != ConnectionState.CONNECTED) return@collect
                 val snapshot = state.snapshot ?: return@collect
                 val epoch = resetEpoch
                 // The persisted map belongs to the last process and loading it
@@ -123,7 +136,6 @@ class NotificationRelay(
                     if (epoch != seenEpoch) {
                         seenEpoch = epoch
                         seeded = false
-                        previous = emptyMap()
                     }
                     !seeded && seenEpoch == 0
                 }
@@ -135,7 +147,7 @@ class NotificationRelay(
                 }
                 synchronized(transitionLock) {
                     if (epoch != resetEpoch) return@collect
-                    if (!acceptSeqLocked(snapshot.seq)) return@collect
+                    if (!acceptSeqLocked(snapshot.seq, state.connectionEpoch)) return@collect
                     val current = snapshot.workspaces
                         .flatMap { it.tabs }
                         .flatMap { it.panes }
@@ -143,7 +155,6 @@ class NotificationRelay(
                     if (!seeded) {
                         // After a host switch the persisted map belongs to the
                         // old host; seed silently instead of diffing two hosts.
-                        previous = current
                         if (persisted.isEmpty()) {
                             for (pane in snapshot.workspaces.flatMap { it.tabs }.flatMap { it.panes }) {
                                 lastNotified[pane.id] =
@@ -202,30 +213,32 @@ class NotificationRelay(
                         }
                         return@collect
                     }
-                    if (previous.isNotEmpty()) {
-                        for (pane in snapshot.workspaces.flatMap { it.tabs }.flatMap { it.panes }) {
-                            val old = previous[pane.id]
-                            if (old != null && old != pane.status) {
-                                val tab = snapshot.tab(pane.tabId)
-                                val workspace = snapshot.workspace(pane.workspaceId)
-                                val event = SemanticEvent(
-                                    seq = snapshot.seq,
-                                    type = SemanticEvent.TYPE_PANE_STATUS_CHANGED,
-                                    workspaceId = pane.workspaceId,
-                                    tabId = pane.tabId,
-                                    paneId = pane.id,
-                                    status = pane.status,
-                                )
-                                transitionAndNotify(
-                                    pane.id,
-                                    pane.status,
-                                    pane.workspaceId,
-                                    event,
-                                    workspace?.label,
-                                    tab?.displayLabel,
-                                )
-                            }
-                        }
+                    // Compare against what was actually notified, not the
+                    // previous snapshot: an event may have posted DONE and a
+                    // later snapshot may skip straight back to working. A
+                    // snapshot-only diff would see working == previous working
+                    // and leave the stale DONE alert in the shade.
+                    for (pane in snapshot.workspaces.flatMap { it.tabs }.flatMap { it.panes }) {
+                        if (lastNotified[pane.id]?.status == pane.status) continue
+                        val tab = snapshot.tab(pane.tabId)
+                        val workspace = snapshot.workspace(pane.workspaceId)
+                        val event = SemanticEvent(
+                            seq = snapshot.seq,
+                            type = SemanticEvent.TYPE_PANE_STATUS_CHANGED,
+                            workspaceId = pane.workspaceId,
+                            tabId = pane.tabId,
+                            paneId = pane.id,
+                            status = pane.status,
+                        )
+                        transitionAndNotify(
+                            pane.id,
+                            pane.status,
+                            pane.workspaceId,
+                            event,
+                            workspace?.label,
+                            tab?.displayLabel,
+                            connectionEpoch = state.connectionEpoch,
+                        )
                     }
                     // Panes that vanished take their dedupe keys with them.
                     val vanished = lastNotified.keys - current.keys
@@ -236,7 +249,6 @@ class NotificationRelay(
                         }
                     }
                     if (vanished.isNotEmpty()) persistLocked()
-                    previous = current
                 }
             }
         }
@@ -253,8 +265,9 @@ class NotificationRelay(
         event: SemanticEvent,
         workspaceLabel: String? = null,
         tabLabel: String? = null,
+        connectionEpoch: Long,
     ): Boolean = synchronized(transitionLock) {
-        if (!acceptSeqLocked(event.seq)) return@synchronized false
+        if (!acceptSeqLocked(event.seq, connectionEpoch)) return@synchronized false
         val prev = lastNotified[paneId]
         if (prev?.status == status) return@synchronized false
         // Leave-status first: a done/blocked alert for this pane is now stale.
@@ -288,8 +301,12 @@ class NotificationRelay(
      * seq at 0, so reset the high-water mark when the link generation changes;
      * otherwise every notification after a daemon restart is rejected.
      */
-    private fun acceptSeqLocked(seq: Long): Boolean =
-        cursor.accept(seq, client.linkGeneration)
+    private fun acceptSeqLocked(seq: Long, connectionEpoch: Long): Boolean {
+        // A queued event from the previous attempt must not be accepted under
+        // the new attempt's epoch (or reset the cursor back to the old one).
+        if (connectionEpoch != client.state.value.connectionEpoch) return false
+        return cursor.accept(seq, connectionEpoch)
+    }
 
     /** Write-through: transitions are rare; a conflating writer keeps order. */
     private fun persistLocked() {
@@ -333,9 +350,9 @@ internal class NotificationCursor {
     private var newest = -1L
     private var link = -1L
 
-    fun accept(seq: Long, linkGeneration: Long): Boolean {
-        if (linkGeneration != link) {
-            link = linkGeneration
+    fun accept(seq: Long, connectionEpoch: Long): Boolean {
+        if (connectionEpoch != link) {
+            link = connectionEpoch
             newest = -1L
         }
         if (seq < newest) return false

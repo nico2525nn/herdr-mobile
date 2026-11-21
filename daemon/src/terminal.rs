@@ -82,7 +82,6 @@ enum SessionCommand {
     Mouse(String, String, u32, u32),
     /// Absolute host-scroll offset (scrollbar drag), in rows from live.
     HostScroll(u64),
-    Release,
 }
 
 impl TerminalRegistry {
@@ -113,8 +112,20 @@ impl TerminalRegistry {
         };
         let mut closed = Vec::with_capacity(sessions.len());
         for session in &sessions {
+            // Already torn down: its close reason was set before we subscribed,
+            // and broadcast has no replay.
+            if session
+                .last_close_reason
+                .lock()
+                .expect("close reason poisoned")
+                .is_some()
+            {
+                continue;
+            }
+            // Notify, not the bounded input queue: a full queue (child write
+            // stalled) would block shutdown before its 5s wait even starts.
             let rx = session.closed_tx.subscribe();
-            let _ = session.input_tx.send(SessionCommand::Release).await;
+            session.shutdown.notify_one();
             closed.push(rx);
         }
         for mut rx in closed {
@@ -391,6 +402,17 @@ impl TerminalRegistry {
     }
 }
 
+/// Bound every write into the terminal child. A wedged child that stops
+/// reading stdin must not pin the shutdown select (or the daemon) forever.
+async fn terminal_io<F, T>(future: F) -> anyhow::Result<T>
+where
+    F: std::future::Future<Output = anyhow::Result<T>>,
+{
+    tokio::time::timeout(std::time::Duration::from_secs(2), future)
+        .await
+        .map_err(|_| anyhow::anyhow!("terminal write timed out"))?
+}
+
 async fn run_session(
     registry: &TerminalRegistry,
     session: Arc<TerminalSession>,
@@ -432,6 +454,7 @@ async fn run_session(
     let mut end_reason = String::from("detached");
     loop {
         tokio::select! {
+            biased;
             _ = session.shutdown.notified() => {
                 end_reason = "released".to_string();
                 break;
@@ -440,10 +463,10 @@ async fn run_session(
                 let Some(cmd) = cmd else { end_reason = "released".to_string(); break };
                 match cmd {
                     SessionCommand::Input(bytes) => {
-                        if child.send_input_bytes(&bytes).await.is_err() { break; }
+                        if terminal_io(child.send_input_bytes(&bytes)).await.is_err() { break; }
                     }
                     SessionCommand::Text(text) => {
-                        if child.send_input_text(&text).await.is_err() { break; }
+                        if terminal_io(child.send_input_text(&text)).await.is_err() { break; }
                     }
                     SessionCommand::Resize(c, r) => {
                         // Coalesce resizes to at most one per 120 ms.
@@ -453,7 +476,7 @@ async fn run_session(
                             // older geometry after this newer one.
                             pending_resize = None;
                             flush_at = None;
-                            if child.send_resize(c, r).await.is_err() { break; }
+                            if terminal_io(child.send_resize(c, r)).await.is_err() { break; }
                             last_resize = tokio::time::Instant::now();
                             let _ = session.frames_tx.send(SessionFrame::Ready { cols: c, rows: r, resumed: false });
                         } else {
@@ -494,7 +517,7 @@ async fn run_session(
                             }
                         }
                         if !host_handled && !block_page_keys
-                            && child.send_scroll(action).await.is_err()
+                            && terminal_io(child.send_scroll(action)).await.is_err()
                         {
                             break;
                         }
@@ -508,9 +531,8 @@ async fn run_session(
                         }
                     }
                     SessionCommand::Mouse(action, button, column, row) => {
-                        if child.send_mouse(&action, &button, column, row).await.is_err() { break; }
+                        if terminal_io(child.send_mouse(&action, &button, column, row)).await.is_err() { break; }
                     }
-                    SessionCommand::Release => { end_reason = "released".to_string(); break; }
                 }
             }
             record = child.next_record() => {
@@ -541,7 +563,7 @@ async fn run_session(
             }, if pending_resize.is_some() => {
                 flush_at = None;
                 if let Some((c, r)) = pending_resize.take() {
-                    if child.send_resize(c, r).await.is_err() { break; }
+                    if terminal_io(child.send_resize(c, r)).await.is_err() { break; }
                     last_resize = tokio::time::Instant::now();
                     let _ = session.frames_tx.send(SessionFrame::Ready { cols: c, rows: r, resumed: false });
                 }
@@ -549,7 +571,7 @@ async fn run_session(
         }
     }
     if let Some((c, r)) = pending_resize {
-        let _ = child.send_resize(c, r).await;
+        let _ = terminal_io(child.send_resize(c, r)).await;
     }
     // Teardown starts here on EVERY exit path (shutdown, child death, send
     // failure). Flip closing first so a racing attach() never reuses us while
@@ -565,7 +587,7 @@ async fn run_session(
         restore = Some(req);
     }
     if let Some(req) = restore {
-        if child.is_alive() && child.send_resize(req.cols, req.rows).await.is_err() {
+        if child.is_alive() && terminal_io(child.send_resize(req.cols, req.rows)).await.is_err() {
             warn!("cannot restore viewport for {pane_id} to {}x{}", req.cols, req.rows);
         } else {
             // Give Herdr a beat to apply the geometry before release closes the controller.

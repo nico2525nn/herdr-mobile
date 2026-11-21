@@ -24,6 +24,12 @@ data class HerdrClientState(
     val endpointDescription: String? = null,
     /** Last successful snapshot fetch, epoch millis. 0 when never. */
     val lastSyncAt: Long = 0,
+    /**
+     * Increments for every connection attempt (including automatic retries
+     * inside one link generation). A restarted daemon may reset its event seq
+     * to 0, so consumers need this to tell a new stream from an old one.
+     */
+    val connectionEpoch: Long = 0,
 )
 
 /**
@@ -71,6 +77,9 @@ class HerdrClient(
      * transitions; the snapshot remains the UI source.
      */
     val events: SharedFlow<SemanticEvent> = sync.events
+
+    /** Events tagged with the connection attempt that produced them. */
+    val stampedEvents: SharedFlow<StampedEvent> = sync.stampedEvents
 
     /** Start (or restart) the link. Safe to call repeatedly; replaces any running loop. */
     fun start() = lifecycle.start()

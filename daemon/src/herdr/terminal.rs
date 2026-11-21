@@ -174,13 +174,25 @@ impl TerminalChild {
     }
 
     pub async fn kill(&mut self) {
-        let _ = self.send_release().await;
+        // A child that stopped reading stdin must not hold teardown forever.
+        let _ = tokio::time::timeout(
+            std::time::Duration::from_secs(1),
+            self.send_release(),
+        )
+        .await;
         // Give release a moment; then force.
         tokio::select! {
             _ = self.child.wait() => {},
             _ = tokio::time::sleep(std::time::Duration::from_millis(400)) => {
-                if let Err(e) = self.child.kill().await {
-                    warn!("cannot kill terminal child for {}: {e:#}", self.pane_id);
+                match tokio::time::timeout(
+                    std::time::Duration::from_secs(1),
+                    self.child.kill(),
+                )
+                .await
+                {
+                    Ok(Ok(())) => {}
+                    Ok(Err(e)) => warn!("cannot kill terminal child for {}: {e:#}", self.pane_id),
+                    Err(_) => warn!("timed out killing terminal child for {}", self.pane_id),
                 }
             }
         }

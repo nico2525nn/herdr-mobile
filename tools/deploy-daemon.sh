@@ -14,13 +14,37 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 WORK="${WORK:-$HOME/herdr-mobile-work}"
 SERVICE="${SERVICE:-herdr-mobile-daemon}"
 HEALTH="${HEALTH:-http://127.0.0.1:8765/v1/health}"
-TOKEN="${HERDR_MOBILE_TOKEN:-}"
-if [[ -z "$TOKEN" ]] && command -v systemctl >/dev/null 2>&1; then
-  # The unit may carry the bearer token; health rejects unauthenticated calls
-  # when it does, which used to look like a broken daemon and roll back.
-  TOKEN="$(systemctl --user show "$SERVICE" -p Environment --value 2>/dev/null |
-    tr ' ' '\n' | sed -n 's/^HERDR_MOBILE_TOKEN=//p' | tr -d '"' | head -n1 || true)"
-fi
+resolve_deploy_token() {
+  local token="" env exec envfiles file
+  if [[ -n "${HERDR_MOBILE_TOKEN:-}" ]]; then
+    printf '%s' "$HERDR_MOBILE_TOKEN"
+    return
+  fi
+  command -v systemctl >/dev/null 2>&1 || return
+  # systemd may hold the token in Environment=, an EnvironmentFile=, or the
+  # daemon's own --token argument. Health rejects unauthenticated calls when
+  # any of them is configured; missing it looked like a broken daemon.
+  env="$(systemctl --user show "$SERVICE" -p Environment --value 2>/dev/null || true)"
+  token="$(printf '%s' "$env" | tr ' ' '\n' |
+    sed -n 's/^HERDR_MOBILE_TOKEN=//p' | tr -d '"' | head -n1)"
+  if [[ -z "$token" ]]; then
+    exec="$(systemctl --user show "$SERVICE" -p ExecStart --value 2>/dev/null || true)"
+    token="$(printf '%s' "$exec" |
+      sed -n 's/.*--token[= ]\([^ ;"]*\).*/\1/p' | tr -d '"' | head -n1)"
+  fi
+  if [[ -z "$token" ]]; then
+    envfiles="$(systemctl --user show "$SERVICE" -p EnvironmentFile --value 2>/dev/null || true)"
+    for file in $envfiles; do
+      [[ -r "$file" ]] || continue
+      token="$(sed -n 's/^[[:space:]]*\(export[[:space:]]\{1,\}\)\?HERDR_MOBILE_TOKEN=//p' "$file" |
+        tr -d '"' | head -n1)"
+      [[ -n "$token" ]] && break
+    done
+  fi
+  printf '%s' "$token"
+}
+
+TOKEN="$(resolve_deploy_token)"
 
 die() { printf 'deploy: %s\n' "$*" >&2; exit 1; }
 
@@ -50,6 +74,14 @@ echo "== building release (offline)"
 if [[ "${NO_RESTART:-0}" == "1" ]]; then
   echo "== build only (NO_RESTART=1)"
   exit 0
+fi
+
+if [[ -z "$TOKEN" ]]; then
+  HEALTH_CODE="$(curl -s -o /dev/null -w '%{http_code}' --max-time 2 "$HEALTH" 2>/dev/null || true)"
+  if [[ "$HEALTH_CODE" == "401" ]]; then
+    die "the health endpoint requires a bearer token, but none could be resolved.
+deploy: set HERDR_MOBILE_TOKEN (or put it in Environment=/EnvironmentFile=/--token)."
+  fi
 fi
 
 echo "== restarting $SERVICE"

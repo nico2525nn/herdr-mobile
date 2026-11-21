@@ -115,6 +115,8 @@ if [ "$NO_SERVICE" != "1" ] && command -v systemctl >/dev/null 2>&1; then
     mkdir -p "$UNIT_DIR"
     if [ ! -f "$UNIT" ]; then
         say "writing $UNIT"
+        OLD_UMASK="$(umask)"
+        umask 077
         {
             printf '%s\n' '[Unit]'
             printf '%s\n' 'Description=Herdr Mobile bridge daemon'
@@ -132,9 +134,13 @@ if [ "$NO_SERVICE" != "1" ] && command -v systemctl >/dev/null 2>&1; then
             printf '%s\n' '[Install]'
             printf '%s\n' 'WantedBy=default.target'
         } > "$UNIT"
+        umask "$OLD_UMASK"
     else
         say "preserving existing $UNIT"
     fi
+    # The unit may contain HERDR_MOBILE_TOKEN. A default umask 022 would leave
+    # it world-readable; systemd does not require it to be.
+    chmod 600 "$UNIT" 2>/dev/null || true
     systemctl --user daemon-reload >/dev/null 2>&1 || true
     was_active=0
     systemctl --user is-active --quiet herdr-mobile-daemon >/dev/null 2>&1 && was_active=1

@@ -17,6 +17,14 @@ interface SettingsRepository {
 
     suspend fun update(transform: (AppSettings) -> AppSettings)
 
+    /**
+     * Serialize a profile read-modify-write with the matching secret I/O.
+     * Saves, removals, and TOFU host-key approval must share one boundary:
+     * otherwise a removal that lands while a save awaits the Keystore lets the
+     * save re-create the deleted profile (or resurrect a deleted alias).
+     */
+    suspend fun <T> withProfileLock(block: suspend () -> T): T = block()
+
     /** Store a PEM private key under an alias. Returns the alias to reference from a profile. */
     suspend fun storePrivateKey(alias: String?, pem: String, label: String): String
 

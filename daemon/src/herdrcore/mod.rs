@@ -3,7 +3,9 @@ use std::path::PathBuf;
 
 use anyhow::{anyhow, bail, Context, Result};
 use serde_json::{json, Value};
-use tokio::io::{AsyncBufReadExt, AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt, BufReader};
+use tokio::io::{
+    AsyncBufRead, AsyncBufReadExt, AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt, BufReader,
+};
 use tokio::net::UnixStream;
 use tokio::time::{timeout, Duration};
 
@@ -56,6 +58,10 @@ pub struct CoreReadMark {
     state_change_seq: Option<i64>,
     completion_seq: Option<i64>,
     turn: Option<i64>,
+    /// Core's state-change timestamp. `turn` only increments when leaving
+    /// `working`, so an idle -> done completion in the same turn is only
+    /// distinguishable by this field.
+    status_ms: Option<i64>,
 }
 
 impl CoreReadMark {
@@ -75,6 +81,7 @@ impl CoreReadMark {
             state_change_seq: seq("state_change_seq"),
             completion_seq: seq("completion_seq"),
             turn: seq("turn"),
+            status_ms: seq("status_ms"),
         }
     }
 
@@ -372,6 +379,44 @@ impl CoreClient {
         Ok(tab_id)
     }
 
+    /// Write one order label per terminal, restoring already-applied labels
+    /// if a later RPC fails. Core has no batch label RPC, so a mid-sequence
+    /// failure used to leave a half-reordered session even though the caller
+    /// received an error.
+    async fn apply_order_labels(
+        &self,
+        key: &str,
+        updates: &[(String, Option<i64>, i64)],
+    ) -> Result<()> {
+        let mut applied: Vec<&(String, Option<i64>, i64)> = Vec::new();
+        for update in updates {
+            let mut labels = serde_json::Map::new();
+            labels.insert(key.to_owned(), Value::String(update.2.to_string()));
+            match self.label(&update.0, Value::Object(labels)).await {
+                Ok(_) => applied.push(update),
+                Err(error) => {
+                    for done in applied.into_iter().rev() {
+                        let mut labels = serde_json::Map::new();
+                        labels.insert(
+                            key.to_owned(),
+                            Value::String(done.1.unwrap_or(i64::MAX).to_string()),
+                        );
+                        if let Err(restore_error) =
+                            self.label(&done.0, Value::Object(labels)).await
+                        {
+                            tracing::warn!(
+                                "cannot restore {key} label on {}: {restore_error:#}",
+                                done.0
+                            );
+                        }
+                    }
+                    return Err(error);
+                }
+            }
+        }
+        Ok(())
+    }
+
     /// Reorder spaces by writing an order label on every terminal in each
     /// space. Core has no native ordering method; labels are the durable,
     /// restart-safe source `translate_snapshot` sorts by.
@@ -388,13 +433,18 @@ impl CoreClient {
         let to = adjusted_insert_index(from, insert_index)
             .clamp(0, order.len() as i64) as usize;
         order.insert(to, item);
+        let mut updates = Vec::new();
         for (index, id) in order.iter().enumerate() {
             for terminal in terminals.iter().filter(|t| workspace_id_of(t).as_deref() == Some(id)) {
                 let Some(address) = field_string(terminal, "address") else { continue };
-                self.label(address, json!({ SPACE_ORDER_LABEL: index.to_string() })).await?;
+                let labels = terminal.get("labels").unwrap_or(&Value::Null);
+                let old = labels.get(SPACE_ORDER_LABEL).and_then(|value| {
+                    value.as_i64().or_else(|| value.as_str()?.parse().ok())
+                });
+                updates.push((address.to_owned(), old, index as i64));
             }
         }
-        Ok(())
+        self.apply_order_labels(SPACE_ORDER_LABEL, &updates).await
     }
 
     /// Reorder tabs inside one workspace using the same label mechanism.
@@ -419,13 +469,18 @@ impl CoreClient {
         let to = adjusted_insert_index(from, insert_index)
             .clamp(0, order.len() as i64) as usize;
         order.insert(to, item);
+        let mut updates = Vec::new();
         for (index, id) in order.iter().enumerate() {
             for terminal in scoped.iter().filter(|t| tab_id_of(t).as_deref() == Some(id)) {
                 let Some(address) = field_string(terminal, "address") else { continue };
-                self.label(address, json!({ TAB_ORDER_LABEL: index.to_string() })).await?;
+                let labels = terminal.get("labels").unwrap_or(&Value::Null);
+                let old = labels.get(TAB_ORDER_LABEL).and_then(|value| {
+                    value.as_i64().or_else(|| value.as_str()?.parse().ok())
+                });
+                updates.push((address.to_owned(), old, index as i64));
             }
         }
-        Ok(())
+        self.apply_order_labels(TAB_ORDER_LABEL, &updates).await
     }
 
     pub async fn close_tab(&self, tab_id: &str) -> Result<()> {
@@ -542,6 +597,12 @@ impl CoreSubscription {
                 .position(|byte| *byte == b'\n')
                 .map(|offset| self.scan_from + offset);
             if let Some(newline) = newline {
+                if newline + 1 > CORE_MAX_EVENT_LINE {
+                    bail!(
+                        "herdr-core event line exceeds {} bytes",
+                        CORE_MAX_EVENT_LINE
+                    );
+                }
                 let line: Vec<u8> = self.read_buf.drain(..=newline).collect();
                 self.scan_from = 0;
                 let text = std::str::from_utf8(&line).context("herdr-core event is not UTF-8")?;
@@ -645,10 +706,18 @@ async fn write_json_line<W: AsyncWrite + Unpin>(writer: &mut W, message: &Value)
     Ok(())
 }
 
-async fn read_json_line<R: AsyncBufReadExt + Unpin>(reader: &mut R) -> Result<Value> {
+async fn read_json_line<R: AsyncBufRead + Unpin>(reader: &mut R) -> Result<Value> {
     let mut line = String::new();
-    if reader.read_line(&mut line).await? == 0 {
+    let mut limited = reader.take(CORE_MAX_EVENT_LINE as u64 + 1);
+    let read = limited.read_line(&mut line).await?;
+    if read == 0 {
         bail!("herdr-core closed the socket before replying");
+    }
+    if read > CORE_MAX_EVENT_LINE {
+        bail!(
+            "herdr-core reply exceeds {} bytes",
+            CORE_MAX_EVENT_LINE
+        );
     }
     serde_json::from_str(&line).context("invalid herdr-core JSON-RPC response")
 }
@@ -796,21 +865,29 @@ fn ordered_ids(
 /// by `(space_order, index)` desynchronized the saved order from the rendered
 /// order whenever two spaces had equal space labels.
 fn ordered_workspace_ids(terminals: &[Value]) -> Vec<String> {
-    let mut seen: HashMap<String, (usize, i64, i64)> = HashMap::new();
+    // A workspace's position in translate_snapshot is the minimum
+    // (space_order, tab_order, terminal index) over all of its terminals.
+    // Using the first terminal's index instead of the index of the terminal
+    // with the winning tab_order still diverged when tabs tied on order.
+    let mut seen: HashMap<String, (i64, i64, usize)> = HashMap::new();
     for (index, terminal) in terminals.iter().enumerate() {
         let Some(id) = workspace_id_of(terminal) else { continue };
         let labels = terminal.get("labels").unwrap_or(&Value::Null);
-        let space = order_label(labels, SPACE_ORDER_LABEL);
-        let tab = order_label(labels, TAB_ORDER_LABEL);
+        let key = (
+            order_label(labels, SPACE_ORDER_LABEL),
+            order_label(labels, TAB_ORDER_LABEL),
+            index,
+        );
         seen.entry(id)
-            .and_modify(|entry| {
-                entry.1 = entry.1.min(space);
-                entry.2 = entry.2.min(tab);
+            .and_modify(|current| {
+                if key < *current {
+                    *current = key;
+                }
             })
-            .or_insert((index, space, tab));
+            .or_insert(key);
     }
-    let mut ids: Vec<(String, (usize, i64, i64))> = seen.into_iter().collect();
-    ids.sort_by_key(|(_, (index, space, tab))| (*space, *tab, *index));
+    let mut ids: Vec<(String, (i64, i64, usize))> = seen.into_iter().collect();
+    ids.sort_by_key(|(_, key)| *key);
     ids.into_iter().map(|(id, _)| id).collect()
 }
 
@@ -1075,8 +1152,11 @@ mod tests {
         // rendered snapshot and the move source list. Raw enumeration order
         // (A before B) must not win here.
         let terminals = vec![
-            json!({"address":"a","labels":{"herdr.space":"A","herdr.space_order":0,"herdr.tab":"a1","herdr.tab_order":5}}),
-            json!({"address":"b","labels":{"herdr.space":"B","herdr.space_order":0,"herdr.tab":"b1","herdr.tab_order":0}}),
+            json!({"address":"a1","labels":{"herdr.space":"A","herdr.space_order":0,"herdr.tab":"a1","herdr.tab_order":5}}),
+            json!({"address":"b1","labels":{"herdr.space":"B","herdr.space_order":0,"herdr.tab":"b1","herdr.tab_order":0}}),
+            // A's winning tab_order is on a later terminal; the snapshot
+            // tie-breaks by that terminal's index, not A's first index.
+            json!({"address":"a2","labels":{"herdr.space":"A","herdr.space_order":0,"herdr.tab":"a2","herdr.tab_order":0}}),
         ];
         let snapshot = translate_snapshot(1, &terminals, None, None, &std::collections::HashMap::new());
         let rendered: Vec<_> = snapshot.workspaces.iter().map(|w| w.id.as_str()).collect();
@@ -1163,7 +1243,8 @@ mod tests {
     #[test]
     fn focused_done_pane_is_presented_as_read() {
         let terminals = vec![json!({
-            "address":"t1", "turn":1, "status":{"state":"done","app":"omp"},
+            "address":"t1", "turn":1, "status_ms":100,
+            "status":{"state":"done","app":"omp"},
             "labels":{"herdr.space":"s1","herdr.tab":"tab1"}
         })];
         let read = std::collections::HashMap::from([(
@@ -1178,7 +1259,9 @@ mod tests {
         // A new completion on the same pane id must not inherit the old read
         // mark: this is the subscriber-independent fix.
         let next = vec![json!({
-            "address":"t1", "turn":2, "status":{"state":"done","app":"omp"},
+            // Same turn as the read completion; only status_ms changed.
+            "address":"t1", "turn":1, "status_ms":200,
+            "status":{"state":"done","app":"omp"},
             "labels":{"herdr.space":"s1","herdr.tab":"tab1"}
         })];
         let next_snapshot = translate_snapshot(2, &next, None, None, &read);

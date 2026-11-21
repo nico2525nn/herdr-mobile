@@ -53,4 +53,23 @@ class HerdrClientGenerationTest {
         assertEquals(1L, state.targetGeneration)
         assertEquals(oldGeneration + 2, state.linkGeneration)
     }
+
+    @Test
+    fun connectionEpochChangesPerAttemptAndRejectsStaleEvents() {
+        val state = LinkState(ManualClock())
+        val generation = state.linkGeneration
+
+        assertEquals(1L, state.beginConnection(generation))
+        assertEquals(1L, state.state.value.connectionEpoch)
+        assertTrue(state.acceptActivity(generation, 1) {})
+
+        // Automatic retry inside the same link generation.
+        assertEquals(2L, state.beginConnection(generation))
+        assertTrue(state.state.value.connectionEpoch == 2L)
+        assertTrue(
+            "an event stamped with the previous attempt must be rejected",
+            !state.acceptActivity(generation, 1) {},
+        )
+        assertTrue(state.acceptActivity(generation, 2) {})
+    }
 }

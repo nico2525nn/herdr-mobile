@@ -140,7 +140,7 @@ private fun RepeatableKeyButton(
             val down = awaitFirstDown(requireUnconsumed = false)
             val slop = viewConfiguration.touchSlop
             var sent = false
-            var cancelled = false
+            var up = false
             val holdJob = scope.launch {
                 // Wait for a real hold before sending: a horizontal page
                 // swipe that starts on a key must not type that key. A short
@@ -161,22 +161,23 @@ private fun RepeatableKeyButton(
                 while (true) {
                     val event = awaitPointerEvent()
                     val change = event.changes.firstOrNull { it.id == down.id } ?: break
-                    if (!change.pressed) break
-                    if (change.isConsumed) {
-                        cancelled = true
-                        return@awaitEachGesture
+                    if (!change.pressed) {
+                        up = true
+                        break
                     }
+                    if (change.isConsumed) return@awaitEachGesture
                     val dx = change.position.x - change.previousPosition.x
                     val dy = change.position.y - change.previousPosition.y
                     if (abs(dx) > slop || abs(dy) > slop) {
-                        cancelled = true
                         return@awaitEachGesture
                     }
                 }
             } finally {
                 holdJob.cancel()
-                if (!sent && !cancelled) onPress()
             }
+            // Send only on a real UP. Pointer cancellation (scroll takeover,
+            // screen disposal) must not turn into a key press.
+            if (up && !sent) onPress()
         }
     }
 
@@ -214,16 +215,13 @@ private fun RepeatableKeyButton(
                                 dx += change.position.x - change.previousPosition.x
                                 dy += change.position.y - change.previousPosition.y
                                 if (!change.pressed) break
-                                if (!claimed) {
-                                    when (resolveDragAxis(dx, dy, slop * 1.5f)) {
-                                        DragAxis.HORIZONTAL ->
-                                            // Horizontal gesture belongs to the
-                                            // pager; consuming it made a swipe
-                                            // over PGUP↓ fire a page-up instead.
-                                            return@awaitEachGesture
-                                        DragAxis.VERTICAL -> claimed = true
-                                        DragAxis.NONE -> Unit
-                                    }
+                                if (!claimed && keyDragAxis(dx, dy, slop) == DragAxis.VERTICAL) {
+                                    // A horizontal lead is left to the pager:
+                                    // its threshold is higher, so a 1.6x lead
+                                    // followed by a deep downward flick still
+                                    // becomes vertical here. Once the pager
+                                    // claims, consumption cancels this path.
+                                    claimed = true
                                 }
                                 if (claimed) change.consume()
                             }

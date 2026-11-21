@@ -37,4 +37,21 @@ class DirectBackendTest {
         )
         assertEquals("secret", provider.open().token)
     } }
+
+    @Test
+    fun savedNonOriginUrlIsRejectedAtConnectTime() {
+        // A URL saved by an older build can still be in DataStore even though
+        // Settings now rejects new ones. REST and WebSocket resolve a base
+        // path differently, so fail before either transport is built.
+        for (legacy in listOf(
+            "https://daemon.example:8765/api",
+            "https://daemon.example:8765?legacy=1",
+            "https://daemon.example:8765/#fragment",
+        )) {
+            val provider = DirectProvider(baseUrl = legacy, bearerToken = { null })
+            assertThrows(IllegalArgumentException::class.java) {
+                runBlocking { provider.open() }
+            }
+        }
+    }
 }

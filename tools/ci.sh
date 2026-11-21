@@ -72,6 +72,7 @@ EXTERNAL_STATE="/sdcard/Android/data/$PKG/files/herdr-ci-state.json"
 SMOKE_STATUS=0
 ISOLATION_STATUS=0
 RESTORE_STATUS=0
+TEARDOWN_STATUS=0
 LIVE_ISOLATION=0
 INSTALLED=0
 REVERSE_SET=0
@@ -136,9 +137,18 @@ print(json.dumps({
 }, sort_keys=True))'
 }
 
-live_session_running() {
-  "$HERDR" session list 2>/dev/null |
+# 0 = running, 1 = not running, 2 = could not ask. Isolation verification must
+# treat 2 as a failure: "unknown" is not "no live session".
+live_session_state() {
+  local out
+  out="$("$HERDR" session list 2>/dev/null)" || return 2
+  printf '%s' "$out" |
     awk '$1 == "default" && $2 == "running" { found = 1 } END { exit !found }'
+}
+
+redacted_cmdline() {
+  pid_cmdline "$1" |
+    sed -E 's/(--token[= ])[^ ]+/\1<redacted>/g; s/(HERDR_MOBILE_TOKEN=)[^ ]+/\1<redacted>/g'
 }
 
 pid_cmdline() {
@@ -218,7 +228,7 @@ stop_private_daemon() {
       info "stopping stale private daemon (pid $pid)"
       kill_pid "$pid"
     else
-      die "pid $pid from $PIDFILE is not the private daemon: $(pid_cmdline "$pid")"
+      die "pid $pid from $PIDFILE is not the private daemon: $(redacted_cmdline "$pid")"
     fi
   fi
   rm -f "$PIDFILE"
@@ -233,7 +243,7 @@ ci: refusing to start a second daemon on it; stop the listener or set PRIVATE_PO
       info "stopping stale private daemon on port $PRIVATE_PORT (pid $pid)"
       kill_pid "$pid"
     else
-      die "port $PRIVATE_PORT is already held by pid $pid: $(pid_cmdline "$pid")
+      die "port $PRIVATE_PORT is already held by pid $pid: $(redacted_cmdline "$pid")
 ci: refusing to kill an unrelated process; stop it or set PRIVATE_PORT"
     fi
   fi
@@ -586,12 +596,21 @@ FOCUSED_COUNT="$("$HERDR" --session "$PRIVATE_SESSION" api snapshot 2>/dev/null 
 say "capturing live session baseline"
 LIVE_BEFORE="$(herdr_signature 2>/dev/null)" || LIVE_BEFORE=""
 if [[ -z "$LIVE_BEFORE" ]]; then
-  if live_session_running; then
-    die "the live Herdr session is running but its read-only snapshot failed.
+  if live_session_state; then LIVE_STATE=0; else LIVE_STATE=$?; fi
+  case "$LIVE_STATE" in
+    0)
+      die "the live Herdr session is running but its read-only snapshot failed.
 ci: refusing to claim isolation without a fresh baseline."
-  fi
-  LIVE_ISOLATION=0
-  info "no live Herdr session; isolation check not applicable"
+      ;;
+    1)
+      LIVE_ISOLATION=0
+      info "no live Herdr session; isolation check not applicable"
+      ;;
+    *)
+      die "cannot determine whether a live Herdr session exists.
+ci: refusing to treat an unreadable session list as 'no live session'."
+      ;;
+  esac
 else
   LIVE_ISOLATION=1
   info "live workspaces/focus: $LIVE_BEFORE"
@@ -666,6 +685,22 @@ if (( RESTORE_STATUS != 0 )); then
   printf 'ci: could not restore the debug app settings; run the restore activity manually\n' >&2
 fi
 
+# ------------------------------------------------------- private teardown first
+# Compare the live signature only after the private daemon and session are
+# fully gone: a teardown bug must not hide behind an earlier reading.
+say "tearing down the private instance"
+set +e
+stop_private_daemon
+DAEMON_TEARDOWN=$?
+stop_private_session
+SESSION_TEARDOWN=$?
+set -e
+if (( DAEMON_TEARDOWN != 0 || SESSION_TEARDOWN != 0 )); then
+  printf '\nCI FAILED: private teardown failed (daemon %d, session %d)\n' \
+    "$DAEMON_TEARDOWN" "$SESSION_TEARDOWN" >&2
+  TEARDOWN_STATUS=1
+fi
+
 # ------------------------------------------------------------- isolation proof
 say "verifying the live session was untouched"
 if (( LIVE_ISOLATION )); then
@@ -682,11 +717,21 @@ if (( LIVE_ISOLATION )); then
     printf '  after:  %s\n' "$LIVE_AFTER" >&2
     ISOLATION_STATUS=1
   fi
-elif live_session_running; then
-  printf '\nISOLATION FAILED: a live Herdr session appeared during the run\n' >&2
-  ISOLATION_STATUS=1
 else
-  info "no live Herdr session; isolation check skipped"
+  if live_session_state; then LIVE_STATE=0; else LIVE_STATE=$?; fi
+  case "$LIVE_STATE" in
+    0)
+      printf '\nISOLATION FAILED: a live Herdr session appeared during the run\n' >&2
+      ISOLATION_STATUS=1
+      ;;
+    1)
+      info "no live Herdr session; isolation check skipped"
+      ;;
+    *)
+      printf '\nISOLATION FAILED: cannot determine whether a live session exists after the run\n' >&2
+      ISOLATION_STATUS=1
+      ;;
+  esac
 fi
 
 # --------------------------------------------------------------------- verdict
@@ -699,7 +744,11 @@ fi
 if (( ISOLATION_STATUS != 0 )); then
   printf 'CI FAILED: the live Herdr session changed during the run\n' >&2
 fi
-if (( SMOKE_STATUS != 0 || RESTORE_STATUS != 0 || ISOLATION_STATUS != 0 )); then
+if (( TEARDOWN_STATUS != 0 )); then
+  printf 'CI FAILED: the private instance did not tear down cleanly\n' >&2
+fi
+if (( SMOKE_STATUS != 0 || RESTORE_STATUS != 0 || ISOLATION_STATUS != 0 ||
+      TEARDOWN_STATUS != 0 )); then
   exit 1
 fi
 

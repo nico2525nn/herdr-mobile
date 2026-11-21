@@ -29,6 +29,16 @@ class DirectProvider(
         } catch (e: Exception) {
             throw IllegalArgumentException("Invalid daemon URL: $baseUrl", e)
         }
+        // REST resolves API paths against this base while the WebSocket
+        // concatenates them. A saved legacy URL with a path/query would pass
+        // one transport's health check and break the other.
+        if (url.encodedPath != "/" || url.query != null || url.fragment != null ||
+            url.username.isNotEmpty() || url.password.isNotEmpty()
+        ) {
+            throw IllegalArgumentException(
+                "Daemon URL must be an origin (scheme://host:port), not $baseUrl",
+            )
+        }
         val token = bearerToken()
         // Never send a bearer over cleartext off-device: without TLS anyone on
         // the path reads it. Emulator loopback and https are fine. Tailnet

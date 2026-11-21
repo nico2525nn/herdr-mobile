@@ -47,6 +47,41 @@
   the notification tap goes through a non-exported proxy instead of the
   exported launcher activity.
 
+### Second deep-review pass
+
+- **Core completion identity:** the read mark now includes Core's `status_ms`
+  (plus `turn`/completion seq), so an `idle -> done` completion in the same turn
+  is not hidden behind the pane's previous read. Core event lines are length
+  checked before parsing and the subscribe/hello lines use the same 16 MiB
+  bound.
+- **Connection epochs:** every connection attempt gets an epoch; snapshots and
+  stamped events carry it, and notifications reject queued events from an older
+  attempt. This resets the seq cursor after an automatic reconnect where the
+  daemon restarted at seq 0.
+- **Notification correctness:** all status events (including working) update the
+  dedupe map, and snapshots diff against the last notified status instead of the
+  previous snapshot, so a fast done -> working transition retracts its alert.
+- **Credential/profile serialization:** saves, removals, and TOFU host-key
+  approval share the repository profile lock; a removal can no longer be
+  resurrected by a save waiting on Keystore I/O.
+- **Daemon shutdown:** shutdown wakes sessions through `Notify` instead of the
+  bounded input queue, bounds child writes, and keeps registry entries until
+  teardown; an already-closed session is not waited on again.
+- **Core reorder:** workspace order uses the same minimum
+  `(space_order, tab_order, index)` key as the snapshot, and a failed label
+  update restores already-applied labels instead of leaving a half order.
+- **CI isolation:** an unreadable `herdr session list` is an isolation failure,
+  the live signature is checked again after private daemon/session teardown, and
+  process diagnostics redact bearer arguments. The installer writes the
+  service unit with `0600`.
+- **Deploy/URL/input/JNI:** deploy resolves a bearer from `Environment`,
+  `EnvironmentFile`, or `ExecStart --token` and refuses an unauthenticated 401
+  before restart; a legacy Direct URL with a path/query is rejected at connect
+  time; a cancelled key gesture no longer types; and PNG `PushLocalFrame`/
+  `Options` allocation failures clear their JNI exception.
+- **Auth:** bearer comparison keeps the full length difference, rejecting
+  prefixes whose lengths differ by a multiple of 256.
+
 ## 2.2.0 — 2026-11-20
 
 - Home uses the expressive large-title header (`displaySmall` 36/44 +

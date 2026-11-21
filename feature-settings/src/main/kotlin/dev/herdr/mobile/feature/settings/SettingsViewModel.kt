@@ -19,8 +19,6 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
-import kotlinx.coroutines.sync.Mutex
-import kotlinx.coroutines.sync.withLock
 import java.util.UUID
 
 /** Per-action message wrapper for the generic "could not save" paths. */
@@ -54,9 +52,6 @@ class SettingsViewModel(
     val uiState: StateFlow<SettingsUiState> = _ui.asStateFlow()
 
     private var testJob: Job? = null
-    /** Serializes secret replacement so an older alias cannot be resurrected. */
-    private val saveMutex = Mutex()
-
     init {
         viewModelScope.launch {
             repository.settings.collect { settings ->
@@ -124,14 +119,16 @@ class SettingsViewModel(
 
     fun saveProfile(profile: HostProfile) {
         viewModelScope.launch {
-            runCatching {
-                if (repository.settings.value.hostProfiles.any { it.id == profile.id }) {
-                    repository.updateProfile(profile)
-                } else {
-                    repository.addProfile(profile)
-                }
-            }.onSuccess { clearSaveError() }
-                .onFailure { _ui.value = _ui.value.copy(error = saveFailed(it)) }
+            repository.withProfileLock {
+                runCatching {
+                    if (repository.settings.value.hostProfiles.any { it.id == profile.id }) {
+                        repository.updateProfile(profile)
+                    } else {
+                        repository.addProfile(profile)
+                    }
+                }.onSuccess { clearSaveError() }
+                    .onFailure { _ui.value = _ui.value.copy(error = saveFailed(it)) }
+            }
         }
     }
 
@@ -167,7 +164,7 @@ class SettingsViewModel(
             // before the suspend write finishes. Serialize read -> persist ->
             // old-alias cleanup, otherwise the second save reads the first
             // save's soon-to-be-deleted alias and resurrects it in DataStore.
-            saveMutex.withLock {
+            repository.withProfileLock {
             val old = repository.settings.value.hostProfiles.firstOrNull { it.id == profile.id }
             val oldPassword = old?.passwordAlias
             val oldToken = old?.bearerTokenAlias
@@ -232,7 +229,7 @@ class SettingsViewModel(
 
     fun importPrivateKey(profileId: String, pem: String, label: String) {
         viewModelScope.launch {
-            saveMutex.withLock {
+            repository.withProfileLock {
             val current = repository.settings.value.hostProfiles.firstOrNull { it.id == profileId }
             val oldAlias = current?.privateKeyAlias
             var newAlias: String? = null
@@ -255,7 +252,7 @@ class SettingsViewModel(
 
     fun saveBearerToken(profileId: String, token: String) {
         viewModelScope.launch {
-            saveMutex.withLock {
+            repository.withProfileLock {
             val current = repository.settings.value.hostProfiles.firstOrNull { it.id == profileId }
             val oldAlias = current?.bearerTokenAlias
             var newAlias: String? = null
@@ -288,7 +285,7 @@ class SettingsViewModel(
      */
     fun saveSshPassword(profileId: String, password: String) {
         viewModelScope.launch {
-            saveMutex.withLock {
+            repository.withProfileLock {
             val current = repository.settings.value.hostProfiles.firstOrNull { it.id == profileId }
             val oldAlias = current?.passwordAlias
             var newAlias: String? = null

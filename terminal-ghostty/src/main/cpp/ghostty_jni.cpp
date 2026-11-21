@@ -89,7 +89,10 @@ bool decodePngCallback(void*, const GhosttyAllocator* allocator, const uint8_t* 
   if (dataLen > kImageAllocBudget) return false;
   JNIEnv* env = nullptr;
   if (gJavaVm->GetEnv(reinterpret_cast<void**>(&env), JNI_VERSION_1_6) != JNI_OK) return false;
-  if (env->PushLocalFrame(8) != 0) return false;
+  if (env->PushLocalFrame(8) != 0) {
+    env->ExceptionClear();
+    return false;
+  }
 
   bool decoded = false;
   do {
@@ -104,7 +107,10 @@ bool decodePngCallback(void*, const GhosttyAllocator* allocator, const uint8_t* 
     // pixels before the size check, so a huge valid PNG could OOM before we
     // reject it. inJustDecodeBounds reads only the dimensions.
     jobject options = env->NewObject(gBitmapFactoryOptionsClass, gOptionsInit);
-    if (options == nullptr) break;
+    if (options == nullptr) {
+      env->ExceptionClear();
+      break;
+    }
     env->SetBooleanField(options, gInJustDecodeBounds, JNI_TRUE);
     jobject probe = env->CallStaticObjectMethod(gBitmapFactoryClass, gDecodeByteArrayOptions,
                                                 pngArray, 0, static_cast<jint>(dataLen),

@@ -41,6 +41,10 @@ internal class LinkState(private val clock: LinkClock) {
     var endpoint: DaemonEndpoint? = null
         private set
 
+    /** Per-connection-attempt id; see [HerdrClientState.connectionEpoch]. */
+    @Volatile
+    private var connectionEpoch: Long = 0
+
     /** Last tick or event observed: the stream watchdog keys off it. */
     @Volatile
     var lastActivityAt: Long = 0
@@ -52,6 +56,30 @@ internal class LinkState(private val clock: LinkClock) {
         private set
 
     fun isCurrent(generation: Long): Boolean = linkGeneration == generation
+
+    fun currentConnectionEpoch(): Long = connectionEpoch
+
+    /**
+     * Start a new connection attempt inside [generation] and publish its id.
+     * Automatic retries reuse a generation, but a restarted daemon's seq can
+     * drop to 0, so notifications need an identifier that changes per attempt.
+     */
+    fun beginConnection(generation: Long): Long? = synchronized(lock) {
+        if (linkGeneration != generation) return@synchronized null
+        connectionEpoch++
+        _state.update {
+            it.copy(
+                connectionEpoch = connectionEpoch,
+                connection = if (it.snapshot == null) {
+                    ConnectionState.CONNECTING
+                } else {
+                    ConnectionState.RECONNECTING
+                },
+                stale = it.snapshot != null,
+            )
+        }
+        connectionEpoch
+    }
 
     /** Publish a state transform only while [generation] is still the live link. */
     fun update(generation: Long, transform: (HerdrClientState) -> HerdrClientState): Boolean =
@@ -91,9 +119,9 @@ internal class LinkState(private val clock: LinkClock) {
      * Atomic with generation bumps on purpose: an event from a replaced target must never
      * reach the event bus, or notifications fire for a profile the app already left.
      */
-    fun acceptActivity(generation: Long, block: () -> Unit): Boolean =
+    fun acceptActivity(generation: Long, connectionEpoch: Long, block: () -> Unit): Boolean =
         synchronized(lock) {
-            if (linkGeneration != generation) {
+            if (linkGeneration != generation || this.connectionEpoch != connectionEpoch) {
                 false
             } else {
                 block()
