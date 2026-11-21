@@ -216,21 +216,33 @@ class GhosttyEngineSmokeTest {
         instrumentation.waitForIdleSync()
 
         instrumentation.runOnMainSync {
-            view.setBlinkPhaseForTest(false)
             val cell = view.cursorCellForTest()
             assertNotNull("cursor cell", cell)
+            val (col, row, cw, ch) = cell!!
+            val x = (col * cw + cw / 2).coerceIn(0, view.width - 1)
+            val y = (row * ch + ch / 2).coerceIn(0, view.height - 1)
+            val backgroundX = (19 * cw + cw / 2).coerceIn(0, view.width - 1)
+
+            // Hold the real blink phase off with blinking scheduled: the draw
+            // guard now hides the cursor on an ordinary frame.
+            view.setBlinkScheduledForTest(true)
+            view.setBlinkPhaseForTest(false)
+            val ordinary = Bitmap.createBitmap(view.width, view.height, Bitmap.Config.ARGB_8888)
+            view.draw(Canvas(ordinary))
+            val background = ordinary.getPixel(backgroundX, y)
+            assertEquals(
+                "an ordinary blink-off draw must hide the cursor",
+                background,
+                ordinary.getPixel(x, y),
+            )
+
+            // captureFrameWithCursor forces the phase on for this draw.
             val frame = view.captureFrameWithCursor()
             assertNotNull("frozen frame", frame)
-            val (col, row, cw, ch) = cell!!
-            val x = (col * cw + cw / 2).coerceIn(0, frame!!.width - 1)
-            val y = (row * ch + ch / 2).coerceIn(0, frame.height - 1)
-            val backgroundX = (19 * cw + cw / 2).coerceIn(0, frame.width - 1)
-            // A block cursor fills the cell with the cursor colour. Without
-            // the forced blink-on capture the cell is the background here.
-            assertNotEquals(
-                "cursor disappeared when blink was off",
-                frame.getPixel(backgroundX, y),
-                frame.getPixel(x, y),
+            assertEquals(
+                "captureFrameWithCursor must paint the cursor cell",
+                0xFFEB4765.toInt(),
+                frame!!.getPixel(x, y),
             )
         }
         session.close()

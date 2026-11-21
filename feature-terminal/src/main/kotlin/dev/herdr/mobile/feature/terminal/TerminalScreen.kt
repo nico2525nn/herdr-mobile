@@ -357,7 +357,9 @@ fun TerminalScreen(
             // The frozen full frame is fitted into the area below the 32dp
             // status strip. Both the top and the bottom row stay visible; the
             // live view and its PTY are never resized.
-            val visibleFrame = frozenStore.frame?.takeIf { linkStatus != null }
+            val visibleFrame = frozenStore
+                .frameFor(state.backend, state.target)
+                ?.takeIf { linkStatus != null }
             visibleFrame?.let { bitmap ->
                 Image(
                     bitmap = bitmap.asImageBitmap(),

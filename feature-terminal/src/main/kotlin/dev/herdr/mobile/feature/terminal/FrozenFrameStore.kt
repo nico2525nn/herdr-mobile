@@ -6,23 +6,29 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 
 /**
- * Owns the frozen terminal frame and the capture epoch.
+ * Owns the frozen terminal frame, its capture epoch and the exact pane/backend
+ * that produced it.
  *
- * A capture starts before it knows whether the target will change. The frame
- * is accepted only when the epoch, backend identity and target still match;
- * the owner change also clears any previously accepted frame. This is a plain
- * state holder so a JVM test can drive the pending-callback race directly.
+ * The stored owner is checked both when a delayed capture lands and when the
+ * frame is read for rendering. Compose can render one frame with the old
+ * state before LaunchedEffect clears it; the render-time owner check closes
+ * that window. This is a plain state holder so a JVM test can drive the race.
  */
 internal class FrozenFrameStore<T : Any> {
+    private data class OwnedFrame<T>(
+        val backend: Any,
+        val target: Any,
+        val value: T,
+    )
+
     var epoch by mutableLongStateOf(0L)
         private set
 
-    var frame by mutableStateOf<T?>(null)
-        private set
+    private var owned by mutableStateOf<OwnedFrame<T>?>(null)
 
     fun onOwnerChanged() {
         epoch += 1
-        frame = null
+        owned = null
     }
 
     fun onCaptured(
@@ -33,7 +39,7 @@ internal class FrozenFrameStore<T : Any> {
         currentBackend: Any?,
         currentTarget: Any?,
     ) {
-        frame = if (
+        owned = if (
             captured != null &&
             ownerEpoch == epoch &&
             ownerBackend != null &&
@@ -41,9 +47,15 @@ internal class FrozenFrameStore<T : Any> {
             ownerTarget != null &&
             ownerTarget == currentTarget
         ) {
-            captured
+            OwnedFrame(ownerBackend, ownerTarget, captured)
         } else {
             null
         }
     }
+
+    /** Render-time owner check, before the owner-change effect runs. */
+    fun frameFor(currentBackend: Any?, currentTarget: Any?): T? =
+        owned
+            ?.takeIf { it.backend === currentBackend && it.target == currentTarget }
+            ?.value
 }

@@ -23,7 +23,7 @@ class FrozenFrameOwnershipTest {
             currentBackend = backend,
             currentTarget = target,
         )
-        assertEquals("frame", store.frame)
+        assertEquals("frame", store.frameFor(backend, target))
     }
 
     @Test
@@ -40,7 +40,28 @@ class FrozenFrameOwnershipTest {
             currentBackend = otherBackend,
             currentTarget = otherTarget,
         )
-        assertNull(store.frame)
+        assertNull(store.frameFor(otherBackend, otherTarget))
+        assertNull(store.frameFor(backend, target))
+    }
+
+    @Test
+    fun `an accepted frame is hidden as soon as the rendered owner changes`() {
+        val store = FrozenFrameStore<String>()
+        store.onOwnerChanged()
+        store.onCaptured(
+            ownerEpoch = store.epoch,
+            ownerBackend = backend,
+            ownerTarget = target,
+            captured = "pane-a",
+            currentBackend = backend,
+            currentTarget = target,
+        )
+        assertEquals("pane-a", store.frameFor(backend, target))
+
+        // A new target/backend renders before LaunchedEffect clears the store.
+        assertNull(store.frameFor(otherBackend, otherTarget))
+        store.onOwnerChanged()
+        assertNull(store.frameFor(backend, target))
     }
 
     @Test
@@ -55,7 +76,7 @@ class FrozenFrameOwnershipTest {
             currentBackend = backend,
             currentTarget = target,
         )
-        assertNull(store.frame)
+        assertNull(store.frameFor(backend, target))
     }
 
     @Test
@@ -70,7 +91,7 @@ class FrozenFrameOwnershipTest {
             currentBackend = backend,
             currentTarget = otherTarget,
         )
-        assertNull(store.frame)
+        assertNull(store.frameFor(backend, otherTarget))
     }
 
     @Test
@@ -85,23 +106,6 @@ class FrozenFrameOwnershipTest {
             currentBackend = otherBackend,
             currentTarget = target,
         )
-        assertNull(store.frame)
-    }
-
-    @Test
-    fun `an owner change clears an accepted frame`() {
-        val store = FrozenFrameStore<String>()
-        store.onOwnerChanged()
-        store.onCaptured(
-            ownerEpoch = store.epoch,
-            ownerBackend = backend,
-            ownerTarget = target,
-            captured = "frame",
-            currentBackend = backend,
-            currentTarget = target,
-        )
-        assertEquals("frame", store.frame)
-        store.onOwnerChanged()
-        assertNull(store.frame)
+        assertNull(store.frameFor(otherBackend, target))
     }
 }

@@ -961,6 +961,10 @@ public class GhosttyTerminalView @JvmOverloads constructor(
         blinkPhaseOn = on
     }
 
+    internal fun setBlinkScheduledForTest(on: Boolean) {
+        blinkScheduled = on
+    }
+
     internal fun cursorCellForTest(): IntArray? {
         if (cursorX < 0 || cursorY < 0 || cellWidth <= 0f || cellHeight <= 0) return null
         return intArrayOf(cursorX, cursorY, cellWidth.toInt(), cellHeight)
