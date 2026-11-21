@@ -1,5 +1,20 @@
 # Changelog
 
+## Unreleased — connection chrome
+
+- Connection state now uses existing chrome instead of a new surface: the Home
+  header's second line replaces the counts (`Reconnecting… 12s`,
+  `Can't reach host:port`) with a 2dp rule (amber for retry, red for failure),
+  and Terminal uses the tab-rail rule plus a 32dp strip above the input panel.
+- Busy states use a 14–16dp inline M3 Expressive shape-morph indicator
+  (circle → rounded square → diamond → hexagon, one turn per cycle) and
+  spring-eased rule transitions. No spinner and no status container.
+- Removed full-width status pills and floating centre overlays. First load
+  shows workspace-shaped skeletons; attach failure is a compact left-aligned
+  block with `Retry` / `Back to tabs`.
+- An initial dial that fails with no cached snapshot now reports the failure
+  instead of staying on "Connecting…" while it retries.
+
 ## 2.3.0 — 2026-11-21
 
 - **CI safety:** `tools/ci.sh` never closes/stops a Herdr session without its

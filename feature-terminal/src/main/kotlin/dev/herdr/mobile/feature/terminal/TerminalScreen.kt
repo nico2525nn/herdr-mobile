@@ -10,6 +10,7 @@ import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.ime
 import androidx.compose.foundation.layout.safeDrawing
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.union
 import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.foundation.layout.size
@@ -32,8 +33,13 @@ import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import dev.herdr.mobile.core.designsystem.LinkRule
+import dev.herdr.mobile.core.designsystem.LinkStrip
+import dev.herdr.mobile.core.designsystem.LinkTone
 import dev.herdr.mobile.core.designsystem.LocalUiCopy
+import dev.herdr.mobile.core.designsystem.rememberElapsedSeconds
 import dev.herdr.mobile.core.designsystem.UiMessage
+import dev.herdr.mobile.core.model.ConnectionState
 import dev.herdr.mobile.core.model.UiFocusState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.setValue
@@ -96,6 +102,7 @@ fun TerminalScreen(
     var workspaceCloseTarget by rememberSaveable(stateSaver = WorkspaceMenuTargetSaver) {
         mutableStateOf<WorkspaceMenuTarget?>(null)
     }
+    var backendState by remember { mutableStateOf<BackendState?>(null) }
     // Manual keyboard summon (CJK panel button). Counter, not boolean: two
     // consecutive requests must both fire. Nothing else shows the IME — no
     // tap, no swipe, no focus change (Termux behavior). Page swipes never
@@ -273,38 +280,42 @@ fun TerminalScreen(
                 )
             }
         }
-        state.statusMessage?.let { message ->
-            Column {
-                Text(
-                    text = message.let { LocalUiCopy.current.render(it) },
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.error,
-                    modifier = Modifier
-                        .padding(horizontal = 16.dp, vertical = 4.dp)
-                        .semantics { liveRegion = LiveRegionMode.Polite },
-                )
-                if (message is UiMessage.TargetChanged) {
-                    // The screen can outlive its target (profile/host switch);
-                    // without this the user was stuck with a connection error
-                    // and no way back.
-                    TextButton(onClick = onNavigateHome) {
-                        Text("Choose a session")
-                    }
-                }
-            }
+        val terminalFailure = state.statusMessage is UiMessage.AttachFailed ||
+            state.statusMessage is UiMessage.ReconnectTimedOut ||
+            state.statusMessage is UiMessage.StreamChanged
+        val detached = backendState as? BackendState.Detached
+        val busyLink = state.connection == ConnectionState.CONNECTING ||
+            state.connection == ConnectionState.RECONNECTING
+        val elapsed = rememberElapsedSeconds(busyLink && state.backend != null)
+        val ruleTone = when {
+            state.connection == ConnectionState.FAILED -> LinkTone.ERROR
+            state.connection == ConnectionState.STALE -> LinkTone.WARNING
+            busyLink || detached != null -> LinkTone.BUSY
+            else -> LinkTone.NONE
         }
+        LinkRule(tone = ruleTone)
         Box(modifier = Modifier.weight(1f).fillMaxWidth()) {
             val backend = state.backend
             if (backend == null) {
+                val permanent = (state.statusMessage as? UiMessage.AttachFailed)
+                    ?.detail
+                    ?.contains("not found", ignoreCase = true) == true
                 TerminalPlaceholder(
                     connection = state.connection,
                     hasTarget = state.target != null,
+                    label = state.tab?.displayLabel,
+                    error = state.error,
+                    failure = state.statusMessage,
+                    onRetry = if (permanent) null else ({ viewModel.retryAttach() }),
+                    onBack = onNavigateHome,
                 )
             } else {
                 TerminalSurface(
                     state = state,
                     viewModel = viewModel,
                     onRetry = { viewModel.retryAttach() },
+                    onBack = onNavigateHome,
+                    onBackendState = { backendState = it },
                     keyboardShowRequest = keyboardShowRequest,
                     keyboardShowHandled = keyboardShowHandled,
                     onKeyboardShowHandled = { keyboardShowHandled = it },
@@ -313,13 +324,48 @@ fun TerminalScreen(
                     cjkFieldFocused = cjkFieldFocused,
                 )
             }
-            // Floats over the terminal's top rows; sub-second drops never show.
-            ConnectionBadge(
-                connection = state.connection,
-                modifier = Modifier
-                    .align(Alignment.TopCenter)
-                    .padding(top = 8.dp),
-            )
+            val transient = state.statusMessage
+            if (transient != null && !terminalFailure) {
+                androidx.compose.material3.Snackbar(
+                    modifier = Modifier
+                        .align(Alignment.BottomCenter)
+                        .padding(16.dp),
+                ) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Text(
+                            text = transient.let { LocalUiCopy.current.render(it) },
+                            modifier = Modifier.weight(1f),
+                        )
+                        if (transient is UiMessage.TargetChanged) {
+                            TextButton(onClick = onNavigateHome) {
+                                Text("Choose")
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        if (state.backend != null && !terminalFailure) {
+            val strip = when {
+                state.connection == ConnectionState.FAILED -> "Link down"
+                state.connection == ConnectionState.RECONNECTING ->
+                    if (elapsed > 0) "Reconnecting… ${elapsed}s" else "Reconnecting…"
+                state.connection == ConnectionState.CONNECTING -> "Connecting…"
+                state.connection == ConnectionState.STALE -> "Refreshing…"
+                detached != null ->
+                    if (detached.reason == "lagged_resync") "Resyncing…" else "Reattaching…"
+                else -> null
+            }
+            if (strip != null) {
+                LinkStrip(
+                    text = strip,
+                    tone = when {
+                        state.connection == ConnectionState.FAILED -> LinkTone.ERROR
+                        state.connection == ConnectionState.STALE -> LinkTone.WARNING
+                        else -> LinkTone.BUSY
+                    },
+                )
+            }
         }
         BottomInputPanel(
             viewModel = viewModel,

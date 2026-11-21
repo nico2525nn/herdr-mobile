@@ -95,9 +95,10 @@ class HomeWorkspaceListUiTest {
                     HomeHeader(
                         workspaceCount = state.workspaceCount,
                         tabCount = state.tabCount,
-                        stale = state.stale,
                         connection = state.connection,
+                        stale = state.stale,
                         error = state.error,
+                        onStatusClick = null,
                     )
                     Box(Modifier.weight(1f)) {
                         WorkspaceList(
@@ -172,7 +173,7 @@ class HomeWorkspaceListUiTest {
         assertEquals("api", menus.single().label)
     }
     @Test
-    fun headerKeepsTitleSubtitleAndErrorAtLargeFontScale() {
+    fun headerKeepsTitleAndFailureStatusAtLargeFontScale() {
         compose.setContent {
             HerdrMobileTheme(themeMode = ThemeMode.DARK) {
                 val density = LocalDensity.current
@@ -182,17 +183,19 @@ class HomeWorkspaceListUiTest {
                     HomeHeader(
                         workspaceCount = 2,
                         tabCount = 4,
+                        connection = ConnectionState.FAILED,
                         stale = false,
-                        connection = ConnectionState.CONNECTED,
                         error = "Connection refused",
+                        onStatusClick = null,
                     )
                 }
             }
         }
 
+        // The second line is the status slot: failure replaces the counts,
+        // and both lines must survive a 2x font scale without clipping.
         compose.onNodeWithText("Herdr").assertIsDisplayed()
-        compose.onNodeWithText("2 workspaces · 4 active tabs").assertIsDisplayed()
-        compose.onNodeWithText("Connection refused").assertIsDisplayed()
+        compose.onNodeWithText("Can't connect").assertIsDisplayed()
     }
 
 }

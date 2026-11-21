@@ -55,6 +55,8 @@ internal fun TerminalSurface(
     state: TerminalUiState,
     viewModel: TerminalViewModel,
     onRetry: () -> Unit,
+    onBack: () -> Unit,
+    onBackendState: (BackendState) -> Unit,
     keyboardShowRequest: Int,
     keyboardShowHandled: Int,
     onKeyboardShowHandled: (Int) -> Unit,
@@ -65,6 +67,7 @@ internal fun TerminalSurface(
 ) {
     val backend = state.backend ?: return
     val backendState by backend.state.collectAsStateWithLifecycle(initialValue = BackendState.Idle)
+    LaunchedEffect(backendState) { onBackendState(backendState) }
     // Attach failure / disconnect must never render as a blank terminal: show the
     // reason with a retry instead, and stop feeding a dead backend to the view.
     // lagged_resync is transient (daemon dropped burst frames): retry at once.
@@ -74,7 +77,11 @@ internal fun TerminalSurface(
     }
     when (val bs = backendState) {
         is BackendState.Failed -> {
-            TerminalErrorBody("Attach failed (${bs.code}): ${bs.message}", onRetry)
+            TerminalErrorBody(
+                message = "Attach failed (${bs.code}): ${bs.message}",
+                onRetry = onRetry,
+                onBack = onBack,
+            )
             return
         }
         // A detach is usually transient (link flap, resync). Replacing the
@@ -87,11 +94,49 @@ internal fun TerminalSurface(
         // stares at an empty terminal with no explanation and no recourse.
         is BackendState.Attached -> {
             if (!bs.visibleOk) {
-                TerminalErrorBody("Live screen unavailable — the pane may be gone", onRetry)
+                TerminalErrorBody(
+                    message = "The pane may be gone.",
+                    onRetry = null,
+                    onBack = onBack,
+                    title = "Live screen unavailable",
+                )
                 return
             }
         }
         else -> {}
+    }
+
+    // A retry budget exhausted is a content-level failure: replace the
+    // terminal with the compact block instead of leaving stale bytes with a
+    // floating status element above them.
+    when (val message = state.statusMessage) {
+        is dev.herdr.mobile.core.designsystem.UiMessage.AttachFailed -> {
+            TerminalErrorBody(
+                message = message.detail ?: "The pane did not attach.",
+                onRetry = onRetry,
+                onBack = onBack,
+            )
+            return
+        }
+        is dev.herdr.mobile.core.designsystem.UiMessage.ReconnectTimedOut -> {
+            TerminalErrorBody(
+                message = "The daemon did not answer.",
+                onRetry = onRetry,
+                onBack = onBack,
+                title = "Reconnect timed out",
+            )
+            return
+        }
+        is dev.herdr.mobile.core.designsystem.UiMessage.StreamChanged -> {
+            TerminalErrorBody(
+                message = "The terminal stream was replaced.",
+                onRetry = onRetry,
+                onBack = onBack,
+                title = "Connection changed",
+            )
+            return
+        }
+        else -> Unit
     }
 
     val settings = state.settings
@@ -334,15 +379,6 @@ internal fun TerminalSurface(
                     .padding(vertical = 8.dp),
             )
         }
-        if (detached != null) {
-            ReconnectOverlay(
-                reason = detached.reason,
-                onRetry = onRetry,
-                modifier = Modifier
-                    .align(Alignment.Center)
-                    .padding(16.dp),
-            )
-        }
     }
 
     DisposableEffect(controller) {
@@ -372,30 +408,5 @@ private fun syncSticky(
             GhosttyExtraKeysState.StickyState.LOCKED -> GhosttyExtraKeysState.StickyState.INACTIVE
         }
         attempts++
-    }
-}
-
-@Composable
-private fun ReconnectOverlay(
-    reason: String,
-    onRetry: () -> Unit,
-    modifier: Modifier = Modifier,
-) {
-    androidx.compose.material3.Surface(
-        modifier = modifier,
-        shape = androidx.compose.material3.MaterialTheme.shapes.large,
-        color = androidx.compose.material3.MaterialTheme.colorScheme.surfaceContainerHigh,
-    ) {
-        Row(
-            modifier = Modifier.padding(horizontal = 12.dp, vertical = 4.dp),
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(8.dp),
-        ) {
-            Text(
-                text = if (reason == "lagged_resync") "Resyncing…" else "Reconnecting…",
-                style = androidx.compose.material3.MaterialTheme.typography.labelMedium,
-            )
-            androidx.compose.material3.TextButton(onClick = onRetry) { Text("Retry") }
-        }
     }
 }

@@ -170,6 +170,11 @@ class HomeViewModel(
         _message.value = null
     }
 
+    /** Retry the link from the header failure state. */
+    fun retry() {
+        client.kick()
+    }
+
     val uiState: StateFlow<HomeUiState> = kotlinx.coroutines.flow.combine(
         client.state,
         _reorderReset,

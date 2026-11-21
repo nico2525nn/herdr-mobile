@@ -1,6 +1,8 @@
 package dev.herdr.mobile.feature.home
 
 import androidx.compose.animation.animateContentSize
+import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.interaction.MutableInteractionSource
@@ -21,18 +23,22 @@ import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.grid.GridCells
 import androidx.compose.foundation.lazy.grid.GridItemSpan
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.lazy.grid.items
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.ChevronRight
 import androidx.compose.material.icons.filled.Download
 import androidx.compose.material.icons.filled.DragHandle
+import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.DropdownMenu
@@ -60,9 +66,14 @@ import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import dev.herdr.mobile.core.designsystem.ExpressiveStatusGlyph
+import dev.herdr.mobile.core.designsystem.HerdrTheme
+import dev.herdr.mobile.core.designsystem.LinkRule
+import dev.herdr.mobile.core.designsystem.LinkTone
 import dev.herdr.mobile.core.designsystem.PeerTabChip
 import dev.herdr.mobile.core.designsystem.StatusDot
 import dev.herdr.mobile.core.designsystem.contentDescription
+import dev.herdr.mobile.core.designsystem.rememberElapsedSeconds
 import dev.herdr.mobile.core.designsystem.text
 import dev.herdr.mobile.core.model.ConnectionState
 import dev.herdr.mobile.core.model.Tab
@@ -184,17 +195,42 @@ internal fun HerdrUpdatePill(
 internal fun HomeHeader(
     workspaceCount: Int,
     tabCount: Int,
-    stale: Boolean,
     connection: ConnectionState,
+    stale: Boolean,
     error: String?,
+    onStatusClick: (() -> Unit)?,
     modifier: Modifier = Modifier,
 ) {
-    val subtitle = when {
-        workspaceCount == 0 && connection == ConnectionState.CONNECTED ->
-            "No workspaces"
-
-        workspaceCount == 0 -> connection.name.lowercase().replaceFirstChar { it.uppercase() }
-        else -> "$workspaceCount workspaces · $tabCount active tabs"
+    val busy = connection == ConnectionState.CONNECTING ||
+        connection == ConnectionState.RECONNECTING
+    val elapsed = rememberElapsedSeconds(busy)
+    // A transport retry with no snapshot still reports CONNECTING; once the
+    // first dial fails, the error is the truth and the header must say so
+    // instead of spinning "Connecting…" forever.
+    val failed = connection == ConnectionState.FAILED ||
+        (connection == ConnectionState.CONNECTING && error != null)
+    // The second line is one slot: either the counts or the link state.
+    // State must not become a second, removable surface above the content.
+    val status = when {
+        failed -> connectionProblem(error)
+        connection == ConnectionState.CONNECTING -> "Connecting…"
+        connection == ConnectionState.RECONNECTING ->
+            if (elapsed > 0) "Reconnecting… ${elapsed}s" else "Reconnecting…"
+        connection == ConnectionState.FAILED -> connectionProblem(error)
+        stale -> "Refreshing…"
+        else -> null
+    }
+    val tabs = if (tabCount == 1) "1 active tab" else "$tabCount active tabs"
+    val summary = status ?: when {
+        workspaceCount == 0 -> "No workspaces"
+        workspaceCount == 1 -> "1 workspace · $tabs"
+        else -> "$workspaceCount workspaces · $tabs"
+    }
+    val tone = when {
+        failed -> LinkTone.ERROR
+        stale -> LinkTone.WARNING
+        busy -> LinkTone.BUSY
+        else -> LinkTone.NONE
     }
     // A plain wrapping header instead of LargeTopAppBar: Material3 1.4.0's
     // public large bar reuses its title slot as the collapsed row, so a
@@ -204,45 +240,164 @@ internal fun HomeHeader(
         color = MaterialTheme.colorScheme.surface,
         modifier = modifier.fillMaxWidth(),
     ) {
+        Column {
+            Column(
+                modifier = Modifier.padding(start = 16.dp, end = 16.dp, top = 16.dp, bottom = 10.dp),
+            ) {
+                Text(
+                    text = "Herdr",
+                    style = MaterialTheme.typography.displaySmall,
+                )
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    if (busy && !failed) {
+                        ExpressiveStatusGlyph(
+                            color = MaterialTheme.colorScheme.primary,
+                            size = 16.dp,
+                        )
+                        Spacer(Modifier.width(8.dp))
+                    }
+                    Text(
+                        text = summary,
+                        style = MaterialTheme.typography.titleMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                        modifier = Modifier
+                            .weight(1f, fill = false)
+                            .then(
+                                if (onStatusClick != null) {
+                                    Modifier.clickable(onClick = onStatusClick)
+                                } else {
+                                    Modifier
+                                },
+                            ),
+                    )
+                }
+            }
+            LinkRule(tone = tone)
+        }
+    }
+}
+
+/** "Can't reach 192.168.1.4:8765" when the error names an endpoint. */
+private val hostPattern = Regex("""(?:to\s+)(/?[A-Za-z0-9.\-\[\]:]+:\d+)""")
+
+private fun connectionProblem(error: String?): String {
+    if (error?.contains("No host profile", ignoreCase = true) == true) {
+        return "No host configured"
+    }
+    val host = error
+        ?.let { hostPattern.find(it)?.groupValues?.getOrNull(1) }
+        ?.trimStart('/')
+    return if (host.isNullOrEmpty()) "Can't connect" else "Can't reach $host"
+}
+
+/** One short cause clause, stripped of transport noise already in the header. */
+private fun connectionDetail(error: String?): String = when {
+    error == null -> "The daemon is not reachable."
+    error.contains("No host profile", ignoreCase = true) ->
+        "Add a host profile in Settings, then come back."
+    error.contains("Connection refused", ignoreCase = true) -> "Connection refused."
+    error.contains("timed out", ignoreCase = true) ||
+        error.contains("timeout", ignoreCase = true) -> "The host did not answer."
+    error.contains("unauthorized", ignoreCase = true) -> "The host rejected the token."
+    else -> error
+}
+
+@Composable
+internal fun HomeOfflineBody(
+    error: String?,
+    onRetry: (() -> Unit)?,
+    modifier: Modifier = Modifier,
+) {
+    val unconfigured = error?.contains("No host profile", ignoreCase = true) == true
+    // The header already names the state and the endpoint. The body adds only
+    // the cause and the action; repeating the headline here was redundant.
+    Box(
+        modifier = modifier.fillMaxSize(),
+        contentAlignment = Alignment.TopStart,
+    ) {
         Column(
-            modifier = Modifier.padding(start = 16.dp, end = 16.dp, top = 16.dp, bottom = 8.dp),
+            modifier = Modifier
+                .padding(start = 16.dp, top = 20.dp, end = 16.dp)
+                .widthIn(max = 300.dp),
+            verticalArrangement = Arrangement.spacedBy(4.dp),
         ) {
             Text(
-                text = "Herdr",
-                style = MaterialTheme.typography.displaySmall,
-            )
-            Text(
-                text = if (stale) "$subtitle · stale" else subtitle,
-                style = MaterialTheme.typography.titleMedium,
+                text = connectionDetail(error),
+                style = MaterialTheme.typography.bodyMedium,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
+                maxLines = 3,
+                overflow = TextOverflow.Ellipsis,
             )
-            if (error != null && workspaceCount > 0) {
-                Text(
-                    text = error,
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.error,
-                    maxLines = 2,
-                    overflow = TextOverflow.Ellipsis,
-                )
+            if (onRetry != null && !unconfigured) {
+                Button(onClick = onRetry) {
+                    Icon(
+                        imageVector = Icons.Filled.Refresh,
+                        contentDescription = null,
+                        modifier = Modifier.size(18.dp),
+                    )
+                    Spacer(Modifier.width(8.dp))
+                    Text("Retry")
+                }
             }
         }
     }
 }
 
+/**
+ * First-load skeleton at the real card geometry. It communicates "connected,
+ * still loading" without a spinner or a centred logo in an empty field.
+ */
 @Composable
-internal fun HomeOfflineBody(error: String?, modifier: Modifier = Modifier) {
-    Box(modifier = modifier.padding(20.dp), contentAlignment = Alignment.Center) {
-        Column(horizontalAlignment = Alignment.CenterHorizontally) {
-            Text(
-                text = "Not connected",
-                style = MaterialTheme.typography.titleLarge,
-            )
-            Spacer(Modifier.height(8.dp))
-            Text(
-                text = error ?: "Add a host profile in Settings, then come back.",
-                style = MaterialTheme.typography.bodyMedium,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-            )
+internal fun HomeSkeleton(modifier: Modifier = Modifier) {
+    val bone = if (HerdrTheme.amoled) {
+        MaterialTheme.colorScheme.outlineVariant
+    } else {
+        MaterialTheme.colorScheme.surfaceContainerHighest
+    }
+    val edge = if (HerdrTheme.amoled) {
+        Modifier.border(
+            width = 1.dp,
+            color = MaterialTheme.colorScheme.outlineVariant,
+            shape = MaterialTheme.shapes.large,
+        )
+    } else {
+        Modifier
+    }
+    Column(
+        modifier = modifier
+            .fillMaxSize()
+            .padding(16.dp),
+        verticalArrangement = Arrangement.spacedBy(12.dp),
+    ) {
+        repeat(3) {
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .then(edge)
+                    .padding(16.dp),
+                verticalArrangement = Arrangement.spacedBy(14.dp),
+            ) {
+                Box(
+                    modifier = Modifier
+                        .fillMaxWidth(0.42f)
+                        .height(20.dp)
+                        .clip(CircleShape)
+                        .background(bone),
+                )
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    repeat(3) {
+                        Box(
+                            modifier = Modifier
+                                .width(64.dp)
+                                .height(26.dp)
+                                .clip(CircleShape)
+                                .background(bone),
+                        )
+                    }
+                }
+            }
         }
     }
 }
@@ -254,29 +409,6 @@ internal fun HomeEmptyBody(modifier: Modifier = Modifier) {
             text = "No workspaces on this Herdr server.",
             style = MaterialTheme.typography.bodyLarge,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
-        )
-    }
-}
-
-@Composable
-internal fun OfflineBanner(connection: ConnectionState, stale: Boolean, error: String?) {
-    val text = when {
-        connection == ConnectionState.CONNECTING -> "Connecting…"
-        connection == ConnectionState.RECONNECTING && stale -> "Reconnecting — showing last known state"
-        connection == ConnectionState.RECONNECTING -> "Reconnecting…"
-        stale -> "Stale snapshot — reconnecting"
-        else -> error ?: "Connection issue"
-    }
-    Surface(
-        color = MaterialTheme.colorScheme.errorContainer,
-        contentColor = MaterialTheme.colorScheme.onErrorContainer,
-        shape = MaterialTheme.shapes.medium,
-        modifier = Modifier.fillMaxWidth(),
-    ) {
-        Text(
-            text = text,
-            style = MaterialTheme.typography.bodySmall,
-            modifier = Modifier.padding(horizontal = 16.dp, vertical = 10.dp),
         )
     }
 }

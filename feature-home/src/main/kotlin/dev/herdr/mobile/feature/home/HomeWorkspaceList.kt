@@ -176,15 +176,6 @@ internal fun WorkspaceList(
         contentPadding = PaddingValues(start = 16.dp, top = 16.dp, end = 16.dp, bottom = 80.dp),
         verticalArrangement = Arrangement.spacedBy(12.dp),
     ) {
-        if (state.showOfflineBanner || state.stale) {
-            item(key = "banner") {
-                OfflineBanner(
-                    connection = state.connection,
-                    stale = state.stale,
-                    error = state.error,
-                )
-            }
-        }
         items(
             items = reorder.order.value,
             key = { it.id },

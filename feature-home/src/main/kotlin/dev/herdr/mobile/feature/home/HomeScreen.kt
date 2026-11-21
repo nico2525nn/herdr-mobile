@@ -107,6 +107,7 @@ fun HomeScreen(
     // Screen origin in window coords: the anchor Box renders here, so press
     // points (window coords) are offset back by this to land on the chip.
     var screenOrigin by remember { mutableStateOf(androidx.compose.ui.geometry.Offset.Zero) }
+    var showConnectionDetail by remember { mutableStateOf(false) }
 
     Box(modifier = modifier.fillMaxSize()) {
     Column(
@@ -117,9 +118,18 @@ fun HomeScreen(
         HomeHeader(
             workspaceCount = state.workspaceCount,
             tabCount = state.tabCount,
-            stale = state.stale,
             connection = state.connection,
+            stale = state.stale,
             error = state.error,
+            onStatusClick = if (
+                state.error != null &&
+                (state.connection == ConnectionState.FAILED ||
+                    state.connection == ConnectionState.CONNECTING)
+            ) {
+                { showConnectionDetail = true }
+            } else {
+                null
+            },
         )
         state.updateAvailable?.let { latest ->
             HerdrUpdatePill(
@@ -128,17 +138,20 @@ fun HomeScreen(
                 onUpdate = { viewModel.runHerdrUpdate() },
             )
         }
-        message?.let { shown ->
-            Text(
-                text = shown.let { LocalUiCopy.current.render(it) },
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.error,
-                modifier = Modifier.padding(horizontal = 16.dp, vertical = 4.dp),
-            )
-        }
         when {
+            state.snapshot == null && state.error == null &&
+                (state.connection == ConnectionState.CONNECTING ||
+                    state.connection == ConnectionState.RECONNECTING ||
+                    state.connection == ConnectionState.IDLE) -> {
+                HomeSkeleton(modifier = Modifier.fillMaxSize())
+            }
+
             state.snapshot == null && state.showOfflineBanner -> {
-                HomeOfflineBody(error = state.error, modifier = Modifier.fillMaxSize())
+                HomeOfflineBody(
+                    error = state.error,
+                    onRetry = { viewModel.retry() },
+                    modifier = Modifier.fillMaxSize(),
+                )
             }
 
             state.snapshot == null -> {
@@ -180,15 +193,6 @@ fun HomeScreen(
                             verticalArrangement = Arrangement.spacedBy(12.dp),
                             horizontalArrangement = Arrangement.spacedBy(12.dp),
                         ) {
-                            if (state.showOfflineBanner || state.stale) {
-                                item(key = "banner", span = { GridItemSpan(maxLineSpan) }) {
-                                    OfflineBanner(
-                                        connection = state.connection,
-                                        stale = state.stale,
-                                        error = state.error,
-                                    )
-                                }
-                            }
                             items(
                                 items = state.snapshot!!.workspaces,
                                 key = { it.id },
@@ -234,6 +238,15 @@ fun HomeScreen(
             },
         ) {
             Icon(Icons.Filled.Add, contentDescription = "New workspace")
+        }
+        message?.let { shown ->
+            androidx.compose.material3.Snackbar(
+                modifier = Modifier
+                    .align(Alignment.BottomCenter)
+                    .padding(16.dp),
+            ) {
+                Text(shown.let { LocalUiCopy.current.render(it) })
+            }
         }
     } // Box
 
@@ -301,6 +314,28 @@ fun HomeScreen(
             onConfirm = { label, cwd ->
                 viewModel.createWorkspace(label, cwd)
                 showCreate = false
+            },
+        )
+    }
+    if (showConnectionDetail) {
+        AlertDialog(
+            onDismissRequest = { showConnectionDetail = false },
+            title = { Text("Can't connect") },
+            text = { Text(state.error ?: "The daemon is not reachable.") },
+            confirmButton = {
+                TextButton(
+                    onClick = {
+                        showConnectionDetail = false
+                        viewModel.retry()
+                    },
+                ) {
+                    Text("Retry")
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { showConnectionDetail = false }) {
+                    Text("Close")
+                }
             },
         )
     }

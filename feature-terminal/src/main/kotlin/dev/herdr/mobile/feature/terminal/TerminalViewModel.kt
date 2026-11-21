@@ -33,6 +33,8 @@ import kotlinx.coroutines.launch
 data class TerminalUiState(
     val snapshot: SessionSnapshot? = null,
     val connection: ConnectionState = ConnectionState.IDLE,
+    val stale: Boolean = false,
+    val error: String? = null,
     val target: TerminalTarget? = null,
     val backend: ConnectionTerminalBackend? = null,
     val settings: AppSettings = AppSettings(),
@@ -147,6 +149,8 @@ class TerminalViewModel(
         TerminalUiState(
             snapshot = clientState.snapshot,
             connection = clientState.connection,
+            stale = clientState.stale,
+            error = clientState.error,
             target = target.takeIf { clientState.snapshot != null },
             backend = backend.takeIf { clientState.snapshot != null },
             settings = settings,
