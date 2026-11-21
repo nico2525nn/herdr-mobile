@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased — post-2.2.0 deep-review fixes
+## 2.3.0 — 2026-11-21
 
 - **CI safety:** `tools/ci.sh` never closes/stops a Herdr session without its
   own `.ci-owned` marker, refuses a private port that matches the live daemon,
