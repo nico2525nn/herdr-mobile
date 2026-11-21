@@ -123,7 +123,10 @@ internal class SnapshotSync(
         }
         if (!updated) return
         // Publish only after the fold, and only while this link is still live.
-        if (state.isCurrentEpoch(generation, connectionEpoch)) {
+        // Emit both flows under the same lock that validates the epoch. A
+        // check followed by tryEmit could leak an old event if the target was
+        // invalidated in between.
+        state.withCurrentEpoch(generation, connectionEpoch) {
             _events.tryEmit(event)
             _stampedEvents.tryEmit(StampedEvent(connectionEpoch, event))
         }

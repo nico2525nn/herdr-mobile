@@ -31,20 +31,18 @@ resolve_deploy_token() {
   exec="$(systemctl --user show "$SERVICE" -p ExecStart --value 2>/dev/null || true)"
   token="$(printf '%s' "$exec" |
     sed -n 's/.*--token[= ]\([^ ;"]*\).*/\1/p' | tr -d '"' | head -n1)"
-  if [[ -z "$token" ]]; then
-    env="$(systemctl --user show "$SERVICE" -p Environment --value 2>/dev/null || true)"
-    token="$(token_from_env_text "$env")"
-  fi
-  if [[ -z "$token" ]]; then
-    # systemd exposes this property as EnvironmentFiles (plural).
-    envfiles="$(systemctl --user show "$SERVICE" -p EnvironmentFiles --value 2>/dev/null || true)"
-    for file in $envfiles; do
-      [[ -r "$file" ]] || continue
-      token="$(sed -n 's/^[[:space:]]*\(export[[:space:]]\{1,\}\)\?HERDR_MOBILE_TOKEN=//p' "$file" |
-        tr -d '"' | head -n1)"
-      [[ -n "$token" ]] && break
-    done
-  fi
+  env="$(systemctl --user show "$SERVICE" -p Environment --value 2>/dev/null || true)"
+  token="$(token_from_env_text "$env")"
+  # systemd reads EnvironmentFiles after Environment and later files override
+  # earlier ones; mirror that order instead of stopping at the first value.
+  envfiles="$(systemctl --user show "$SERVICE" -p EnvironmentFiles --value 2>/dev/null || true)"
+  for file in $envfiles; do
+    [[ -r "$file" ]] || continue
+    local value
+    value="$(sed -n 's/^[[:space:]]*\(export[[:space:]]\{1,\}\)\?HERDR_MOBILE_TOKEN=//p' "$file" |
+      tr -d '"' | head -n1)"
+    [[ -n "$value" ]] && token="$value"
+  done
   printf '%s' "$token"
 }
 

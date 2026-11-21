@@ -16,10 +16,15 @@ internal fun resolveTarget(
     workspaceId: String?,
     tabId: String?,
     paneId: String?,
+    allowFallback: Boolean = true,
 ): TerminalTarget? {
     val workspace = snapshot.workspace(workspaceId)
-        ?: snapshot.workspaces.firstOrNull { it.focused }
-        ?: snapshot.workspaces.firstOrNull()
+        ?: if (allowFallback) {
+            snapshot.workspaces.firstOrNull { it.focused }
+                ?: snapshot.workspaces.firstOrNull()
+        } else {
+            null
+        }
         ?: return null
     // A deep link carries the pane id captured when the notification was
     // posted. The pane may have moved to another tab since (the notification

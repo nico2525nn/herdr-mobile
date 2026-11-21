@@ -5,6 +5,7 @@ import androidx.compose.foundation.gestures.awaitEachGesture
 import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.foundation.gestures.awaitLongPressOrCancellation
 import androidx.compose.foundation.gestures.scrollBy
+import androidx.compose.ui.input.pointer.PointerEventPass
 import androidx.compose.ui.input.pointer.changedToUpIgnoreConsumed
 import androidx.compose.foundation.lazy.LazyListState
 import androidx.compose.foundation.lazy.rememberLazyListState
@@ -175,8 +176,18 @@ fun <T> rememberReorderState(
                         var slopAccum = 0f
                         var done = false
                         while (!done) {
-                            val event = awaitPointerEvent()
+                            val event = awaitPointerEvent(PointerEventPass.Initial)
                             val change = event.changes.firstOrNull { it.id == down.id }
+                            if (change != null && change.isConsumed) {
+                                // Compose's cancel synthesis is consumed with
+                                // pressed=false; do not commit a reorder/menu.
+                                draggingKey.value = null
+                                scrollDir.intValue = 0
+                                dragOffsetPx.floatValue = 0f
+                                order.value = pendingReset.value ?: latestItems.value
+                                pendingReset.value = null
+                                return@awaitEachGesture
+                            }
                             if (change == null || change.changedToUpIgnoreConsumed()) {
                                 done = true
                                 break

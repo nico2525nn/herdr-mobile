@@ -284,7 +284,7 @@ for w in d.get("result", {}).get("workspaces", []):
 }
 
 stop_private_session() {
-  local dir
+  local dir stop_status=0 delete_status=0 state
   dir="$(session_dir)"
   # The EXIT trap runs even when the ownership guard aborted the run. Never
   # close or stop a session that this invocation did not create.
@@ -295,13 +295,14 @@ stop_private_session() {
   if session_state; then
     close_private_workspaces
     info "stopping private herdr session '$PRIVATE_SESSION'"
-    "$HERDR" --session "$PRIVATE_SESSION" server stop >/dev/null 2>&1 || true
+    "$HERDR" --session "$PRIVATE_SESSION" server stop >/dev/null 2>&1 ||
+      stop_status=$?
     for _ in $(seq 1 100); do
       if ! session_state; then break; fi
       sleep 0.1
     done
   else
-    local state=$?
+    state=$?
     if (( state == 2 )); then
       printf "ci: cannot verify whether session '%s' stopped; keeping its CI marker\n" \
         "$PRIVATE_SESSION" >&2
@@ -313,8 +314,8 @@ stop_private_session() {
       "$PRIVATE_SESSION" >&2
     return 1
   else
-    local final_state=$?
-    if (( final_state == 2 )); then
+    state=$?
+    if (( state == 2 )); then
       printf "ci: cannot verify that session '%s' stopped; keeping its CI marker\n" \
         "$PRIVATE_SESSION" >&2
       return 1
@@ -322,15 +323,25 @@ stop_private_session() {
   fi
   if [[ -d "$dir" ]]; then
     if [[ -e "$dir/.ci-owned" ]]; then
-      "$HERDR" session delete "$PRIVATE_SESSION" >/dev/null 2>&1 || true
-      # Only remove the directory once the session is confirmed stopped. A
-      # still-running server would lose its ownership marker here.
+      "$HERDR" session delete "$PRIVATE_SESSION" >/dev/null 2>&1 ||
+        delete_status=$?
+      if (( delete_status != 0 )); then
+        printf "ci: could not delete session '%s'; keeping its CI marker\n" \
+          "$PRIVATE_SESSION" >&2
+        return 1
+      fi
+      # Only remove the directory once the session is confirmed stopped and
+      # its registry entry deleted.
       if [[ -d "$dir" ]]; then
         rm -rf "$dir"
       fi
     else
       info "warning: $dir has no CI marker; leaving it alone"
     fi
+  fi
+  if (( stop_status != 0 )); then
+    printf "ci: server stop returned %d for '%s'\n" "$stop_status" "$PRIVATE_SESSION" >&2
+    return 1
   fi
   return 0
 }
@@ -739,7 +750,10 @@ fi
 
 # ------------------------------------------------------------- isolation proof
 say "verifying the live session was untouched"
-if (( LIVE_ISOLATION )); then
+if (( TEARDOWN_STATUS != 0 )); then
+  printf '\nISOLATION FAILED: private teardown did not complete; refusing to claim the live session was untouched\n' >&2
+  ISOLATION_STATUS=1
+elif (( LIVE_ISOLATION )); then
   LIVE_AFTER="$(herdr_signature 2>/dev/null)" || LIVE_AFTER=""
   if [[ -z "$LIVE_AFTER" ]]; then
     printf '\nISOLATION FAILED: the live session was readable before the run but not after\n' >&2

@@ -51,11 +51,27 @@ interface HerdrSession {
 
     suspend fun closeWorkspace(workspaceId: String)
 
+    /** Close only if the target that produced [workspaceId] is still current. */
+    suspend fun closeWorkspaceAt(workspaceId: String, targetGeneration: Long) {
+        if (this.targetGeneration != targetGeneration) return
+        closeWorkspace(workspaceId)
+    }
+
     suspend fun renameWorkspace(workspaceId: String, label: String)
 
     suspend fun moveTab(tabId: String, insertIndex: Long)
 
     suspend fun moveWorkspace(workspaceId: String, insertIndex: Long)
+
+    /** Reorder only within the target that produced [workspaceId]. */
+    suspend fun moveWorkspaceAt(
+        workspaceId: String,
+        insertIndex: Long,
+        targetGeneration: Long,
+    ) {
+        if (this.targetGeneration != targetGeneration) return
+        moveWorkspace(workspaceId, insertIndex)
+    }
 
     suspend fun interrupt(paneId: String)
 

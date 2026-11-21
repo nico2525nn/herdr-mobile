@@ -35,6 +35,9 @@ pub struct AppState {
             std::collections::HashMap<String, crate::herdrcore::CoreReadMark>,
         >,
     >,
+    /// Tells every Core event subscriber that another client's read-ack
+    /// changed the snapshot (Core has no global focus/seen RPC).
+    pub core_read_changed: tokio::sync::broadcast::Sender<()>,
     pub bus: Arc<EventBus>,
     pub terminals: Arc<terminal::TerminalRegistry>,
     pub updater: UpdateWatcher,
@@ -111,6 +114,10 @@ async fn main() -> Result<()> {
         core,
         core_focus: Arc::new(std::sync::Mutex::new(None)),
         core_read: Arc::new(std::sync::Mutex::new(std::collections::HashMap::new())),
+        core_read_changed: {
+            let (tx, _) = tokio::sync::broadcast::channel(16);
+            tx
+        },
         bus,
         terminals,
         updater,

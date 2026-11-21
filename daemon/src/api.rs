@@ -306,6 +306,9 @@ fn record_core_read(state: &AppState, terminal: &Value, pane_id: &str) {
             }
         }
     }
+    // Other phones watching this Core daemon must refetch to see the read
+    // state; there is no Core-side focus/seen broadcast to relay.
+    let _ = state.core_read_changed.send(());
 }
 
 /// Focus/read-ack one pane. TUI `tab.focus` activates the tab's last pane,
@@ -600,10 +603,11 @@ async fn tab_focus(
             .and_then(|terminal| {
                 Some((terminal, crate::herdrcore::CoreFocus::from_terminal(terminal)?))
             });
-        let Some((terminal, focus)) = focused else {
+        let Some((_terminal, focus)) = focused else {
             return api_error(StatusCode::NOT_FOUND, "not_found", format!("tab {tab_id} not found"));
         };
-        record_core_read(&state, terminal, &focus.pane_id);
+        // Tab focus is navigation only; only the explicit pane focus is a
+        // read-ack (a tab may be activated without the pane attaching).
         if let Ok(mut current) = state.core_focus.lock() {
             *current = Some(focus);
         }
@@ -825,7 +829,13 @@ async fn events_ws(
         return e;
     }
     if selected_backend(&state, &headers) == crate::config::Backend::Core {
-        return ws.on_upgrade(move |socket| serve_core_events(socket, state.core.clone()));
+        return ws.on_upgrade(move |socket| {
+            serve_core_events(
+                socket,
+                state.core.clone(),
+                state.core_read_changed.subscribe(),
+            )
+        });
     }
     ws.on_upgrade(move |socket| serve_events(socket, state.bus.clone(), state.cache.clone()))
 }
@@ -911,7 +921,11 @@ async fn serve_events(socket: WebSocket, bus: Arc<EventBus>, cache: Arc<SessionC
     info!("events subscriber disconnected");
 }
 
-async fn serve_core_events(socket: WebSocket, core: crate::herdrcore::CoreClient) {
+async fn serve_core_events(
+    socket: WebSocket,
+    core: crate::herdrcore::CoreClient,
+    mut read_changed: tokio::sync::broadcast::Receiver<()>,
+) {
     let mut subscription = match core.subscribe().await {
         Ok(subscription) => subscription,
         Err(error) => {
@@ -980,6 +994,38 @@ async fn serve_core_events(socket: WebSocket, core: crate::herdrcore::CoreClient
                         }
                     }
                     _ => {}
+                }
+            }
+            changed = read_changed.recv() => {
+                match changed {
+                    Ok(()) | Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {
+                        let required = SemanticEvent {
+                            // snapshot.required is handled before the seq check
+                            // by SnapshotReducer, so reusing the cursor avoids
+                            // minting a sequence that collides with Core.
+                            seq: cursor.seq(),
+                            kind: "snapshot.required".to_owned(),
+                            at: crate::cache::now_rfc3339(),
+                            workspace_id: None,
+                            tab_id: None,
+                            pane_id: None,
+                            status: None,
+                            label: None,
+                            message: None,
+                            revision: Some(cursor.seq()),
+                            detail: None,
+                        };
+                        if sink
+                            .send(Message::Text(
+                                serde_json::to_string(&required).unwrap().into(),
+                            ))
+                            .await
+                            .is_err()
+                        {
+                            break;
+                        }
+                    }
+                    Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
                 }
             }
             message = stream.next() => {

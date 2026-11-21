@@ -59,10 +59,29 @@ internal class LinkState(private val clock: LinkClock) {
 
     fun currentConnectionEpoch(): Long = connectionEpoch
 
+    /** Endpoint belonging to [targetGeneration], or null after a target switch. */
+    fun endpointFor(targetGeneration: Long): DaemonEndpoint? = synchronized(lock) {
+        if (this.targetGeneration == targetGeneration) endpoint else null
+    }
+
     fun isCurrentEpoch(generation: Long, connectionEpoch: Long): Boolean =
         synchronized(lock) {
             linkGeneration == generation && this.connectionEpoch == connectionEpoch
         }
+
+    /** Run a publish/emit block only while both the link and attempt are live. */
+    fun withCurrentEpoch(
+        generation: Long,
+        connectionEpoch: Long,
+        block: () -> Unit,
+    ): Boolean = synchronized(lock) {
+        if (linkGeneration != generation || this.connectionEpoch != connectionEpoch) {
+            false
+        } else {
+            block()
+            true
+        }
+    }
 
     /** Publish a state transform only while both the link and attempt are live. */
     fun updateAt(

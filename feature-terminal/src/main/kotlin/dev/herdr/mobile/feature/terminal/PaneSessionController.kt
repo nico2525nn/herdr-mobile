@@ -25,6 +25,7 @@ import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeout
+import kotlinx.coroutines.withTimeoutOrNull
 
 /**
  * Owns "which pane is on screen and how traffic reaches it".
@@ -79,6 +80,12 @@ class PaneSessionController(
     private var backendPaneId: String? = null
     private var observedTargetGeneration = session.targetGeneration
     private var targetOwnerGeneration: Long? = null
+    /**
+     * A screen left open across a host switch must not fall back to the new
+     * host's focused/first workspace using the old route's ids. A fresh screen
+     * (initialResolutionAllowed) may still do that.
+     */
+    private var initialResolutionAllowed = true
 
     /** Start the collectors: target resolution + recovery rules. */
     fun start() {
@@ -118,7 +125,13 @@ class PaneSessionController(
         val snapshot = state.snapshot ?: return
         val current = targetFlow.value
         if (current == null) {
-            val resolved = resolveTarget(snapshot, initialWorkspaceId, initialTabId, initialPaneId)
+            val resolved = resolveTarget(
+                snapshot,
+                initialWorkspaceId,
+                initialTabId,
+                initialPaneId,
+                allowFallback = initialResolutionAllowed,
+            )
             if (resolved != null) {
                 onMessage(null)
                 fallbackNotice(
@@ -160,6 +173,7 @@ class PaneSessionController(
             return
         }
         targetFlow.value = null
+        initialResolutionAllowed = false
         onMessage(UiMessage.TargetChanged)
     }
 
@@ -394,6 +408,22 @@ class PaneSessionController(
         lastReadAckAttemptAt = now
         readAckPaneId = pane.id
         ackJob = scope.launch {
+            // Do not mark a DONE read before the pane stream actually
+            // attached. A failed attach must leave the completion unread.
+            val backend = backendFlow.value ?: run {
+                readAckPaneId = null
+                return@launch
+            }
+            withTimeoutOrNull(5_000) {
+                backend.state.first { it is BackendState.Attached }
+            } ?: run {
+                readAckPaneId = null
+                return@launch
+            }
+            if (targetFlow.value != target || targetOwnerGeneration != generation) {
+                readAckPaneId = null
+                return@launch
+            }
             val ok = focusPaneForReadAck(session, pane.id) { detail ->
                 if (session.targetGeneration == generation) {
                     onMessage(UiMessage.CommandFailed(UiMessage.CommandFailed.Command.READ_ACK, detail))
@@ -450,6 +480,9 @@ class PaneSessionController(
             return
         }
         flushPending(backend)
+        session.state.value.snapshot?.pane(target.paneId)?.let { pane ->
+            maybeAckDone(pane, target, generation)
+        }
     }
 
     /** Release a detached socket without depending on the caller's lifetime. */
@@ -598,6 +631,7 @@ class PaneSessionController(
             val snapshot = state.snapshot ?: return
             val resolved = resolveTarget(
                 snapshot, initialWorkspaceId, initialTabId, initialPaneId,
+                allowFallback = initialResolutionAllowed,
             ) ?: return
             onMessage(null)
             fallbackNotice(

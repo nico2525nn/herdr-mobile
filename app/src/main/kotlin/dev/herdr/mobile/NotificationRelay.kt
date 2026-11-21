@@ -64,9 +64,16 @@ class NotificationRelay(
     private val transitionLock = Any()
     private val persistRequests = MutableStateFlow<Map<String, String>?>(null)
     private var seeded = false
+    /** Do not overwrite the persisted map before the first seed merges it. */
+    private var persistenceReady = false
     @Volatile private var resetEpoch = 0
-    /** Event/snapshot cursor shared by both collectors. */
-    private val cursor = NotificationCursor()
+    // Separate cursors: a snapshot that jumps ahead must not reject the
+    // short DONE event it skipped. Events still reject snapshots older than
+    // the newest event, so a late REST payload cannot regress the state.
+    private val eventCursor = NotificationCursor()
+    private val snapshotCursor = NotificationCursor()
+    private var eventHigh = -1L
+    private var cursorEpoch = -1L
 
     init {
         scope.launch {
@@ -100,7 +107,7 @@ class NotificationRelay(
                     // transition path does seq + notification state in one
                     // critical section.
                     synchronized(transitionLock) {
-                        acceptSeqLocked(event.seq, stamped.connectionEpoch)
+                        acceptEventLocked(event.seq, stamped.connectionEpoch)
                     }
                     return@collect
                 }
@@ -110,6 +117,7 @@ class NotificationRelay(
                 transitionAndNotify(
                     paneId, status, event.workspaceId, event,
                     connectionEpoch = stamped.connectionEpoch,
+                    fromEvent = true,
                 )
             }
         }
@@ -152,7 +160,7 @@ class NotificationRelay(
                     if (state.connectionEpoch != client.state.value.connectionEpoch) {
                         return@collect
                     }
-                    if (!acceptSeqLocked(snapshot.seq, state.connectionEpoch)) return@collect
+                    if (!acceptSnapshotLocked(snapshot.seq, state.connectionEpoch)) return@collect
                     val current = snapshot.workspaces
                         .flatMap { it.tabs }
                         .flatMap { it.panes }
@@ -220,6 +228,7 @@ class NotificationRelay(
                                 )
                             }
                         }
+                        persistenceReady = true
                         persistLocked()
                         seeded = true
                         val currentSettings = settings.settings.value
@@ -289,8 +298,14 @@ class NotificationRelay(
         workspaceLabel: String? = null,
         tabLabel: String? = null,
         connectionEpoch: Long,
+        fromEvent: Boolean = false,
     ): Boolean = synchronized(transitionLock) {
-        if (!acceptSeqLocked(event.seq, connectionEpoch)) return@synchronized false
+        val accepted = if (fromEvent) {
+            acceptEventLocked(event.seq, connectionEpoch)
+        } else {
+            acceptSnapshotLocked(event.seq, connectionEpoch)
+        }
+        if (!accepted) return@synchronized false
         val prev = lastNotified[paneId]
         if (prev?.status == status) return@synchronized false
         // Leave-status first: a done/blocked alert for this pane is now stale.
@@ -300,13 +315,48 @@ class NotificationRelay(
         lastNotified[paneId] = NotifiedState(status, workspaceId, event.seq)
         persistLocked()
         maybeNotify(event, workspaceLabel, tabLabel)
+        if (fromEvent) {
+            // A snapshot may already have folded past this event (a short
+            // working->done->working). Apply its newer state now rather than
+            // leaving a DONE alert that no later event will retract.
+            val state = client.state.value
+            val snapshot = state.snapshot
+            if (snapshot != null && snapshot.seq > event.seq &&
+                state.connectionEpoch == connectionEpoch
+            ) {
+                snapshot.pane(paneId)?.let { pane ->
+                    if (lastNotified[paneId]?.status != pane.status) {
+                        transitionAndNotify(
+                            paneId,
+                            pane.status,
+                            pane.workspaceId,
+                            SemanticEvent(
+                                seq = snapshot.seq,
+                                type = SemanticEvent.TYPE_PANE_STATUS_CHANGED,
+                                workspaceId = pane.workspaceId,
+                                tabId = pane.tabId,
+                                paneId = pane.id,
+                                status = pane.status,
+                            ),
+                            snapshot.workspace(pane.workspaceId)?.label,
+                            snapshot.tab(pane.tabId)?.displayLabel,
+                            connectionEpoch = connectionEpoch,
+                            fromEvent = false,
+                        )
+                    }
+                }
+            }
+        }
         true
     }
 
     /** Host switch: ids from the previous host must not leak into this one. */
     fun resetForTargetChange() {
         synchronized(transitionLock) {
-            cursor.reset()
+            eventCursor.reset()
+            snapshotCursor.reset()
+            eventHigh = -1L
+            cursorEpoch = -1L
             // Cancel the old host's shade entries first: without events from
             // that host they can never be retracted later.
             for ((paneId, state) in lastNotified) {
@@ -315,24 +365,43 @@ class NotificationRelay(
             resetEpoch++
             lastNotified.clear()
             seeded = false
+            persistenceReady = true
             persistLocked()
         }
     }
 
-    /**
-     * Cursor check for one event or snapshot. A redial may restart the daemon's
-     * seq at 0, so reset the high-water mark when the link generation changes;
-     * otherwise every notification after a daemon restart is rejected.
-     */
-    private fun acceptSeqLocked(seq: Long, connectionEpoch: Long): Boolean {
-        // A queued event from the previous attempt must not be accepted under
-        // the new attempt's epoch (or reset the cursor back to the old one).
+    private fun acceptEventLocked(seq: Long, connectionEpoch: Long): Boolean {
         if (connectionEpoch != client.state.value.connectionEpoch) return false
-        return cursor.accept(seq, connectionEpoch)
+        if (cursorEpoch != connectionEpoch) {
+            cursorEpoch = connectionEpoch
+            eventHigh = -1L
+            eventCursor.reset()
+            snapshotCursor.reset()
+        }
+        if (!eventCursor.accept(seq, connectionEpoch)) return false
+        eventHigh = eventHigh.coerceAtLeast(seq)
+        return true
+    }
+
+    private fun acceptSnapshotLocked(seq: Long, connectionEpoch: Long): Boolean {
+        if (connectionEpoch != client.state.value.connectionEpoch) return false
+        if (cursorEpoch != connectionEpoch) {
+            cursorEpoch = connectionEpoch
+            eventHigh = -1L
+            eventCursor.reset()
+            snapshotCursor.reset()
+        }
+        // A snapshot older than an already accepted event would regress the
+        // notification state; only accept the newer authoritative seq.
+        if (seq < eventHigh) return false
+        return snapshotCursor.accept(seq, connectionEpoch)
     }
 
     /** Write-through: transitions are rare; a conflating writer keeps order. */
     private fun persistLocked() {
+        // Before the first seed, lastNotified is only the live delta. Writing
+        // it would erase other panes from the process-death map.
+        if (!persistenceReady) return
         val copy = HashMap(lastNotified).mapValues {
             "${it.value.status.wire}|${it.value.workspaceId}"
         }

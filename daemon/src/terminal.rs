@@ -459,6 +459,20 @@ async fn run_session(
     // avoids an RPC per scroll frame without pinning a stale classification.
     let mut shell_probe: Option<(bool, tokio::time::Instant)> = None;
     let mut end_reason = String::from("detached");
+    // Race every potentially long terminal/Herdr wait against shutdown so a
+    // multi-step scroll/foreground/write branch cannot consume the whole 5s
+    // shutdown budget before it notices.
+    macro_rules! or_shutdown {
+        ($future:expr) => {
+            tokio::select! {
+                _ = session.shutdown.notified() => {
+                    end_reason = "released".to_string();
+                    break;
+                }
+                value = $future => value,
+            }
+        };
+    }
     loop {
         tokio::select! {
             _ = session.shutdown.notified() => {
@@ -497,11 +511,10 @@ async fn run_session(
                             ScrollAction::PageKey { up, rows } => {
                                 // Bound the RPC so a wedged Herdr cannot pin
                                 // shutdown or starve the child's output.
-                                tokio::time::timeout(
+                                or_shutdown!(tokio::time::timeout(
                                     std::time::Duration::from_secs(2),
                                     registry.host_scroll(&pane_id, up, rows),
-                                )
-                                .await
+                                ))
                                 .unwrap_or(false)
                             }
                             // Wheel routing is the app's own viewport, never
@@ -518,11 +531,10 @@ async fn run_session(
                                     None => {
                                         // Unknown (RPC error): stay safe and do
                                         // not type PgUp/PgDn into a shell.
-                                        let is_shell = tokio::time::timeout(
+                                        let is_shell = or_shutdown!(tokio::time::timeout(
                                             std::time::Duration::from_secs(2),
                                             herdr.pane_foreground_is_shell(&pane_id),
-                                        )
-                                        .await
+                                        ))
                                         .ok()
                                         .and_then(Result::ok)
                                         .unwrap_or(true);
@@ -534,18 +546,16 @@ async fn run_session(
                             }
                         }
                         if !host_handled && !block_page_keys
-                            && terminal_io(child.send_scroll(action)).await.is_err()
+                            && or_shutdown!(terminal_io(child.send_scroll(action))).is_err()
                         {
                             break;
                         }
                     }
                     SessionCommand::HostScroll(offset) => {
-                        match tokio::time::timeout(
+                        match or_shutdown!(tokio::time::timeout(
                             std::time::Duration::from_secs(2),
                             herdr.pane_scroll(&pane_id, offset),
-                        )
-                        .await
-                        {
+                        )) {
                             Ok(Ok(Some(_))) | Ok(Ok(None)) => {}
                             Ok(Err(error)) => {
                                 warn!("pane.scroll absolute {offset} failed for {pane_id}: {error:#}");

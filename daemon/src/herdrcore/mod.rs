@@ -393,7 +393,7 @@ impl CoreClient {
     async fn apply_order_labels(
         &self,
         key: &str,
-        updates: &[(String, Option<i64>, i64)],
+        updates: &[(String, Option<String>, i64)],
     ) -> Result<()> {
         for update in updates {
             let mut labels = serde_json::Map::new();
@@ -406,7 +406,7 @@ impl CoreClient {
                     let mut labels = serde_json::Map::new();
                     labels.insert(
                         key.to_owned(),
-                        Value::String(done.1.unwrap_or(i64::MAX).to_string()),
+                        Value::String(done.1.clone().unwrap_or_default()),
                     );
                     if let Err(restore_error) =
                         self.label(&done.0, Value::Object(labels)).await
@@ -446,7 +446,8 @@ impl CoreClient {
                 let Some(address) = field_string(terminal, "address") else { continue };
                 let labels = terminal.get("labels").unwrap_or(&Value::Null);
                 let old = labels.get(SPACE_ORDER_LABEL).and_then(|value| {
-                    value.as_i64().or_else(|| value.as_str()?.parse().ok())
+                    value.as_str().map(str::to_owned)
+                        .or_else(|| value.as_i64().map(|number| number.to_string()))
                 });
                 updates.push((address.to_owned(), old, index as i64));
             }
@@ -483,7 +484,8 @@ impl CoreClient {
                 let Some(address) = field_string(terminal, "address") else { continue };
                 let labels = terminal.get("labels").unwrap_or(&Value::Null);
                 let old = labels.get(TAB_ORDER_LABEL).and_then(|value| {
-                    value.as_i64().or_else(|| value.as_str()?.parse().ok())
+                    value.as_str().map(str::to_owned)
+                        .or_else(|| value.as_i64().map(|number| number.to_string()))
                 });
                 updates.push((address.to_owned(), old, index as i64));
             }

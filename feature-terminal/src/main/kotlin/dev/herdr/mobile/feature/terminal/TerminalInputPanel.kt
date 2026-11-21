@@ -162,12 +162,13 @@ internal fun BottomInputPanel(
                                         val event = awaitPointerEvent(PointerEventPass.Initial)
                                         val change = event.changes
                                             .firstOrNull { it.id == down.id } ?: break
-                                        if (!change.pressed) break
                                         if (change.isConsumed) {
-                                            // A vertical key detector already
-                                            // owns this gesture.
+                                            // A vertical key detector owns this
+                                            // gesture, or Compose synthesized
+                                            // a consumed cancel.
                                             return@awaitEachGesture
                                         }
+                                        if (!change.pressed) break
                                         val dx = change.position.x - change.previousPosition.x
                                         val dy = change.position.y - change.previousPosition.y
                                         if (!claimed) {

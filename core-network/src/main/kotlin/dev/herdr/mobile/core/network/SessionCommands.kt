@@ -15,8 +15,17 @@ internal class SessionCommands(
     private val state: LinkState,
     private val transport: DaemonTransport,
 ) {
-    private fun api(): DaemonApi =
-        transport.api(state.endpoint ?: throw DaemonException("not_connected", "No endpoint is open"))
+    private fun api(targetGeneration: Long? = null): DaemonApi {
+        val endpoint = when {
+            targetGeneration == null ->
+                state.endpoint
+                    ?: throw DaemonException("not_connected", "No endpoint is open")
+            else ->
+                state.endpointFor(targetGeneration)
+                    ?: throw DaemonException("target_changed", "The connection target changed")
+        }
+        return transport.api(endpoint)
+    }
 
     suspend fun sendInput(paneId: String, text: String) =
         withContext(Dispatchers.IO) { api().sendInput(paneId, text) }
@@ -54,11 +63,19 @@ internal class SessionCommands(
     suspend fun closeWorkspace(workspaceId: String) =
         withContext(Dispatchers.IO) { api().closeWorkspace(workspaceId) }
 
+    suspend fun closeWorkspaceAt(workspaceId: String, targetGeneration: Long) =
+        withContext(Dispatchers.IO) { api(targetGeneration).closeWorkspace(workspaceId) }
+
     suspend fun moveTab(tabId: String, insertIndex: Long) =
         withContext(Dispatchers.IO) { api().moveTab(tabId, insertIndex) }
 
     suspend fun moveWorkspace(workspaceId: String, insertIndex: Long) =
         withContext(Dispatchers.IO) { api().moveWorkspace(workspaceId, insertIndex) }
+
+    suspend fun moveWorkspaceAt(workspaceId: String, insertIndex: Long, targetGeneration: Long) =
+        withContext(Dispatchers.IO) {
+            api(targetGeneration).moveWorkspace(workspaceId, insertIndex)
+        }
 
     suspend fun resizePane(paneId: String, cols: Int, rows: Int) =
         withContext(Dispatchers.IO) { api().resizePane(paneId, cols, rows) }

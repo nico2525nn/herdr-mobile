@@ -137,6 +137,11 @@ impl SessionCache {
 
     /// Rebuild the whole cache from Herdr. Returns the new summary.
     pub async fn refresh_from_herdr(&self) -> Result<CacheSummary> {
+        // Snapshot the cache seq before the request. An event folded while the
+        // HTTP GET is in flight makes this payload older than the cache; do not
+        // stamp it with the newer seq afterwards.
+        let seq_before = self.seq.load(Ordering::SeqCst);
+        let revision_before = self.revision.load(Ordering::SeqCst);
         // Independent requests: overlap them instead of paying both RTTs on
         // every refresh. Ping is best-effort version metadata.
         let ping = tokio::time::timeout(
@@ -146,6 +151,17 @@ impl SessionCache {
         let (raw, info) = tokio::join!(self.herdr.snapshot(), ping);
         let raw = raw?;
         let info = info.ok().and_then(Result::ok);
+        if self.seq.load(Ordering::SeqCst) != seq_before {
+            // A subscriber already folded a newer event. Keep its state and
+            // return the current summary; the caller's follow-up GET will see
+            // the settled cache.
+            let snapshot = self.snapshot();
+            return Ok(CacheSummary {
+                revision: self.revision.load(Ordering::SeqCst),
+                seq: self.seq.load(Ordering::SeqCst),
+                workspaces: snapshot.map(|s| s.workspaces.len()).unwrap_or(0),
+            });
+        }
         let update = self
             .inner
             .read()
@@ -156,8 +172,8 @@ impl SessionCache {
             .unwrap_or_default();
         let snapshot = build_snapshot(
             raw,
-            self.revision.load(Ordering::SeqCst) + 1,
-            self.seq.load(Ordering::SeqCst),
+            revision_before + 1,
+            seq_before,
             Some(self.herdr.herdr_bin.clone()),
             Self::home_dir(),
             update,
@@ -165,6 +181,18 @@ impl SessionCache {
         let workspaces = snapshot.workspaces.len();
         {
             let mut inner = self.inner.write().expect("cache lock");
+            if self.revision.load(Ordering::SeqCst) != revision_before ||
+                self.seq.load(Ordering::SeqCst) != seq_before
+            {
+                // A folded event won the race while the HTTP response was in
+                // flight. Keep its newer payload and report the current cache.
+                let current = inner.snapshot.as_ref();
+                return Ok(CacheSummary {
+                    revision: self.revision.load(Ordering::SeqCst),
+                    seq: self.seq.load(Ordering::SeqCst),
+                    workspaces: current.map(|s| s.workspaces.len()).unwrap_or(0),
+                });
+            }
             inner.snapshot = Some(snapshot);
             inner.herdr_connected = true;
             inner.herdr_error = None;

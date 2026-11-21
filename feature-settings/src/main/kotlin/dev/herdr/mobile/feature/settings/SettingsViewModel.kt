@@ -170,6 +170,11 @@ class SettingsViewModel(
             val oldPassword = old?.passwordAlias
             val oldToken = old?.bearerTokenAlias
             val oldKey = old?.privateKeyAlias
+            // A known_hosts entry belongs to host:port. Moving the profile to
+            // another endpoint must allow a fresh TOFU approval; keeping the
+            // old alias would make JSch strict mode reject the new server.
+            val endpointChanged = old != null &&
+                (old.host != profile.host || old.port != profile.port)
             val passwordChanged = password != null
             val tokenChanged = !token.isNullOrBlank()
             val keyChanged = !keyPem.isNullOrBlank()
@@ -215,6 +220,7 @@ class SettingsViewModel(
                     daemonHost = profile.daemonHost,
                     useTls = profile.useTls,
                     backendMode = profile.backendMode,
+                    hostKeyAlias = if (endpointChanged) null else base.hostKeyAlias,
                     passwordAlias = base.passwordAlias,
                     bearerTokenAlias = base.bearerTokenAlias,
                     privateKeyAlias = base.privateKeyAlias,

@@ -148,11 +148,20 @@ class HerdrClient(
     override suspend fun closeWorkspace(workspaceId: String) =
         commands.closeWorkspace(workspaceId)
 
+    override suspend fun closeWorkspaceAt(workspaceId: String, targetGeneration: Long) =
+        commands.closeWorkspaceAt(workspaceId, targetGeneration)
+
     override suspend fun moveTab(tabId: String, insertIndex: Long) =
         commands.moveTab(tabId, insertIndex)
 
     override suspend fun moveWorkspace(workspaceId: String, insertIndex: Long) =
         commands.moveWorkspace(workspaceId, insertIndex)
+
+    override suspend fun moveWorkspaceAt(
+        workspaceId: String,
+        insertIndex: Long,
+        targetGeneration: Long,
+    ) = commands.moveWorkspaceAt(workspaceId, insertIndex, targetGeneration)
 
     suspend fun resizePane(paneId: String, cols: Int, rows: Int) =
         commands.resizePane(paneId, cols, rows)

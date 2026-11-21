@@ -158,6 +158,8 @@ class TerminalViewModelBehaviourTest {
         val session = FakeHerdrSession(snapshot(ws))
         val vm = TerminalViewModel(session, null, null, null, settings())
         advanceUntilIdle()
+        session.connections.single().attach()
+        advanceUntilIdle()
         assertEquals(emptyList<String>(), session.paneFocusCalls)
 
         // The agent finishes while the user is already looking at the pane.
@@ -407,6 +409,8 @@ class TerminalViewModelBehaviourTest {
         )
 
         vm.resumeAfterBackground()
+        runCurrent()
+        session.connections.last().attach()
         advanceUntilIdle()
         assertTrue(
             "returning to the visible DONE pane should acknowledge it",

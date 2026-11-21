@@ -47,6 +47,33 @@
   the notification tap goes through a non-exported proxy instead of the
   exported launcher activity.
 
+### Fourth deep-review pass
+
+- **Notification ordering:** separate event and snapshot cursors let a short
+  `working -> done -> working` still reach the event path; a newer snapshot is
+  re-applied after the event so no stale DONE alert remains. The persisted map
+  is not written until the first seed merges it, so a live transition cannot
+  erase other panes.
+- **Connection epoch publish:** event emission and epoch validation share one
+  lock; a late GET is captured with its endpoint/epoch and discarded after a
+  redial.
+- **Core:** attach no longer pre-acks a DONE; Core read-acks broadcast a
+  `snapshot.required` control event so other phones refetch. Reorder labels
+  preserve an absent label as an empty removal, not `i64::MAX`.
+- **CI:** `server stop` and `session delete` failures propagate and keep the
+  `.ci-owned` marker. CI compares the live signature only after the explicit
+  private teardown.
+- **Shutdown:** Herdr RPCs and child writes race the shutdown notification; all
+  sessions share one 5s deadline.
+- **Input/reorder:** Compose consumed cancel events are rejected in the Initial
+  pass for keys, the pager, and reorder handles; a real UP still commits.
+- **Deploy:** `EnvironmentFiles` override `Environment` in order, matching
+  systemd; the bearer is passed via stdin `--config -`, never argv.
+- **Target changes:** an old Terminal route no longer falls back to the new
+  host's focused workspace; Home close/move commands are dropped if the target
+  generation changed before the coroutine runs. A profile host/port change
+  clears the old known_hosts alias so TOFU can approve the new endpoint.
+
 ### Third deep-review pass
 
 - **CI ownership/teardown:** process matching now compares exact argv

@@ -73,8 +73,22 @@ class HomeViewModel(
     // every client refetches authoritatively. No local patching, no fake
     // optimistic card — the created workspace appears on the next snapshot
     // (same path as a workspace created on desktop or another phone).
-    fun createWorkspace(label: String?, cwd: String?) {
+    /**
+     * A command built from an old profile's snapshot must not be sent to the
+     * new profile's endpoint. Re-check the target generation inside the
+     * coroutine; a target switch between the UI click and the IO hop then
+     * drops the command instead of acting on a same-id object on another host.
+     */
+    private fun launchForCurrentTarget(block: suspend (Long) -> Unit) {
+        val generation = client.targetGeneration
         viewModelScope.launch {
+            if (client.targetGeneration != generation) return@launch
+            block(generation)
+        }
+    }
+
+    fun createWorkspace(label: String?, cwd: String?) {
+        launchForCurrentTarget {
             runCatching { client.createWorkspace(label?.trim()?.ifEmpty { null }, cwd?.trim()?.ifEmpty { null }) }
                 .onSuccess { _message.value = null }
                 .onFailure { _message.value = UiMessage.CommandFailed(UiMessage.CommandFailed.Command.CREATE_WORKSPACE, it.message) }
@@ -82,7 +96,7 @@ class HomeViewModel(
     }
 
     fun renameWorkspace(workspaceId: String, label: String) {
-        viewModelScope.launch {
+        launchForCurrentTarget {
             runCatching { client.renameWorkspace(workspaceId, label.trim()) }
                 .onSuccess { _message.value = null }
                 .onFailure { _message.value = UiMessage.CommandFailed(UiMessage.CommandFailed.Command.RENAME_WORKSPACE, it.message) }
@@ -98,11 +112,12 @@ class HomeViewModel(
         val workspaces = uiState.value.snapshot?.workspaces ?: return
         val from = workspaces.indexOfFirst { it.id == workspaceId }
         if (from < 0 || from == toIndex) return
-        viewModelScope.launch {
+        launchForCurrentTarget { generation ->
             runCatching {
-                client.moveWorkspace(
+                client.moveWorkspaceAt(
                     workspaceId,
                     dev.herdr.mobile.core.model.Reorder.insertIndex(from, toIndex, workspaces.size),
+                    generation,
                 )
             }.onSuccess { _message.value = null }
                 .onFailure {
@@ -113,8 +128,8 @@ class HomeViewModel(
     }
 
     fun closeWorkspace(workspaceId: String) {
-        viewModelScope.launch {
-            runCatching { client.closeWorkspace(workspaceId) }
+        launchForCurrentTarget { generation ->
+            runCatching { client.closeWorkspaceAt(workspaceId, generation) }
                 .onSuccess { _message.value = null }
                 .onFailure { _message.value = UiMessage.CommandFailed(UiMessage.CommandFailed.Command.CLOSE_WORKSPACE, it.message) }
         }
