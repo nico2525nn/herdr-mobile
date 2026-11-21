@@ -273,7 +273,19 @@ class NotificationRelay(
                     // snapshot-only diff would see working == previous working
                     // and leave the stale DONE alert in the shade.
                     for (pane in snapshot.workspaces.flatMap { it.tabs }.flatMap { it.panes }) {
-                        if (lastNotified[pane.id]?.status == pane.status) continue
+                        val notified = lastNotified[pane.id]
+                        if (notified?.status == pane.status) {
+                            if (notified.seq < snapshot.seq) {
+                                lastNotified[pane.id] = notified.copy(seq = snapshot.seq)
+                            }
+                            if (pane.status == AgentStatus.DONE ||
+                                pane.status == AgentStatus.BLOCKED
+                            ) {
+                                lastAlertSeq[pane.id] =
+                                    maxOf(lastAlertSeq[pane.id] ?: -1L, snapshot.seq)
+                            }
+                            continue
+                        }
                         val tab = snapshot.tab(pane.tabId)
                         val workspace = snapshot.workspace(pane.workspaceId)
                         val event = SemanticEvent(
@@ -430,6 +442,9 @@ class NotificationRelay(
             eventCursor.reset()
             snapshotCursor.reset()
             lastAlertSeq.clear()
+            // Keep statuses for retraction but forget the old epoch's seqs;
+            // otherwise a restarted daemon's low seq is treated as stale.
+            lastNotified.replaceAll { _, notified -> notified.copy(seq = -1L) }
         }
         if (!eventCursor.accept(seq, connectionEpoch)) return false
         eventHigh = eventHigh.coerceAtLeast(seq)
@@ -444,6 +459,9 @@ class NotificationRelay(
             eventCursor.reset()
             snapshotCursor.reset()
             lastAlertSeq.clear()
+            // Keep statuses for retraction but forget the old epoch's seqs;
+            // otherwise a restarted daemon's low seq is treated as stale.
+            lastNotified.replaceAll { _, notified -> notified.copy(seq = -1L) }
         }
         // A snapshot older than an already accepted event would regress the
         // notification state; only accept the newer authoritative seq.

@@ -58,7 +58,9 @@
   already announced by snapshot reconciliation, while a genuine later
   completion still posts. The map is cleared with the cursors when the
   connection epoch changes, so a daemon restart with lower seq still alerts.
-  Stale non-alert events are ignored.
+  On epoch change the per-pane notified seqs are rebased to -1 while statuses
+  remain for retraction; an unchanged snapshot adopts the new seq. Stale
+  non-alert events are ignored.
 
 ### Release-gate fixes (fourth pass)
 
