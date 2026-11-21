@@ -2,6 +2,8 @@ package dev.herdr.mobile.feature.terminal
 
 import androidx.compose.foundation.background
 
+import androidx.compose.foundation.Image
+import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.fillMaxSize
@@ -29,6 +31,9 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clipToBounds
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.semantics.LiveRegionMode
 import androidx.compose.ui.semantics.liveRegion
 import androidx.compose.ui.semantics.semantics
@@ -103,6 +108,7 @@ fun TerminalScreen(
         mutableStateOf<WorkspaceMenuTarget?>(null)
     }
     var backendState by remember { mutableStateOf<BackendState?>(null) }
+    var frozenFrame by remember { mutableStateOf<android.graphics.Bitmap?>(null) }
     // Manual keyboard summon (CJK panel button). Counter, not boolean: two
     // consecutive requests must both fire. Nothing else shows the IME — no
     // tap, no swipe, no focus change (Termux behavior). Page swipes never
@@ -326,6 +332,7 @@ fun TerminalScreen(
                     onBack = onNavigateHome,
                     onBackendState = { backendState = it },
                     linkRowVisible = linkStatus != null,
+                    onFrameCaptured = { frozenFrame = it },
                     keyboardShowRequest = keyboardShowRequest,
                     keyboardShowHandled = keyboardShowHandled,
                     onKeyboardShowHandled = { keyboardShowHandled = it },
@@ -334,7 +341,20 @@ fun TerminalScreen(
                     cjkFieldFocused = cjkFieldFocused,
                 )
             }
-            // The light continues over the terminal top; the row sits on it.
+            // The frozen full frame is fitted into the area below the 32dp
+            // status strip. Both the top and the bottom row stay visible; the
+            // live view and its PTY are never resized.
+            frozenFrame?.let { frame ->
+                Image(
+                    bitmap = frame.asImageBitmap(),
+                    contentDescription = null,
+                    contentScale = ContentScale.FillBounds,
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .padding(top = TerminalLinkRowHeight)
+                        .align(Alignment.TopStart),
+                )
+            }
             if (state.backend != null && linkStatus != null) {
                 CandleGlow(
                     tone = linkStatus.tone,
@@ -346,10 +366,23 @@ fun TerminalScreen(
                 )
             }
             if (linkStatus != null) {
-                TerminalLinkRow(
-                    status = linkStatus,
-                    modifier = Modifier.align(Alignment.TopCenter),
-                )
+                Box(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(TerminalLinkRowHeight)
+                        .background(Color.Black)
+                        .align(Alignment.TopCenter),
+                ) {
+                    CandleGlow(
+                        tone = linkStatus.tone,
+                        intensity = 0.7f,
+                        modifier = Modifier.matchParentSize(),
+                    )
+                    TerminalLinkRow(
+                        status = linkStatus,
+                        modifier = Modifier.align(Alignment.CenterStart),
+                    )
+                }
             }
             val transient = state.statusMessage
             if (transient != null && !terminalFailure) {

@@ -26,7 +26,6 @@ import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.hapticfeedback.HapticFeedbackType
-import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.unit.dp
@@ -60,6 +59,7 @@ internal fun TerminalSurface(
     onBack: () -> Unit,
     onBackendState: (BackendState) -> Unit,
     linkRowVisible: Boolean,
+    onFrameCaptured: (android.graphics.Bitmap?) -> Unit,
     keyboardShowRequest: Int,
     keyboardShowHandled: Int,
     onKeyboardShowHandled: (Int) -> Unit,
@@ -163,11 +163,39 @@ internal fun TerminalSurface(
             scheme = scheme,
             onInput = { bytes -> viewModel.sendEngineBytes(bytes) },
             onResize = { cols, rows ->
+                // Device regression hook: a production (user) build does not
+                // log; the debug smoke proves the grid did not change when the
+                // reconnect row appeared.
+                if (android.os.Build.TYPE != "user") {
+                    android.util.Log.d("HerdrGrid", "resize ${cols}x$rows")
+                }
                 viewModel.setAttachGrid(cols, rows)
                 viewModel.resizeBackend(cols, rows)
             },
             onBell = { bellCount++ },
         )
+    }
+
+    // While the status row is visible, keep the live view untouched and show
+    // a frozen copy of its full frame below the row. This preserves both the
+    // top and the bottom of the terminal (including a prompt at the bottom)
+    // without resizing the PTY.
+    LaunchedEffect(linkRowVisible, controller) {
+        if (!linkRowVisible) {
+            onFrameCaptured(null)
+            return@LaunchedEffect
+        }
+        delay(80)
+        val view = controller.view
+        if (view.width > 0 && view.height > 0) {
+            val frame = android.graphics.Bitmap.createBitmap(
+                view.width,
+                view.height,
+                android.graphics.Bitmap.Config.ARGB_8888,
+            )
+            view.draw(android.graphics.Canvas(frame))
+            onFrameCaptured(frame)
+        }
     }
 
     // Attach only replays text (the daemon's prelude carries no DECSET
@@ -366,14 +394,7 @@ internal fun TerminalSurface(
     // still bound to the closed session, so the terminal looked dead.
     androidx.compose.foundation.layout.Box(
         modifier = modifier
-            .fillMaxSize()
-            .graphicsLayer {
-                translationY = if (linkRowVisible) {
-                    TerminalLinkRowHeight.toPx()
-                } else {
-                    0f
-                }
-            },
+            .fillMaxSize(),
     ) {
         key(controller) {
             AndroidView(

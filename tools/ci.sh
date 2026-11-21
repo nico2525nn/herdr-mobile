@@ -707,6 +707,10 @@ PRIVATE_LABELS="$(daemon_json "$PRIVATE_URL" /v1/snapshot 2>/dev/null |
   die "private daemon is not serving the private session (workspace labels: '${PRIVATE_LABELS:-none}', expected 'ci-anchor')"
 
 # -------------------------------------------------------------- device wiring
+# A headless/rebooted AVD can sit on a locked screen where UiAutomator returns
+# a null root. Wake and dismiss the keyguard before the smoke.
+adb_ shell input keyevent 224 >/dev/null 2>&1 || true
+adb_ shell wm dismiss-keyguard >/dev/null 2>&1 || true
 say "installing $APK"
 # The cached AVD snapshot may carry a build signed by a previous runner's
 # debug keystore; `install -r` then fails with a signature mismatch. Only CI
@@ -739,6 +743,11 @@ SERIAL="$SERIAL" \
 APK="$APK" \
 PKG="$PKG" \
 ARTIFACTS="$ARTIFACTS" \
+PRIVATE_DAEMON_PID="$(cat "$PIDFILE" 2>/dev/null || true)" \
+PRIVATE_DAEMON_BIN="$DAEMON_BIN" \
+PRIVATE_SOCK="$PRIVATE_SOCK" \
+PRIVATE_PORT="$PRIVATE_PORT" \
+PRIVATE_PIDFILE="$PIDFILE" \
   "$ROOT/tools/smoke.sh"
 SMOKE_STATUS=$?
 set -e

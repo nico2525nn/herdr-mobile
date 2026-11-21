@@ -8,10 +8,14 @@
 - Home keeps the state in the header's second line and the light reaches the
   status bar (edge-to-edge). Failure uses the same light in red.
 - Terminal puts the link row directly under the tab rail, only while the link
-  or attach is degraded. The terminal view is translated with a graphics layer
-  so showing or hiding the row never resizes the PTY or clears the last frame;
-  the same light is overlaid on the terminal top so the chrome and terminal
+  or attach is degraded. The live terminal keeps its full size; a frozen copy
+  of its visible frame is fitted below the 32dp strip, so both the bottom
+  prompt/cursor and the PTY grid stay intact while the row is visible. The
+  same light is overlaid on the terminal top so the chrome and terminal
   background never meet at a hard colour edge.
+- A device regression in `tools/smoke.sh` fills the grid, drops and restarts
+  the private daemon, and asserts the terminal prompt, the bottom cursor and
+  a fixed terminal grid across the reconnect row.
 
 ## 2.4.0 — 2026-11-22
 

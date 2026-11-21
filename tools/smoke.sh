@@ -26,6 +26,11 @@ ARTIFACTS="${ARTIFACTS:-$(pwd)/build/smoke-artifacts}"
 mkdir -p "$ARTIFACTS"
 WS=""
 FAILED=0
+PRIVATE_DAEMON_PID="${PRIVATE_DAEMON_PID:-}"
+PRIVATE_DAEMON_BIN="${PRIVATE_DAEMON_BIN:-}"
+PRIVATE_SOCK="${PRIVATE_SOCK:-}"
+PRIVATE_PORT="${PRIVATE_PORT:-}"
+PRIVATE_PIDFILE="${PRIVATE_PIDFILE:-}"
 
 # Minimum changed pixels for "the screen moved". Calibrated on the fixture
 # below (dense 90-column lines): a full page is ~200k pixels on a 1080x2400
@@ -322,6 +327,86 @@ if [[ "$FOCUS_BEFORE" == "$FOCUS_AFTER" ]]; then
   pass "the user's focused workspace was never taken (${FOCUS_AFTER:-none})"
 else
   fail "focus moved from ${FOCUS_BEFORE:-none} to ${FOCUS_AFTER:-none}"
+fi
+
+# ------------------------------------------------ terminal reconnect regression
+# Only the isolated tools/ci.sh run passes a private daemon to kill. Never run
+# this against the developer's live daemon.
+green_prompt() {
+  python3 - "$1" <<'PY'
+import sys
+from PIL import Image
+im = Image.open(sys.argv[1]).convert("RGB")
+w, h = im.size
+n = 0
+for y in range(int(h * 0.35), int(h * 0.88), 2):
+    for x in range(0, w, 2):
+        r, g, b = im.getpixel((x, y))
+        if g > r + 20 and g > b + 10:
+            n += 1
+raise SystemExit(0 if n >= 15 else 1)
+PY
+}
+
+if [[ -n "$PRIVATE_DAEMON_PID" && -n "$PRIVATE_DAEMON_BIN" &&
+      -n "$PRIVATE_SOCK" && -n "$PRIVATE_PORT" && -n "$PRIVATE_PIDFILE" ]]; then
+  say "terminal reconnect regression (private daemon only)"
+  PANE="$WS:p1"
+  # Leave less, fill the viewport, and leave the shell prompt at the bottom.
+  api -X POST "$BASE_URL/v1/pane/$PANE/input" -H 'Content-Type: application/json' -d '{"text":"q"}' >/dev/null 2>&1 || true
+  sleep 1
+  api -X POST "$BASE_URL/v1/pane/$PANE/input" -H 'Content-Type: application/json' -d '{"text":"seq 1 200\n"}' >/dev/null
+  sleep 3
+  adb_ logcat -c
+  shot "$WORKDIR/reconnect-before.png"
+  if green_prompt "$WORKDIR/reconnect-before.png"; then
+    pass "terminal prompt is visible before the reconnect"
+  else
+    fail "terminal prompt missing before the reconnect"
+  fi
+
+  kill "$PRIVATE_DAEMON_PID" 2>/dev/null || true
+  sleep 4
+  shot "$WORKDIR/reconnect-frozen.png"
+  if green_prompt "$WORKDIR/reconnect-frozen.png"; then
+    pass "bottom prompt and cursor survive the reconnect row"
+  else
+    fail "bottom prompt disappeared behind the reconnect row"
+  fi
+  if adb_ logcat -d -s HerdrGrid 2>/dev/null | grep -q "resize"; then
+    fail "terminal grid resized while the reconnect row was visible"
+  else
+    pass "terminal grid stayed fixed while the reconnect row was visible"
+  fi
+
+  "$PRIVATE_DAEMON_BIN" --bind "127.0.0.1:$PRIVATE_PORT" --herdr-socket "$PRIVATE_SOCK" >"$WORKDIR/daemon-restart.log" 2>&1 &
+  echo $! > "$PRIVATE_PIDFILE"
+  RESTARTED=0
+  for _ in $(seq 1 100); do
+    if api "$BASE_URL/v1/health" 2>/dev/null | grep -q '"ok":true'; then
+      RESTARTED=1
+      break
+    fi
+    sleep 0.2
+  done
+  if (( RESTARTED )); then
+    sleep 5
+    shot "$WORKDIR/reconnect-restored.png"
+    if green_prompt "$WORKDIR/reconnect-restored.png"; then
+      pass "prompt returns after the daemon restart"
+    else
+      fail "prompt did not return after the daemon restart"
+    fi
+    if adb_ logcat -d -s HerdrGrid 2>/dev/null | grep -q "resize"; then
+      fail "terminal grid resized across the reconnect"
+    else
+      pass "terminal grid stayed fixed across the reconnect"
+    fi
+  else
+    fail "private daemon did not restart for the reconnect check"
+  fi
+else
+  say "skipping terminal reconnect regression (run via tools/ci.sh for an isolated daemon)"
 fi
 
 # ------------------------------------------------------------------------- verdict
