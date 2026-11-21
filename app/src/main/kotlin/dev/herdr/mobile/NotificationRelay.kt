@@ -1,11 +1,11 @@
 package dev.herdr.mobile
 
-import android.content.Context
 import dev.herdr.mobile.core.model.AgentStatus
 import dev.herdr.mobile.core.model.ConnectionState
 import dev.herdr.mobile.core.model.SemanticEvent
 import dev.herdr.mobile.core.model.UiFocusState
-import dev.herdr.mobile.core.network.HerdrClient
+import dev.herdr.mobile.core.network.HerdrSession
+import dev.herdr.mobile.core.network.StampedEvent
 import dev.herdr.mobile.notifications.HerdrNotifications
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -40,12 +40,25 @@ import kotlinx.coroutines.launch
  * Notifications survive process death, so the seed diff is the only thing that
  * can clean a shade left dirty by a dead-window transition.
  */
-class NotificationRelay(
-    private val context: Context,
-    private val settings: SettingsRepositoryImpl,
-    private val client: HerdrClient,
+class NotificationRelay internal constructor(
+    private val notifier: AlertNotifier,
+    private val settings: NotificationSettings,
+    private val client: HerdrSession,
     private val scope: CoroutineScope,
+    private val events: kotlinx.coroutines.flow.SharedFlow<StampedEvent>,
 ) {
+    constructor(
+        context: android.content.Context,
+        settings: SettingsRepositoryImpl,
+        client: dev.herdr.mobile.core.network.HerdrClient,
+        scope: CoroutineScope,
+    ) : this(
+        AndroidAlertNotifier(context),
+        settings,
+        client,
+        scope,
+        client.stampedEvents,
+    )
     /** Last notified status plus the ids needed to retract it (ids carry status). */
     private data class NotifiedState(
         val status: AgentStatus,
@@ -88,7 +101,7 @@ class NotificationRelay(
                     synchronized(transitionLock) {
                         for ((paneId, state) in lastNotified) {
                             if (shouldRetractAlert(state.status, monitoring, done, blocked)) {
-                                HerdrNotifications.dismissPane(context, state.workspaceId, paneId)
+                                notifier.dismissPane(state.workspaceId, paneId)
                             }
                         }
                     }
@@ -100,7 +113,7 @@ class NotificationRelay(
             persistRequests.filterNotNull().collectLatest { runCatching { settings.saveNotified(it) } }
         }
         scope.launch {
-            client.stampedEvents.collect { stamped ->
+            events.collect { stamped ->
                 val event = stamped.event
                 val paneId = event.paneId
                 val status = event.status
@@ -186,9 +199,7 @@ class NotificationRelay(
                                 if (old != null && old.status != pane.status &&
                                     (old.status == AgentStatus.DONE || old.status == AgentStatus.BLOCKED)
                                 ) {
-                                    HerdrNotifications.dismissPaneStatus(
-                                        context, old.workspaceId, pane.id, old.status,
-                                    )
+                                    notifier.dismissPaneStatus(old.workspaceId, pane.id, old.status)
                                 }
                                 if (live.status != pane.status) {
                                     val event = SemanticEvent(
@@ -224,9 +235,7 @@ class NotificationRelay(
                                 // Changed while dead: retract only the old
                                 // status id, never a sibling that may already
                                 // belong to the live completion.
-                                HerdrNotifications.dismissPaneStatus(
-                                    context, old.workspaceId, pane.id, old.status,
-                                )
+                                notifier.dismissPaneStatus(old.workspaceId, pane.id, old.status)
                                 val tab = snapshot.tab(pane.tabId)
                                 val workspace = snapshot.workspace(pane.workspaceId)
                                 maybeNotify(
@@ -245,9 +254,7 @@ class NotificationRelay(
                         }
                         for ((paneId, old) in persisted) {
                             if (!current.containsKey(paneId)) {
-                                HerdrNotifications.dismissPane(
-                                    context, old.workspaceId, paneId,
-                                )
+                                notifier.dismissPane(old.workspaceId, paneId)
                             }
                         }
                         persistenceReady = settings.storageHealthy
@@ -262,7 +269,7 @@ class NotificationRelay(
                                     currentSettings.notifyBlocked,
                                 )
                             ) {
-                                HerdrNotifications.dismissPane(context, notified.workspaceId, paneId)
+                                notifier.dismissPane(notified.workspaceId, paneId)
                             }
                         }
                         return@collect
@@ -311,7 +318,7 @@ class NotificationRelay(
                     for (paneId in vanished) {
                         val old = lastNotified.remove(paneId)
                         if (old != null) {
-                            HerdrNotifications.dismissPane(context, old.workspaceId, paneId)
+                            notifier.dismissPane(old.workspaceId, paneId)
                         }
                     }
                     if (vanished.isNotEmpty()) persistLocked()
@@ -360,7 +367,7 @@ class NotificationRelay(
         if (prev?.status == status) return@synchronized false
         // Leave-status first: a done/blocked alert for this pane is now stale.
         if (prev != null) {
-            HerdrNotifications.dismissPane(context, prev.workspaceId, paneId)
+            notifier.dismissPane(prev.workspaceId, paneId)
         }
         lastNotified[paneId] = NotifiedState(status, workspaceId, event.seq)
         if (status == AgentStatus.DONE || status == AgentStatus.BLOCKED) {
@@ -382,7 +389,7 @@ class NotificationRelay(
                     // The pane was removed before the event was consumed;
                     // retract the transient alert and drop its dedupe key.
                     if (lastNotified[paneId]?.status == status) {
-                        HerdrNotifications.dismissPane(context, workspaceId, paneId)
+                        notifier.dismissPane(workspaceId, paneId)
                         lastNotified.remove(paneId)
                         persistLocked()
                     }
@@ -424,7 +431,7 @@ class NotificationRelay(
             // Cancel the old host's shade entries first: without events from
             // that host they can never be retracted later.
             for ((paneId, state) in lastNotified) {
-                HerdrNotifications.dismissPane(context, state.workspaceId, paneId)
+                notifier.dismissPane(state.workspaceId, paneId)
             }
             resetEpoch++
             lastNotified.clear()
@@ -505,7 +512,7 @@ class NotificationRelay(
         val snapshot = client.state.value.snapshot
         val ws = workspaceLabel ?: snapshot?.workspace(event.workspaceId)?.label
         val tab = tabLabel ?: snapshot?.tab(event.tabId)?.displayLabel
-        HerdrNotifications.notify(context, event, ws, tab)
+        notifier.notify(event, ws, tab)
     }
 }
 

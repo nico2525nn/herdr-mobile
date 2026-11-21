@@ -38,7 +38,7 @@ class SettingsRepositoryImpl(
     private val context: Context,
     private val secrets: KeystoreSecrets,
     private val scope: CoroutineScope,
-) : SettingsRepository {
+) : SettingsRepository, NotificationSettings {
 
     private val _settings = MutableStateFlow(AppSettings())
     override val settings: StateFlow<AppSettings> = _settings.asStateFlow()
@@ -79,7 +79,7 @@ class SettingsRepositoryImpl(
     private var loadFailed = false
 
     /** False while the initial DataStore read failed; do not overwrite it. */
-    val storageHealthy: Boolean get() = !loadFailed
+    override val storageHealthy: Boolean get() = !loadFailed
 
     init {
         scope.launch { load() }
@@ -105,12 +105,12 @@ class SettingsRepositoryImpl(
         return true
     }
 
-    suspend fun loadNotified(): Map<String, String> {
+    override suspend fun loadNotified(): Map<String, String> {
         loaded.await()
         return decodeNotifiedMap(context.dataStore.data.first()[SettingsKeys.NOTIFIED_MAP])
     }
 
-    suspend fun saveNotified(map: Map<String, String>) {
+    override suspend fun saveNotified(map: Map<String, String>) {
         loaded.await()
         val raw = encodeNotifiedMap(map)
         context.dataStore.edit { prefs -> prefs[SettingsKeys.NOTIFIED_MAP] = raw }
