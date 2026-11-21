@@ -73,6 +73,8 @@ class PaneSessionController(
     private var pendingFlushJob: Job? = null
 
     private var attachJob: Job? = null
+    private var attachRetryJob: Job? = null
+    private var attachAttempts = 0
     private var ackJob: Job? = null
     private var readAckPaneId: String? = null
     private var lastReadAckAttemptAt = 0L
@@ -164,6 +166,7 @@ class PaneSessionController(
      */
     private fun onTargetGenerationChanged(snapshot: SessionSnapshot?) {
         targetOwnerGeneration = null
+        attachAttempts = 0
         cancelAttachmentWork(clearInput = true)
         val old = backendFlow.value
         backendFlow.value = null
@@ -390,6 +393,7 @@ class PaneSessionController(
         if (backgrounded) return
         if (targetOwnerGeneration != session.targetGeneration) return
         val target = targetFlow.value ?: return
+        attachAttempts = 0
         openTarget(target)
     }
 
@@ -405,6 +409,7 @@ class PaneSessionController(
         ) return
 
         val targetChanged = targetFlow.value != target
+        if (targetChanged) attachAttempts = 0
         // A coalescing job from the old pane must not steal the new pane's
         // first gesture: it captures the old backend and drops the merged sum.
         cancelAttachmentWork(clearInput = targetChanged)
@@ -421,6 +426,10 @@ class PaneSessionController(
      */
     private fun maybeAckDone(pane: Pane, target: TerminalTarget, generation: Long) {
         if (backgrounded) return
+        // Do not consume the one ack attempt before the stream exists: the
+        // openTarget call runs before attach installs the backend, and the
+        // timestamp would suppress the real ack from attach's completion.
+        if (backendFlow.value == null) return
         if (pane.status != dev.herdr.mobile.core.model.AgentStatus.DONE) {
             if (readAckPaneId == pane.id) readAckPaneId = null
             return
@@ -490,25 +499,34 @@ class PaneSessionController(
         }
 
         val backend = ConnectionTerminalBackend(connection, scope)
-        if (samePane) {
-            // Same pane: the old controller already paints the frozen frame.
-            // Do not swap to the new (still Attaching) controller until it can
-            // paint, or the last output disappears for the attach window.
-            val ready = try {
-                withTimeoutOrNull(ATTACH_READY_TIMEOUT_MS) {
-                    backend.state.first {
-                        it is BackendState.Attached || it is BackendState.Failed
-                    }
+        // Wait until the replacement can paint. Same pane: the old frozen
+        // controller stays. Different pane: the placeholder stays. Either way
+        // a pre-ready failure feeds the bounded retry path below.
+        val ready = try {
+            withTimeoutOrNull(ATTACH_READY_TIMEOUT_MS) {
+                backend.state.first {
+                    it is BackendState.Attached ||
+                        it is BackendState.Failed ||
+                        it is BackendState.Detached
                 }
-            } catch (e: CancellationException) {
-                releaseQuietly(connection)
-                throw e
             }
-            if (ready !is BackendState.Attached) {
-                releaseQuietly(connection)
-                return
-            }
+        } catch (e: CancellationException) {
+            releaseQuietly(connection)
+            throw e
         }
+        if (ready !is BackendState.Attached) {
+            releaseQuietly(connection)
+            val detail = when (ready) {
+                is BackendState.Failed -> ready.message
+                is BackendState.Detached -> "The stream closed before the pane attached."
+                else -> "The pane did not attach."
+            }
+            scheduleAttachRetry(target, generation, detail)
+            return
+        }
+        attachAttempts = 0
+        attachRetryJob?.cancel()
+        attachRetryJob = null
         backendPaneId = target.paneId
         backendFlow.value = backend
         if (!currentCoroutineContext().isActive || targetFlow.value != target ||
@@ -529,6 +547,34 @@ class PaneSessionController(
         flushPending(backend)
         session.state.value.snapshot?.pane(target.paneId)?.let { pane ->
             maybeAckDone(pane, target, generation)
+        }
+    }
+
+    /**
+     * A replacement that fails before it can paint is not an installed
+     * backend, so watchReconnect never sees it. Feed it through the same
+     * bounded retry budget and end in the explicit failure block.
+     */
+    private fun scheduleAttachRetry(
+        target: TerminalTarget,
+        generation: Long,
+        detail: String,
+    ) {
+        if (targetFlow.value != target || targetOwnerGeneration != generation) return
+        attachAttempts++
+        if (attachAttempts > AUTO_REATTACH_ATTEMPTS) {
+            onMessage(UiMessage.AttachFailed(detail))
+            return
+        }
+        attachRetryJob?.cancel()
+        retryJob?.cancel()
+        attachRetryJob = scope.launch {
+            // Do not burn attempts while the link is down.
+            session.state.first { it.connection == ConnectionState.CONNECTED }
+            delay(AUTO_REATTACH_DELAY_MS * (1L shl (attachAttempts - 1)))
+            if (targetFlow.value == target && session.targetGeneration == generation) {
+                openTarget(target)
+            }
         }
     }
 
@@ -747,6 +793,7 @@ class PaneSessionController(
 
     /** Clear the visible target and release the socket before the flow drops it. */
     private fun clearTargetAndRelease() {
+        attachAttempts = 0
         cancelAttachmentWork(clearInput = true)
         val old = backendFlow.value
         backendFlow.value = null

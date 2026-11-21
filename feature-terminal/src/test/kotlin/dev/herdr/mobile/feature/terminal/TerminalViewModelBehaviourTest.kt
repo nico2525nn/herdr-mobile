@@ -564,15 +564,20 @@ class TerminalViewModelBehaviourTest {
         session.autoAttach = false
         vm.openTarget(TerminalTarget("w1", "w1:t1", "w1:p2"))
         runCurrent()
-        assertTrue(
-            "a pane switch must not leave the old backend on screen",
-            oldBackend !== vm.uiState.value.backend,
+        assertEquals(
+            "the opening placeholder must stay until the new stream is ready",
+            null,
+            vm.uiState.value.backend,
         )
 
         vm.sendText("x")
+        runCurrent()
+        assertEquals("input must never reach the pane the user left", emptyList<String>(), old.sentText)
+
+        session.connections.last().attach()
         advanceUntilIdle()
 
-        assertEquals("input must never reach the pane the user left", emptyList<String>(), old.sentText)
+        assertNotNull(vm.uiState.value.backend)
         assertEquals(listOf("x"), session.connections.last().sentText)
     }
 
@@ -632,6 +637,44 @@ class TerminalViewModelBehaviourTest {
             "the budget must end in the explicit attach failure",
             vm.uiState.value.statusMessage is dev.herdr.mobile.core.designsystem.UiMessage.AttachFailed,
         )
+    }
+
+
+    @Test
+    fun `a replacement that never paints ends in AttachFailed with Retry`() = runTest(dispatcher) {
+        val session = FakeHerdrSession(snapshot(oneWorkspace()))
+        val vm = TerminalViewModel(session, null, null, null, settings())
+        observe(vm)
+        advanceUntilIdle()
+        val old = session.connections.single()
+        val oldBackend = vm.uiState.value.backend
+        assertNotNull(oldBackend)
+
+        session.autoAttach = false
+        old.detach("released")
+        advanceUntilIdle()
+
+        assertEquals(
+            "the frozen frame must stay while replacements fail",
+            oldBackend,
+            vm.uiState.value.backend,
+        )
+        assertTrue(
+            "exhausting the retry budget must expose the failure block",
+            vm.uiState.value.statusMessage is
+                dev.herdr.mobile.core.designsystem.UiMessage.AttachFailed,
+        )
+        assertTrue(
+            "the pre-ready retries must be bounded, opened=${session.openedPanes.size}",
+            session.openedPanes.size <= 6,
+        )
+
+        session.autoAttach = true
+        vm.retryAttach()
+        advanceUntilIdle()
+
+        assertNull(vm.uiState.value.statusMessage)
+        assertTrue(oldBackend !== vm.uiState.value.backend)
     }
 
 }
