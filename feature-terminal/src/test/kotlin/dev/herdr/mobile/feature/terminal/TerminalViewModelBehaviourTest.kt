@@ -677,4 +677,72 @@ class TerminalViewModelBehaviourTest {
         assertTrue(oldBackend !== vm.uiState.value.backend)
     }
 
+
+    @Test
+    fun `DONE during a replacement attach is acknowledged when it lands`() =
+        runTest(dispatcher) {
+            val working = oneWorkspace()
+            val session = FakeHerdrSession(snapshot(working))
+            val vm = TerminalViewModel(session, null, null, null, settings())
+            observe(vm)
+            advanceUntilIdle()
+            val first = session.connections.single()
+
+            session.autoAttach = false
+            first.detach("released")
+            advanceTimeBy(700)
+            runCurrent()
+            val replacement = session.connections.last()
+            assertTrue(replacement !== first)
+
+            val done = working.copy(
+                tabs = working.tabs.map { tab ->
+                    tab.copy(panes = tab.panes.map { it.copy(status = AgentStatus.DONE) })
+                },
+            )
+            session.setSnapshot(snapshot(done))
+            runCurrent()
+            assertEquals(
+                "a detached frozen backend must not claim the DONE ack",
+                emptyList<String>(),
+                session.paneFocusCalls,
+            )
+
+            replacement.attach()
+            advanceUntilIdle()
+
+            assertEquals(listOf("w1:w1:t1"), session.paneFocusCalls)
+        }
+
+    @Test
+    fun `a pending replacement retry is cancelled when the screen stops`() = runTest(dispatcher) {
+        val session = FakeHerdrSession(snapshot(oneWorkspace()))
+        val vm = TerminalViewModel(session, null, null, null, settings())
+        observe(vm)
+        advanceUntilIdle()
+        val first = session.connections.single()
+
+        session.autoAttach = false
+        first.detach("released")
+        advanceTimeBy(700)
+        runCurrent()
+        assertTrue(session.connections.size >= 2)
+
+        vm.releaseForBackground()
+        advanceUntilIdle()
+        val openedBefore = session.openedPanes.size
+
+        // The link returns while the screen is stopped: the stale retry must
+        // not reopen the pane behind the user's back.
+        session.setConnection(ConnectionState.RECONNECTING)
+        session.setConnection(ConnectionState.CONNECTED)
+        advanceUntilIdle()
+        assertEquals(openedBefore, session.openedPanes.size)
+
+        session.autoAttach = true
+        vm.resumeAfterBackground()
+        advanceUntilIdle()
+        assertEquals(openedBefore + 1, session.openedPanes.size)
+    }
+
 }

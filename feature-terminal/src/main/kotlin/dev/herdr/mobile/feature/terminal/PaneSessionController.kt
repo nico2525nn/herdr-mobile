@@ -426,10 +426,11 @@ class PaneSessionController(
      */
     private fun maybeAckDone(pane: Pane, target: TerminalTarget, generation: Long) {
         if (backgrounded) return
-        // Do not consume the one ack attempt before the stream exists: the
-        // openTarget call runs before attach installs the backend, and the
-        // timestamp would suppress the real ack from attach's completion.
-        if (backendFlow.value == null) return
+        // Do not consume the one ack attempt before the stream exists or
+        // while the frozen backend is still detached: the attach completion
+        // calls this again once the replacement is Attached.
+        val backend = backendFlow.value ?: return
+        if (backend.state.value !is BackendState.Attached) return
         if (pane.status != dev.herdr.mobile.core.model.AgentStatus.DONE) {
             if (readAckPaneId == pane.id) readAckPaneId = null
             return
@@ -572,7 +573,13 @@ class PaneSessionController(
             // Do not burn attempts while the link is down.
             session.state.first { it.connection == ConnectionState.CONNECTED }
             delay(AUTO_REATTACH_DELAY_MS * (1L shl (attachAttempts - 1)))
-            if (targetFlow.value == target && session.targetGeneration == generation) {
+            // ON_STOP cancels this job; the second guard covers a stop that
+            // races the delay wake-up.
+            if (backgrounded) return@launch
+            if (targetFlow.value == target &&
+                targetOwnerGeneration == generation &&
+                session.targetGeneration == generation
+            ) {
                 openTarget(target)
             }
         }
@@ -680,6 +687,8 @@ class PaneSessionController(
     private fun cancelAttachmentWork(clearInput: Boolean) {
         attachJob?.cancel()
         attachJob = null
+        attachRetryJob?.cancel()
+        attachRetryJob = null
         ackJob?.cancel()
         ackJob = null
         readAckPaneId = null
