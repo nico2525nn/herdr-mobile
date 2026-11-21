@@ -546,4 +546,92 @@ class TerminalViewModelBehaviourTest {
         assertEquals(0, first.released)
     }
 
+
+    @Test
+    fun `a pane switch never sends input to the pane the user left`() = runTest(dispatcher) {
+        val p1 = pane("w1", "w1:t1", id = "w1:p1")
+        val p2 = pane("w1", "w1:t1", id = "w1:p2")
+        val session = FakeHerdrSession(
+            snapshot(workspace("w1", listOf(tab("w1:t1", "w1", listOf(p1, p2))))),
+        )
+        val vm = TerminalViewModel(session, null, null, null, settings())
+        observe(vm)
+        advanceUntilIdle()
+        val old = session.connections.single()
+        val oldBackend = vm.uiState.value.backend
+        assertNotNull(oldBackend)
+
+        session.autoAttach = false
+        vm.openTarget(TerminalTarget("w1", "w1:t1", "w1:p2"))
+        runCurrent()
+        assertTrue(
+            "a pane switch must not leave the old backend on screen",
+            oldBackend !== vm.uiState.value.backend,
+        )
+
+        vm.sendText("x")
+        advanceUntilIdle()
+
+        assertEquals("input must never reach the pane the user left", emptyList<String>(), old.sentText)
+        assertEquals(listOf("x"), session.connections.last().sentText)
+    }
+
+    @Test
+    fun `a same-pane reattach keeps the frame until the replacement can paint`() =
+        runTest(dispatcher) {
+            val session = FakeHerdrSession(snapshot(oneWorkspace()))
+            val vm = TerminalViewModel(session, null, null, null, settings())
+            observe(vm)
+            advanceUntilIdle()
+            val old = session.connections.single()
+            val oldBackend = vm.uiState.value.backend
+            assertNotNull(oldBackend)
+
+            session.autoAttach = false
+            old.detach("released")
+            advanceTimeBy(700)
+            runCurrent()
+
+            assertEquals(
+                "the old controller must paint until the new stream is Attached",
+                oldBackend,
+                vm.uiState.value.backend,
+            )
+            vm.sendText("x")
+            runCurrent()
+            assertEquals(emptyList<String>(), old.sentText)
+
+            session.connections.last().attach()
+            advanceUntilIdle()
+
+            assertTrue(oldBackend !== vm.uiState.value.backend)
+            assertEquals(1, old.released)
+            assertEquals(listOf("x"), session.connections.last().sentText)
+        }
+
+
+    @Test
+    fun `lagged resync still spends the bounded reattach budget`() = runTest(dispatcher) {
+        val session = FakeHerdrSession(snapshot(oneWorkspace()))
+        val vm = TerminalViewModel(session, null, null, null, settings())
+        observe(vm)
+        advanceUntilIdle()
+
+        repeat(5) {
+            session.connections.lastOrNull()?.detach("lagged_resync")
+            advanceTimeBy(20)
+            runCurrent()
+        }
+        advanceUntilIdle()
+
+        assertTrue(
+            "lagged resync must not bypass the retry budget, opened=${session.openedPanes.size}",
+            session.openedPanes.size <= 5,
+        )
+        assertTrue(
+            "the budget must end in the explicit attach failure",
+            vm.uiState.value.statusMessage is dev.herdr.mobile.core.designsystem.UiMessage.AttachFailed,
+        )
+    }
+
 }

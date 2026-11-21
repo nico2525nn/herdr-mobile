@@ -318,18 +318,23 @@ fun HomeScreen(
         )
     }
     if (showConnectionDetail) {
+        // The body hides Retry when there is no profile; the detail dialog
+        // must make the same decision or the user retries a missing config.
+        val unconfigured = isUnconfigured(state.error)
         AlertDialog(
             onDismissRequest = { showConnectionDetail = false },
-            title = { Text("Can't connect") },
+            title = { Text(if (unconfigured) "No host configured" else "Can't connect") },
             text = { Text(state.error ?: "The daemon is not reachable.") },
             confirmButton = {
-                TextButton(
-                    onClick = {
-                        showConnectionDetail = false
-                        viewModel.retry()
-                    },
-                ) {
-                    Text("Retry")
+                if (!unconfigured) {
+                    TextButton(
+                        onClick = {
+                            showConnectionDetail = false
+                            viewModel.retry()
+                        },
+                    ) {
+                        Text("Retry")
+                    }
                 }
             },
             dismissButton = {

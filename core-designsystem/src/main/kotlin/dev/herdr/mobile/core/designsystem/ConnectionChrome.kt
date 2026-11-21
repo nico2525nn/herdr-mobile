@@ -76,12 +76,21 @@ fun LinkRule(tone: LinkTone, modifier: Modifier = Modifier) {
         animationSpec = spring(dampingRatio = 0.65f, stiffness = 380f),
         label = "link-rule-height",
     )
+    // Keep a constant 2dp layout slot: changing the row height reflows the
+    // terminal below and can cross a cell boundary, forcing a PTY resize.
     Box(
         modifier = modifier
             .fillMaxWidth()
-            .height(height)
-            .background(color),
-    )
+            .height(2.dp),
+        contentAlignment = Alignment.Center,
+    ) {
+        Box(
+            modifier = Modifier
+                .fillMaxWidth()
+                .height(height)
+                .background(color),
+        )
+    }
 }
 
 /**

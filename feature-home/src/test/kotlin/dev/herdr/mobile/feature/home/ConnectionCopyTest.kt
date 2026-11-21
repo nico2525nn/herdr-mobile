@@ -16,6 +16,8 @@ class ConnectionCopyTest {
 
     @Test
     fun `a missing profile is not rendered as a retryable host failure`() {
+        assertEquals(true, isUnconfigured("No host profile configured"))
+        assertEquals(false, isUnconfigured("Connection refused"))
         assertEquals("No host configured", connectionProblem("No host profile configured"))
         assertEquals(
             "Add a host profile in Settings, then come back.",

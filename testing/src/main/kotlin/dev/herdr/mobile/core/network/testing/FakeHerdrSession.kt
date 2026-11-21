@@ -48,6 +48,12 @@ class FakeHerdrSession(
     /** When set, [openTerminal] throws this instead of returning a connection. */
     var openFailure: Exception? = null
 
+    /**
+     * Whether a new terminal starts Attached, like the real prelude after the
+     * first ready frame. Set false to exercise the Attaching window.
+     */
+    var autoAttach: Boolean = true
+
     /** When set, every command throws it (a failing daemon). */
     var commandFailure: Exception? = null
 
@@ -84,7 +90,9 @@ class FakeHerdrSession(
     override fun openTerminal(paneId: String, cols: Int, rows: Int, takeover: Boolean): TerminalConnection {
         openFailure?.let { throw it }
         openedPanes += paneId
-        return FakeTerminalConnection(paneId).also { connections += it }
+        val connection = FakeTerminalConnection(paneId)
+        if (autoAttach) connection.attach()
+        return connection.also { connections += it }
     }
 
     override suspend fun focusTab(tabId: String) {

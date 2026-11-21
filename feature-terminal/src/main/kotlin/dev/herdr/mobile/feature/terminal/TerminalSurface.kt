@@ -73,9 +73,6 @@ internal fun TerminalSurface(
     // reason with a retry instead, and stop feeding a dead backend to the view.
     // lagged_resync is transient (daemon dropped burst frames): retry at once.
     val detached = backendState as? BackendState.Detached
-    if (detached?.reason == "lagged_resync") {
-        LaunchedEffect(backend) { onRetry() }
-    }
     val connected = state.connection == ConnectionState.CONNECTED
     when (val bs = backendState) {
         is BackendState.Failed -> {

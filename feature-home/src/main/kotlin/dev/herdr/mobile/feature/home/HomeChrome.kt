@@ -286,13 +286,15 @@ internal fun HomeHeader(
     }
 }
 
+/** True when there is no profile to retry yet. */
+internal fun isUnconfigured(error: String?): Boolean =
+    error?.contains("No host profile", ignoreCase = true) == true
+
 /** "Can't reach 192.168.1.4:8765" when the error names an endpoint. */
 private val hostPattern = Regex("""(?:to\s+)(/?[A-Za-z0-9.\-\[\]:]+:\d+)""")
 
 internal fun connectionProblem(error: String?): String {
-    if (error?.contains("No host profile", ignoreCase = true) == true) {
-        return "No host configured"
-    }
+    if (isUnconfigured(error)) return "No host configured"
     val host = error
         ?.let { hostPattern.find(it)?.groupValues?.getOrNull(1) }
         ?.trimStart('/')
@@ -302,8 +304,7 @@ internal fun connectionProblem(error: String?): String {
 /** One short cause clause, stripped of transport noise already in the header. */
 internal fun connectionDetail(error: String?): String = when {
     error == null -> "The daemon is not reachable."
-    error.contains("No host profile", ignoreCase = true) ->
-        "Add a host profile in Settings, then come back."
+    isUnconfigured(error) -> "Add a host profile in Settings, then come back."
     error.contains("Connection refused", ignoreCase = true) -> "Connection refused."
     error.contains("timed out", ignoreCase = true) ||
         error.contains("timeout", ignoreCase = true) -> "The host did not answer."
@@ -317,7 +318,7 @@ internal fun HomeOfflineBody(
     onRetry: (() -> Unit)?,
     modifier: Modifier = Modifier,
 ) {
-    val unconfigured = error?.contains("No host profile", ignoreCase = true) == true
+    val unconfigured = isUnconfigured(error)
     // The header already names the state and the endpoint. The body adds only
     // the cause and the action; repeating the headline here was redundant.
     Box(

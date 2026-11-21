@@ -327,7 +327,8 @@ fun TerminalScreen(
             // Overlay, not a layout row: a 32dp height change resized the
             // PTY and the reflow wiped the visible screen. Anchoring the
             // strip to the bottom keeps the last frame frozen through a drop.
-            val strip = when {
+            // With no backend the placeholder already carries the state.
+            val strip = if (backend == null) null else when {
                 // While the link is down the surface keeps the last frame and
                 // the strip is the only status. Only a failure on a live link
                 // replaces the content with the failure block.

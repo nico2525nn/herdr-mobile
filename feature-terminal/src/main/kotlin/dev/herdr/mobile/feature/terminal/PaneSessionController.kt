@@ -5,6 +5,7 @@ import dev.herdr.mobile.core.model.ConnectionState
 import dev.herdr.mobile.core.model.Pane
 import dev.herdr.mobile.core.model.SessionSnapshot
 import dev.herdr.mobile.core.network.HerdrSession
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.NonCancellable
@@ -256,7 +257,13 @@ class PaneSessionController(
                     onMessage(UiMessage.AttachFailed(detached.reason))
                     return@collect
                 }
-                val delayMs = AUTO_REATTACH_DELAY_MS * (1L shl attempts)
+                // lagged_resync is transient but still goes through this
+                // one retry path, so the budget and link guard apply.
+                val delayMs = if (detached.reason == "lagged_resync") {
+                    0L
+                } else {
+                    AUTO_REATTACH_DELAY_MS * (1L shl attempts)
+                }
                 attempts++
                 retryJob?.cancel()
                 retryJob = scope.launch {
@@ -454,39 +461,54 @@ class PaneSessionController(
         currentCoroutineContext().ensureActive()
         if (session.targetGeneration != generation) return
 
-        // Keep the previous backend composed until the replacement stream is
-        // actually open. Clearing it first turned every link-drop reattach
-        // into a blank placeholder and discarded the frozen frame.
+        val previous = backendFlow.value
+        val previousPaneId = backendPaneId
+        val samePane = previous != null && previousPaneId == target.paneId
+        if (!samePane) {
+            // A pane switch must not leave the old pane as the routing or
+            // display target: input would go to the pane the user left. Clear
+            // it before opening the replacement; the placeholder owns the
+            // transition.
+            backendFlow.value = null
+            backendPaneId = null
+            previous?.let { releaseInBackground(it) }
+        }
+
         val connection = openTerminalConnection(
             session = session,
             target = target,
             generation = generation,
             grid = gridFlow.value,
             onMessage = onMessage,
-        ) ?: run {
-            // A failure while the link is down is not authoritative: keep the
-            // last frame and let the link strip explain the pause. Once the
-            // link is up, a failed attach may replace the content, so drop the
-            // dead backend and let the failure block render.
-            val previous = backendFlow.value
-            if (session.state.value.connection == ConnectionState.CONNECTED && previous != null) {
-                if (backendFlow.value === previous) {
-                    backendFlow.value = null
-                    backendPaneId = null
-                }
-                releaseInBackground(previous)
-            }
-            return
-        }
+        ) ?: return
+
         if (!currentCoroutineContext().isActive || targetFlow.value != target ||
             session.targetGeneration != generation
         ) {
             releaseQuietly(connection)
             return
         }
-        val previous = backendFlow.value
-        val previousPaneId = backendPaneId
+
         val backend = ConnectionTerminalBackend(connection, scope)
+        if (samePane) {
+            // Same pane: the old controller already paints the frozen frame.
+            // Do not swap to the new (still Attaching) controller until it can
+            // paint, or the last output disappears for the attach window.
+            val ready = try {
+                withTimeoutOrNull(ATTACH_READY_TIMEOUT_MS) {
+                    backend.state.first {
+                        it is BackendState.Attached || it is BackendState.Failed
+                    }
+                }
+            } catch (e: CancellationException) {
+                releaseQuietly(connection)
+                throw e
+            }
+            if (ready !is BackendState.Attached) {
+                releaseQuietly(connection)
+                return
+            }
+        }
         backendPaneId = target.paneId
         backendFlow.value = backend
         if (!currentCoroutineContext().isActive || targetFlow.value != target ||
@@ -494,18 +516,14 @@ class PaneSessionController(
         ) {
             if (backendFlow.value === backend) backendFlow.value = null
             releaseInBackground(backend)
+            if (samePane && previous != null) releaseInBackground(previous)
             return
         }
-        if (previous != null && previous !== backend) {
-            if (previousPaneId == target.paneId) {
-                // The new bridge is already attached; releasing the old one
-                // restores the host viewport only if it was the last bridge.
-                try {
-                    withContext(NonCancellable) { previous.release() }
-                } catch (_: Exception) {
-                }
-            } else {
-                releaseInBackground(previous)
+        if (samePane && previous != null && previous !== backend) {
+            // The new bridge is attached; release the old controller only now.
+            try {
+                withContext(NonCancellable) { previous.release() }
+            } catch (_: Exception) {
             }
         }
         flushPending(backend)
@@ -544,6 +562,13 @@ class PaneSessionController(
 
     private fun dispatch(op: suspend (ConnectionTerminalBackend) -> Unit) {
         val backend = backendFlow.value
+        val generation = targetOwnerGeneration
+        if (backend == null || generation == null || !isCurrent(backend, generation)) {
+            // The selected pane has no live stream yet (switch/reattach).
+            // Queue instead of typing into the pane the user left.
+            pendingInput.enqueue(op)
+            return
+        }
         if (backend != null) {
             // A detached stream keeps the backend in the flow so the last
             // frame stays visible, but its socket is already closed. Queue
@@ -594,6 +619,7 @@ class PaneSessionController(
      */
     private fun isCurrent(backend: ConnectionTerminalBackend, generation: Long): Boolean =
         backendFlow.value === backend &&
+            backendPaneId == targetFlow.value?.paneId &&
             targetOwnerGeneration == generation &&
             session.targetGeneration == generation
 
@@ -747,6 +773,10 @@ private const val AUTO_REATTACH_DELAY_MS = 600L
 
 /** 0.6s, 1.2s, 2.4s, then the Retry button takes over. */
 private const val AUTO_REATTACH_ATTEMPTS = 4
+
+/** How long a same-pane replacement may spend Attaching before the frozen
+ *  controller is kept instead. */
+private const val ATTACH_READY_TIMEOUT_MS = 10_000L
 
 /** Attach must last this long before a detach earns a fresh retry budget. */
 private const val STABLE_ATTACH_MS = 5_000L

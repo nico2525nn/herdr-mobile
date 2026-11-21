@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased — connection chrome
+## 2.4.0 — 2026-11-22
 
 - Connection state now uses existing chrome instead of a new surface: the Home
   header's second line replaces the counts (`Reconnecting… 12s`,
