@@ -25,6 +25,8 @@ data class HomeUiState(
     val lastSyncAt: Long = 0,
     /** Increments when a reorder command fails so the list can restore order. */
     val reorderReset: Long = 0,
+    /** Target that produced [snapshot]; destructive actions carry it to REST. */
+    val targetGeneration: Long = 0,
 ) {
     val workspaceCount: Int get() = snapshot?.workspaces?.size ?: 0
     val tabCount: Int get() = snapshot?.tabCount ?: 0
@@ -53,17 +55,19 @@ class HomeViewModel(
     val message: StateFlow<UiMessage?> = _message
     private val _reorderReset = kotlinx.coroutines.flow.MutableStateFlow(0L)
 
-    fun closeTab(tabId: String) {
-        viewModelScope.launch {
-            runCatching { client.closeTab(tabId) }
+    fun closeTab(tabId: String, targetGeneration: Long? = null) {
+        launchForCurrentTarget { current ->
+            runCatching { client.closeTabAt(tabId, targetGeneration ?: current) }
                 .onSuccess { _message.value = null }
                 .onFailure { _message.value = UiMessage.CommandFailed(UiMessage.CommandFailed.Command.CLOSE_TAB, it.message) }
         }
     }
 
-    fun renameTab(tabId: String, label: String) {
-        viewModelScope.launch {
-            runCatching { client.renameTab(tabId, label.trim()) }
+    fun renameTab(tabId: String, label: String, targetGeneration: Long? = null) {
+        launchForCurrentTarget { current ->
+            runCatching {
+                client.renameTabAt(tabId, label.trim(), targetGeneration ?: current)
+            }
                 .onSuccess { _message.value = null }
                 .onFailure { _message.value = UiMessage.CommandFailed(UiMessage.CommandFailed.Command.RENAME_TAB, it.message) }
         }
@@ -95,9 +99,17 @@ class HomeViewModel(
         }
     }
 
-    fun renameWorkspace(workspaceId: String, label: String) {
-        launchForCurrentTarget {
-            runCatching { client.renameWorkspace(workspaceId, label.trim()) }
+    fun renameWorkspace(
+        workspaceId: String,
+        label: String,
+        targetGeneration: Long? = null,
+    ) {
+        launchForCurrentTarget { current ->
+            runCatching {
+                client.renameWorkspaceAt(
+                    workspaceId, label.trim(), targetGeneration ?: current,
+                )
+            }
                 .onSuccess { _message.value = null }
                 .onFailure { _message.value = UiMessage.CommandFailed(UiMessage.CommandFailed.Command.RENAME_WORKSPACE, it.message) }
         }
@@ -127,9 +139,11 @@ class HomeViewModel(
         }
     }
 
-    fun closeWorkspace(workspaceId: String) {
-        launchForCurrentTarget { generation ->
-            runCatching { client.closeWorkspaceAt(workspaceId, generation) }
+    fun closeWorkspace(workspaceId: String, targetGeneration: Long? = null) {
+        launchForCurrentTarget { current ->
+            runCatching {
+                client.closeWorkspaceAt(workspaceId, targetGeneration ?: current)
+            }
                 .onSuccess { _message.value = null }
                 .onFailure { _message.value = UiMessage.CommandFailed(UiMessage.CommandFailed.Command.CLOSE_WORKSPACE, it.message) }
         }
@@ -165,6 +179,7 @@ class HomeViewModel(
             error = s.error,
             lastSyncAt = s.lastSyncAt,
             reorderReset = reset,
+            targetGeneration = client.targetGeneration,
         )
     }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), HomeUiState())
 

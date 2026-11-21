@@ -81,6 +81,7 @@ internal fun workspaceCard(
     onWsMenu: (HomeWsMenuTarget) -> Unit,
     handleModifier: (Workspace) -> Modifier = { Modifier },
     reorderable: Boolean = true,
+    targetGeneration: Long = 0,
 ) {
     WorkspaceCard(
         workspace = workspace,
@@ -93,7 +94,9 @@ internal fun workspaceCard(
                 (pressWindow.x - screenOrigin.x).toInt(),
                 (pressWindow.y - screenOrigin.y).toInt(),
             )
-            onWsMenu(HomeWsMenuTarget(workspace.id, workspace.label, anchor))
+            onWsMenu(
+                HomeWsMenuTarget(workspace.id, workspace.label, anchor, targetGeneration),
+            )
         },
         onTabLongPress = { tab, pressWindow ->
             // Window point minus our origin = anchor-box offset.
@@ -101,7 +104,11 @@ internal fun workspaceCard(
                 (pressWindow.x - screenOrigin.x).toInt(),
                 (pressWindow.y - screenOrigin.y).toInt(),
             )
-            onMenu(HomeTabMenuTarget(workspace.id, tab.id, tab.displayLabel, anchor))
+            onMenu(
+                HomeTabMenuTarget(
+                    workspace.id, tab.id, tab.displayLabel, anchor, targetGeneration,
+                ),
+            )
         },
     )
 }
@@ -193,6 +200,7 @@ internal fun WorkspaceList(
                     onTabMenu,
                     onWsMenu,
                     handleModifier = { reorder.handleModifier(it) },
+                    targetGeneration = state.targetGeneration,
                 )
             }
         }

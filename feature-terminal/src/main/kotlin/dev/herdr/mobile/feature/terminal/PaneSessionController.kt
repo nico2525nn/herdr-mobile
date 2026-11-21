@@ -162,16 +162,13 @@ class PaneSessionController(
     private fun onTargetGenerationChanged(snapshot: SessionSnapshot?) {
         targetOwnerGeneration = null
         cancelAttachmentWork(clearInput = true)
-        val keep = targetFlow.value
         val old = backendFlow.value
         backendFlow.value = null
         if (old != null) releaseInBackground(old)
 
-        val reopen = keep?.takeIf { snapshot?.pane(it.paneId) != null }
-        if (reopen != null) {
-            openTarget(reopen, preserveMessage = true)
-            return
-        }
+        // targetGeneration changes only on a profile/transport switch, not on
+        // a daemon redial (that keeps the generation). Do not reopen a pane
+        // whose id merely happens to exist on the new host.
         targetFlow.value = null
         initialResolutionAllowed = false
         onMessage(UiMessage.TargetChanged)
@@ -215,6 +212,14 @@ class PaneSessionController(
                     // race) otherwise loops forever: every short attach reset
                     // the counter that was meant to stop it.
                     if (attachedAt == 0L) attachedAt = System.currentTimeMillis()
+                    // A slow attach may have outlived the 5s read-ack wait;
+                    // re-evaluate the visible DONE now that it is really up.
+                    val target = targetFlow.value
+                    val generation = targetOwnerGeneration
+                    val pane = target?.let { session.state.value.snapshot?.pane(it.paneId) }
+                    if (target != null && generation != null && pane != null) {
+                        maybeAckDone(pane, target, generation)
+                    }
                     return@collect
                 }
                 if (connection != ConnectionState.CONNECTED) {
@@ -424,7 +429,7 @@ class PaneSessionController(
                 readAckPaneId = null
                 return@launch
             }
-            val ok = focusPaneForReadAck(session, pane.id) { detail ->
+            val ok = focusPaneForReadAck(session, pane.id, generation) { detail ->
                 if (session.targetGeneration == generation) {
                     onMessage(UiMessage.CommandFailed(UiMessage.CommandFailed.Command.READ_ACK, detail))
                 }

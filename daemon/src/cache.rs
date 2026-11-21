@@ -152,15 +152,10 @@ impl SessionCache {
         let raw = raw?;
         let info = info.ok().and_then(Result::ok);
         if self.seq.load(Ordering::SeqCst) != seq_before {
-            // A subscriber already folded a newer event. Keep its state and
-            // return the current summary; the caller's follow-up GET will see
-            // the settled cache.
-            let snapshot = self.snapshot();
-            return Ok(CacheSummary {
-                revision: self.revision.load(Ordering::SeqCst),
-                seq: self.seq.load(Ordering::SeqCst),
-                workspaces: snapshot.map(|s| s.workspaces.len()).unwrap_or(0),
-            });
+            // A subscriber already folded a newer event. Do not report this
+            // as a successful rebuild; the structural resubscribe path would
+            // skip the refetch that includes the new pane.
+            return Err(anyhow::anyhow!("cache moved during refresh; retry"));
         }
         let update = self
             .inner
@@ -185,13 +180,8 @@ impl SessionCache {
                 self.seq.load(Ordering::SeqCst) != seq_before
             {
                 // A folded event won the race while the HTTP response was in
-                // flight. Keep its newer payload and report the current cache.
-                let current = inner.snapshot.as_ref();
-                return Ok(CacheSummary {
-                    revision: self.revision.load(Ordering::SeqCst),
-                    seq: self.seq.load(Ordering::SeqCst),
-                    workspaces: current.map(|s| s.workspaces.len()).unwrap_or(0),
-                });
+                // flight. Keep its newer payload and make the caller retry.
+                return Err(anyhow::anyhow!("cache moved during refresh; retry"));
             }
             inner.snapshot = Some(snapshot);
             inner.herdr_connected = true;

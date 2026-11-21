@@ -201,6 +201,7 @@ fun HomeScreen(
                                     { tabMenu = it },
                                     { wsMenu = it },
                                     reorderable = false,
+                                    targetGeneration = state.targetGeneration,
                                 )
                             }
                         }
@@ -245,7 +246,7 @@ fun HomeScreen(
                 tabMenu = null
             },
             onClose = {
-                viewModel.closeTab(target.tabId)
+                viewModel.closeTab(target.tabId, target.targetGeneration)
                 tabMenu = null
             },
         )
@@ -255,7 +256,7 @@ fun HomeScreen(
             target = target,
             onDismiss = { renameTarget = null },
             onConfirm = { label ->
-                viewModel.renameTab(target.tabId, label)
+                viewModel.renameTab(target.tabId, label, target.targetGeneration)
                 renameTarget = null
             },
         )
@@ -279,7 +280,7 @@ fun HomeScreen(
             target = target,
             onDismiss = { wsRenameTarget = null },
             onConfirm = { label ->
-                viewModel.renameWorkspace(target.workspaceId, label)
+                viewModel.renameWorkspace(target.workspaceId, label, target.targetGeneration)
                 wsRenameTarget = null
             },
         )
@@ -289,7 +290,7 @@ fun HomeScreen(
             target = target,
             onDismiss = { wsCloseTarget = null },
             onConfirm = {
-                viewModel.closeWorkspace(target.workspaceId)
+                viewModel.closeWorkspace(target.workspaceId, target.targetGeneration)
                 wsCloseTarget = null
             },
         )

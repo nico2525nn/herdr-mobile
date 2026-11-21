@@ -20,30 +20,39 @@ token_from_env_text() {
 }
 
 resolve_deploy_token() {
-  local token="" exec env envfiles file
-  if [[ -n "${HERDR_MOBILE_TOKEN:-}" ]]; then
-    printf '%s' "$HERDR_MOBILE_TOKEN"
+  local token="" exec env envfiles file value
+  command -v systemctl >/dev/null 2>&1 || {
+    printf '%s' "${HERDR_MOBILE_TOKEN:-}"
     return
-  fi
-  command -v systemctl >/dev/null 2>&1 || return
-  # Match the daemon's own priority: --token wins over the environment, and
-  # the environment comes from Environment= plus EnvironmentFile(s).
+  }
+  # Match the daemon's own priority exactly: --token wins over everything,
+  # then the service environment, then the deploy shell override.
   exec="$(systemctl --user show "$SERVICE" -p ExecStart --value 2>/dev/null || true)"
   token="$(printf '%s' "$exec" |
     sed -n 's/.*--token[= ]\([^ ;"]*\).*/\1/p' | tr -d '"' | head -n1)"
+  if [[ -n "$token" ]]; then
+    printf '%s' "$token"
+    return
+  fi
   env="$(systemctl --user show "$SERVICE" -p Environment --value 2>/dev/null || true)"
   token="$(token_from_env_text "$env")"
   # systemd reads EnvironmentFiles after Environment and later files override
-  # earlier ones; mirror that order instead of stopping at the first value.
+  # earlier ones. A present-but-empty assignment clears the value, so check
+  # for the key rather than skipping empty values.
   envfiles="$(systemctl --user show "$SERVICE" -p EnvironmentFiles --value 2>/dev/null || true)"
   for file in $envfiles; do
     [[ -r "$file" ]] || continue
-    local value
-    value="$(sed -n 's/^[[:space:]]*\(export[[:space:]]\{1,\}\)\?HERDR_MOBILE_TOKEN=//p' "$file" |
-      tr -d '"' | head -n1)"
-    [[ -n "$value" ]] && token="$value"
+    if grep -Eq '^[[:space:]]*(export[[:space:]]+)?HERDR_MOBILE_TOKEN=' "$file"; then
+      value="$(sed -n 's/^[[:space:]]*\(export[[:space:]]\{1,\}\)\?HERDR_MOBILE_TOKEN=//p' "$file" |
+        tr -d '"' | tail -n1)"
+      token="$value"
+    fi
   done
-  printf '%s' "$token"
+  if [[ -n "$token" ]]; then
+    printf '%s' "$token"
+    return
+  fi
+  printf '%s' "${HERDR_MOBILE_TOKEN:-}"
 }
 
 TOKEN="$(resolve_deploy_token)"

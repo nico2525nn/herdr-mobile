@@ -217,9 +217,8 @@ class SettingsViewModel(
                     port = profile.port,
                     username = profile.username,
                     daemonPort = profile.daemonPort,
-                    daemonHost = profile.daemonHost,
-                    useTls = profile.useTls,
-                    backendMode = profile.backendMode,
+                    // daemonHost/useTls/backendMode are not in this dialog;
+                    // keep the current record instead of an old dialog copy.
                     hostKeyAlias = if (endpointChanged) null else base.hostKeyAlias,
                     passwordAlias = base.passwordAlias,
                     bearerTokenAlias = base.bearerTokenAlias,

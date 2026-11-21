@@ -132,11 +132,20 @@ class HerdrClient(
 
     override suspend fun closeTab(tabId: String) = commands.closeTab(tabId)
 
+    override suspend fun closeTabAt(tabId: String, targetGeneration: Long) =
+        commands.closeTabAt(tabId, targetGeneration)
+
     override suspend fun focusTab(tabId: String) = commands.focusTab(tabId)
 
     override suspend fun focusPane(paneId: String) = commands.focusPane(paneId)
 
+    override suspend fun focusPaneAt(paneId: String, targetGeneration: Long) =
+        commands.focusPaneAt(paneId, targetGeneration)
+
     override suspend fun renameTab(tabId: String, label: String) = commands.renameTab(tabId, label)
+
+    override suspend fun renameTabAt(tabId: String, label: String, targetGeneration: Long) =
+        commands.renameTabAt(tabId, label, targetGeneration)
 
     /** [focus] = false creates a workspace without moving the desktop's focus. */
     override suspend fun createWorkspace(label: String?, cwd: String?, focus: Boolean): String =
@@ -144,6 +153,12 @@ class HerdrClient(
 
     override suspend fun renameWorkspace(workspaceId: String, label: String) =
         commands.renameWorkspace(workspaceId, label)
+
+    override suspend fun renameWorkspaceAt(
+        workspaceId: String,
+        label: String,
+        targetGeneration: Long,
+    ) = commands.renameWorkspaceAt(workspaceId, label, targetGeneration)
 
     override suspend fun closeWorkspace(workspaceId: String) =
         commands.closeWorkspace(workspaceId)

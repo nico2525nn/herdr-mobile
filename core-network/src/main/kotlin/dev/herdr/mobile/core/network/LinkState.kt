@@ -59,6 +59,11 @@ internal class LinkState(private val clock: LinkClock) {
 
     fun currentConnectionEpoch(): Long = connectionEpoch
 
+    /** Endpoint and epoch captured atomically for one request. */
+    fun endpointWithEpoch(): Pair<DaemonEndpoint, Long>? = synchronized(lock) {
+        endpoint?.let { it to connectionEpoch }
+    }
+
     /** Endpoint belonging to [targetGeneration], or null after a target switch. */
     fun endpointFor(targetGeneration: Long): DaemonEndpoint? = synchronized(lock) {
         if (this.targetGeneration == targetGeneration) endpoint else null

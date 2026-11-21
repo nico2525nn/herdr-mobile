@@ -560,6 +560,10 @@ impl CoreClient {
             let (old_space, _old_tab) = split_where(field_string(labels, "where"));
             let space = field_string(labels, "herdr.space_label").map(str::to_owned).or(old_space).unwrap_or_else(|| "Herdr core".to_owned());
             let mut updates = json!({"herdr.tab_label":label,"where":format!("{space} / {label}")});
+            // Freeze where-derived ids before changing `where`, or a rename
+            // would move the same pane to a different route.
+            if let Some(id) = workspace_id_of(&terminal) { updates["herdr.space"] = Value::String(id); }
+            if let Some(id) = tab_id_of(&terminal) { updates["herdr.tab"] = Value::String(id); }
             self.label(address, updates.take()).await?;
         }
         Ok(())
@@ -576,7 +580,10 @@ impl CoreClient {
             let labels = terminal.get("labels").unwrap_or(&Value::Null);
             let (_, old_tab) = split_where(field_string(labels, "where"));
             let tab = field_string(labels, "herdr.tab_label").map(str::to_owned).or(old_tab).unwrap_or_else(|| "1".to_owned());
-            self.label(address, json!({"herdr.space_label":label,"where":format!("{label} / {tab}")})).await?;
+            let mut updates = json!({"herdr.space_label":label,"where":format!("{label} / {tab}")});
+            if let Some(id) = workspace_id_of(&terminal) { updates["herdr.space"] = Value::String(id); }
+            if let Some(id) = tab_id_of(&terminal) { updates["herdr.tab"] = Value::String(id); }
+            self.label(address, updates.take()).await?;
         }
         Ok(())
     }

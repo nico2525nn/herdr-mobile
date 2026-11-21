@@ -121,6 +121,10 @@ class AppContainer(context: Context) {
         // never changes on field edits ("direct" is constant, profile ids are
         // stable), so gating on id drops every edit until process restart.
         scope.launch {
+            // Do not treat the pre-load default settings as a target change:
+            // that would clear the persisted notification map before the
+            // first seed can merge it.
+            settingsRepository.awaitLoaded()
             var previousTarget: ConnectionTargetKey? = null
             var targetInvalidated = false
             settingsRepository.settings

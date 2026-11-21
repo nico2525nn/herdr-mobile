@@ -41,11 +41,26 @@ interface HerdrSession {
     /** Focus exactly this pane (read-ack for split tabs; tab focus is not enough). */
     suspend fun focusPane(paneId: String)
 
+    suspend fun focusPaneAt(paneId: String, targetGeneration: Long) {
+        if (this.targetGeneration != targetGeneration) return
+        focusPane(paneId)
+    }
+
     suspend fun createTab(workspaceId: String, label: String?, focus: Boolean = true): String
 
     suspend fun closeTab(tabId: String)
 
+    suspend fun closeTabAt(tabId: String, targetGeneration: Long) {
+        if (this.targetGeneration != targetGeneration) return
+        closeTab(tabId)
+    }
+
     suspend fun renameTab(tabId: String, label: String)
+
+    suspend fun renameTabAt(tabId: String, label: String, targetGeneration: Long) {
+        if (this.targetGeneration != targetGeneration) return
+        renameTab(tabId, label)
+    }
 
     suspend fun createWorkspace(label: String?, cwd: String?, focus: Boolean = true): String
 
@@ -58,6 +73,15 @@ interface HerdrSession {
     }
 
     suspend fun renameWorkspace(workspaceId: String, label: String)
+
+    suspend fun renameWorkspaceAt(
+        workspaceId: String,
+        label: String,
+        targetGeneration: Long,
+    ) {
+        if (this.targetGeneration != targetGeneration) return
+        renameWorkspace(workspaceId, label)
+    }
 
     suspend fun moveTab(tabId: String, insertIndex: Long)
 

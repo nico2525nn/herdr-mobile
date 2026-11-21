@@ -324,8 +324,18 @@ class NotificationRelay(
             if (snapshot != null && snapshot.seq > event.seq &&
                 state.connectionEpoch == connectionEpoch
             ) {
-                snapshot.pane(paneId)?.let { pane ->
-                    if (lastNotified[paneId]?.status != pane.status) {
+                val currentPane = snapshot.pane(paneId)
+                if (currentPane == null) {
+                    // The pane was removed before the event was consumed;
+                    // retract the transient alert and drop its dedupe key.
+                    if (lastNotified[paneId]?.status == status) {
+                        HerdrNotifications.dismissPane(context, workspaceId, paneId)
+                        lastNotified.remove(paneId)
+                        persistLocked()
+                    }
+                } else if (lastNotified[paneId]?.status != currentPane.status) {
+                    val pane = currentPane
+                    run {
                         transitionAndNotify(
                             paneId,
                             pane.status,

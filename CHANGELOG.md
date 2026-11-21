@@ -47,6 +47,34 @@
   the notification tap goes through a non-exported proxy instead of the
   exported launcher activity.
 
+### Fifth deep-review pass
+
+- **Target generations everywhere:** tab close/rename, workspace rename/close,
+  and pane read-ack now carry the generation that produced the row all the way
+  to `endpointFor`. A profile/transport switch clears the old Terminal route
+  instead of reopening a same-id pane on the new host, and Home menu dialogs
+  keep the generation captured when they opened.
+- **Deploy token:** `--token` wins, service Environment/EnvironmentFiles follow
+  systemd order (later files win, empty assignment clears), and only then the
+  shell override. The bearer still travels through curl stdin config.
+- **CI:** stop/delete failures keep `.ci-owned`; a marker-less startup now fails
+  when `session list` is unreadable; the daemon binary is matched by
+  `/proc/<pid>/exe`, not basename.
+- **Shutdown/attach:** all child writes race the shutdown notification; TUI
+  does not send `ready` until the controller survives a short stability check;
+  read-ack re-evaluates a DONE pane when a slow attach finally becomes
+  `Attached`.
+- **Notifications:** a removed pane retracts the transient DONE, and event
+  buffers are 1024 instead of 64. AppContainer waits for DataStore load before
+  treating settings as a target change.
+- **Core/cache:** a raced full refresh returns an error instead of a false
+  success; Core rename freezes where-derived IDs before changing `where`; a
+  Core read-ack broadcasts `snapshot.required`; reorder labels remove absent
+  originals with an empty label.
+- **Reorder:** a disposed row releases drag state in `finally`.
+- **Settings:** a profile save keeps non-dialog daemonHost/useTls/backendMode
+  from the current record.
+
 ### Fourth deep-review pass
 
 - **Notification ordering:** separate event and snapshot cursors let a short

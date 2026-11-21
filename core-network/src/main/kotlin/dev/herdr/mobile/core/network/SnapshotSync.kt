@@ -44,14 +44,16 @@ internal class SnapshotSync(
 
     private val _events = MutableSharedFlow<SemanticEvent>(
         replay = 0,
-        extraBufferCapacity = 64,
+        // A short DONE in a burst must survive until the notification
+        // collector drains; 64 was too easy to overflow during a reconnect.
+        extraBufferCapacity = 1024,
         onBufferOverflow = BufferOverflow.DROP_OLDEST,
     )
     val events: SharedFlow<SemanticEvent> = _events
 
     private val _stampedEvents = MutableSharedFlow<StampedEvent>(
         replay = 0,
-        extraBufferCapacity = 64,
+        extraBufferCapacity = 1024,
         onBufferOverflow = BufferOverflow.DROP_OLDEST,
     )
     val stampedEvents: SharedFlow<StampedEvent> = _stampedEvents
@@ -162,8 +164,7 @@ internal class SnapshotSync(
         // Capture the attempt with the endpoint. An automatic retry can start
         // (and advance the epoch) while this GET is in flight; a late response
         // from the old daemon must not overwrite the new snapshot.
-        val endpoint = state.endpoint ?: return
-        val connectionEpoch = state.currentConnectionEpoch()
+        val (endpoint, connectionEpoch) = state.endpointWithEpoch() ?: return
         refetchMutex.withLock {
             if (!state.isCurrentEpoch(generation, connectionEpoch)) return
             try {

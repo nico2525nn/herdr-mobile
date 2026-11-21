@@ -447,6 +447,17 @@ async fn run_session(
             return;
         }
     };
+    // A controller that exits immediately (bad pane/backend) must not look
+    // attached: Android acks DONE on the first ready frame.
+    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    if !child.is_alive() {
+        session.bridges.lock().expect("bridges poisoned").closing = true;
+        *session.last_close_reason.lock().expect("close reason poisoned") =
+            Some("attach_failed".to_string());
+        let _ = session.closed_tx.send("attach_failed".to_string());
+        registry.remove(&pane_id, &session).await;
+        return;
+    }
     info!("attached terminal session for pane {pane_id} ({cols}x{rows})");
     let _ = session.frames_tx.send(SessionFrame::Ready { cols, rows, resumed: false });
     let mut last_resize = tokio::time::Instant::now();
@@ -483,10 +494,10 @@ async fn run_session(
                 let Some(cmd) = cmd else { end_reason = "released".to_string(); break };
                 match cmd {
                     SessionCommand::Input(bytes) => {
-                        if terminal_io(child.send_input_bytes(&bytes)).await.is_err() { break; }
+                        if or_shutdown!(terminal_io(child.send_input_bytes(&bytes))).is_err() { break; }
                     }
                     SessionCommand::Text(text) => {
-                        if terminal_io(child.send_input_text(&text)).await.is_err() { break; }
+                        if or_shutdown!(terminal_io(child.send_input_text(&text))).is_err() { break; }
                     }
                     SessionCommand::Resize(c, r) => {
                         // Coalesce resizes to at most one per 120 ms.
@@ -496,7 +507,7 @@ async fn run_session(
                             // older geometry after this newer one.
                             pending_resize = None;
                             flush_at = None;
-                            if terminal_io(child.send_resize(c, r)).await.is_err() { break; }
+                            if or_shutdown!(terminal_io(child.send_resize(c, r))).is_err() { break; }
                             last_resize = tokio::time::Instant::now();
                             let _ = session.frames_tx.send(SessionFrame::Ready { cols: c, rows: r, resumed: false });
                         } else {
@@ -566,7 +577,7 @@ async fn run_session(
                         }
                     }
                     SessionCommand::Mouse(action, button, column, row) => {
-                        if terminal_io(child.send_mouse(&action, &button, column, row)).await.is_err() { break; }
+                        if or_shutdown!(terminal_io(child.send_mouse(&action, &button, column, row))).is_err() { break; }
                     }
                 }
             }
@@ -598,7 +609,7 @@ async fn run_session(
             }, if pending_resize.is_some() => {
                 flush_at = None;
                 if let Some((c, r)) = pending_resize.take() {
-                    if terminal_io(child.send_resize(c, r)).await.is_err() { break; }
+                    if or_shutdown!(terminal_io(child.send_resize(c, r))).is_err() { break; }
                     last_resize = tokio::time::Instant::now();
                     let _ = session.frames_tx.send(SessionFrame::Ready { cols: c, rows: r, resumed: false });
                 }

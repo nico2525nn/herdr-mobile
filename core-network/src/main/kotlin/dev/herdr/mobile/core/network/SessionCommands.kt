@@ -44,14 +44,23 @@ internal class SessionCommands(
     suspend fun closeTab(tabId: String) =
         withContext(Dispatchers.IO) { api().closeTab(tabId) }
 
+    suspend fun closeTabAt(tabId: String, targetGeneration: Long) =
+        withContext(Dispatchers.IO) { api(targetGeneration).closeTab(tabId) }
+
     suspend fun focusTab(tabId: String) =
         withContext(Dispatchers.IO) { api().focusTab(tabId) }
 
     suspend fun focusPane(paneId: String) =
         withContext(Dispatchers.IO) { api().focusPane(paneId) }
 
+    suspend fun focusPaneAt(paneId: String, targetGeneration: Long) =
+        withContext(Dispatchers.IO) { api(targetGeneration).focusPane(paneId) }
+
     suspend fun renameTab(tabId: String, label: String) =
         withContext(Dispatchers.IO) { api().renameTab(tabId, label) }
+
+    suspend fun renameTabAt(tabId: String, label: String, targetGeneration: Long) =
+        withContext(Dispatchers.IO) { api(targetGeneration).renameTab(tabId, label) }
 
     /** [focus] = false creates a workspace without moving the desktop's focus. */
     suspend fun createWorkspace(label: String?, cwd: String?, focus: Boolean = true): String =
@@ -59,6 +68,14 @@ internal class SessionCommands(
 
     suspend fun renameWorkspace(workspaceId: String, label: String) =
         withContext(Dispatchers.IO) { api().renameWorkspace(workspaceId, label) }
+
+    suspend fun renameWorkspaceAt(
+        workspaceId: String,
+        label: String,
+        targetGeneration: Long,
+    ) = withContext(Dispatchers.IO) {
+        api(targetGeneration).renameWorkspace(workspaceId, label)
+    }
 
     suspend fun closeWorkspace(workspaceId: String) =
         withContext(Dispatchers.IO) { api().closeWorkspace(workspaceId) }

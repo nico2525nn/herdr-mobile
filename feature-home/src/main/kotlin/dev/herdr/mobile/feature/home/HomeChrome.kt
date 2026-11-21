@@ -74,6 +74,8 @@ internal data class HomeTabMenuTarget(
     val tabId: String,
     val label: String,
     val anchor: androidx.compose.ui.unit.IntOffset,
+    /** Target that produced this row; destructive menu actions carry it. */
+    val targetGeneration: Long,
 )
 
 @Composable

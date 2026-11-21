@@ -129,7 +129,7 @@ class TerminalViewModelBehaviourTest {
     }
 
     @Test
-    fun `a redialled daemon reopens the same pane`() = runTest(dispatcher) {
+    fun `a target switch does not reopen the same pane id on the new host`() = runTest(dispatcher) {
         val session = FakeHerdrSession(snapshot(oneWorkspace()))
         val vm = TerminalViewModel(session, null, null, null, settings())
         observe(vm)
@@ -144,11 +144,11 @@ class TerminalViewModelBehaviourTest {
         advanceUntilIdle()
 
         assertEquals(
-            "the same pane must come back after a daemon restart",
-            listOf("w1:w1:t1", "w1:w1:t1"),
+            "a same-id pane on the new host must not be auto-opened",
+            listOf("w1:w1:t1"),
             session.openedPanes,
         )
-        assertEquals("w1", vm.uiState.value.target?.workspaceId)
+        assertNull(vm.uiState.value.target)
     }
 
     @Test

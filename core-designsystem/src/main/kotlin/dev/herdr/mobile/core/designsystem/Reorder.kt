@@ -148,6 +148,7 @@ fun <T> rememberReorderState(
                     // leftovers itself; the outer pre-scroll blocker starves the
                     // parent scroll so nothing double-moves.
                     val slop = viewConfiguration.touchSlop
+                    try {
                     awaitEachGesture {
                         val down = awaitFirstDown(requireUnconsumed = false)
                         // Waits the long-press timeout itself; null on early
@@ -313,6 +314,20 @@ fun <T> rememberReorderState(
                             }
                         }
                     }
+                    } finally {
+                        // The row itself can be removed mid-gesture; release
+                        // the drag so auto-scroll and the resync gate recover.
+                        // A normally completed drag already cleared the key
+                        // and sent onDrop; do not undo its optimistic order.
+                        if (draggingKey.value != null) {
+                            draggingKey.value = null
+                            scrollDir.intValue = 0
+                            dragOffsetPx.floatValue = 0f
+                            order.value = pendingReset.value ?: latestItems.value
+                            pendingReset.value = null
+                        }
+                    }
+
                 }
             },
             // Server rejection/rollback path: restore the authoritative list

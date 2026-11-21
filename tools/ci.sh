@@ -171,7 +171,9 @@ is_our_daemon() {
   [[ -r "/proc/$pid/cmdline" ]] || return 1
   mapfile -d '' -t args < "/proc/$pid/cmdline" 2>/dev/null || return 1
   ((${#args[@]} > 0)) || return 1
-  [[ "$(basename -- "${args[0]}")" == "herdr-mobile-daemon" ]] || return 1
+  local expected_exe
+  expected_exe="$(readlink -f "$DAEMON_BIN" 2>/dev/null || printf '%s' "$DAEMON_BIN")"
+  [[ "$(proc_exe "$pid")" == "$expected_exe" ]] || return 1
   expected_bind="127.0.0.1:${PRIVATE_PORT}"
   sock="$(session_dir)/herdr.sock"
   # Argument-boundary comparison: a substring match killed a process whose
@@ -321,6 +323,11 @@ stop_private_session() {
       return 1
     fi
   fi
+  if (( stop_status != 0 )); then
+    printf "ci: server stop returned %d for '%s'; keeping its CI marker\n" \
+      "$stop_status" "$PRIVATE_SESSION" >&2
+    return 1
+  fi
   if [[ -d "$dir" ]]; then
     if [[ -e "$dir/.ci-owned" ]]; then
       "$HERDR" session delete "$PRIVATE_SESSION" >/dev/null 2>&1 ||
@@ -338,10 +345,6 @@ stop_private_session() {
     else
       info "warning: $dir has no CI marker; leaving it alone"
     fi
-  fi
-  if (( stop_status != 0 )); then
-    printf "ci: server stop returned %d for '%s'\n" "$stop_status" "$PRIVATE_SESSION" >&2
-    return 1
   fi
   return 0
 }
@@ -592,9 +595,16 @@ if [[ -e "$SESSION_DIR" && ! -e "$SESSION_DIR/.ci-owned" ]]; then
   die "$SESSION_DIR exists but was not created by tools/ci.sh.
 ci: refusing to reuse a real Herdr session; set PRIVATE_SESSION=<other-name>"
 fi
-if [[ ! -e "$SESSION_DIR" ]] && session_running; then
-  die "a Herdr session named '$PRIVATE_SESSION' is already running but is not owned by tools/ci.sh.
+if [[ ! -e "$SESSION_DIR" ]]; then
+  if session_running; then
+    die "a Herdr session named '$PRIVATE_SESSION' is already running but is not owned by tools/ci.sh.
 ci: refusing to stop it; set PRIVATE_SESSION=<other-name>"
+  else
+    SESSION_CHECK=$?
+    if (( SESSION_CHECK == 2 )); then
+      die "cannot determine whether session '$PRIVATE_SESSION' is running; refusing to proceed"
+    fi
+  fi
 fi
 stop_private_session
 

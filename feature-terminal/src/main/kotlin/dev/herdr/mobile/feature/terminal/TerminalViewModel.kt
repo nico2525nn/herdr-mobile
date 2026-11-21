@@ -69,13 +69,18 @@ data class TerminalUiState(
 internal suspend fun focusPaneForReadAck(
     client: dev.herdr.mobile.core.network.HerdrSession,
     paneId: String,
+    targetGeneration: Long? = null,
     onFailure: (String) -> Unit,
 ): Boolean {
     return try {
         // `tab.focus` activates the tab's last pane; a split pane that finished
         // in the background stays unseen. Focus the exact pane Herdr reports
         // done, then refetch so the dot/notification clear deterministically.
-        client.focusPane(paneId)
+        if (targetGeneration == null) {
+            client.focusPane(paneId)
+        } else {
+            client.focusPaneAt(paneId, targetGeneration)
+        }
         client.refresh()
         true
     } catch (e: CancellationException) {
