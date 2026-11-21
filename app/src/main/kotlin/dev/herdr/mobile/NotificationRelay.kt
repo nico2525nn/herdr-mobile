@@ -285,12 +285,9 @@ class NotificationRelay internal constructor(
                             if (notified.seq < snapshot.seq) {
                                 lastNotified[pane.id] = notified.copy(seq = snapshot.seq)
                             }
-                            if (pane.status == AgentStatus.DONE ||
-                                pane.status == AgentStatus.BLOCKED
-                            ) {
-                                lastAlertSeq[pane.id] =
-                                    maxOf(lastAlertSeq[pane.id] ?: -1L, snapshot.seq)
-                            }
+                            // Do NOT mark this as an announced alert: a
+                            // same-status snapshot did not post anything. The
+                            // late DONE event must still be able to alert.
                             continue
                         }
                         val tab = snapshot.tab(pane.tabId)

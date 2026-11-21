@@ -173,6 +173,36 @@ class NotificationRelayOrderingTest {
     }
 
     @Test
+    fun `a restart snapshot that overtakes events still alerts the short DONE`() =
+        runTest(UnconfinedTestDispatcher()) {
+            val settings = Settings(persisted = mapOf("p1" to "done|w1"))
+            val records = Records()
+            val events = MutableSharedFlow<StampedEvent>(extraBufferCapacity = 8)
+            val session = FakeHerdrSession(snapshot(100, AgentStatus.DONE))
+            relay(session, settings, records, events)
+            advanceUntilIdle()
+
+            // New epoch. The snapshot side sees DONE(0), then DONE(2)
+            // without an intervening event, then WORKING(3). The late
+            // DONE(2) event is the only chance to announce that completion.
+            session.publish(snapshot(0, AgentStatus.DONE), epoch = 2)
+            advanceUntilIdle()
+            session.publish(snapshot(2, AgentStatus.DONE), epoch = 2)
+            advanceUntilIdle()
+            session.publish(snapshot(3, AgentStatus.WORKING), epoch = 2)
+            advanceUntilIdle()
+
+            events.emit(StampedEvent(2, event(2, AgentStatus.DONE)))
+            advanceUntilIdle()
+
+            assertEquals(
+                "the late DONE must alert once: ${records.actions}",
+                1,
+                records.posted(AgentStatus.DONE),
+            )
+        }
+
+    @Test
     fun `a short DONE alerts once and is retracted`() = runTest(UnconfinedTestDispatcher()) {
         val settings = Settings()
         val records = Records()
