@@ -108,7 +108,10 @@ fun TerminalScreen(
         mutableStateOf<WorkspaceMenuTarget?>(null)
     }
     var backendState by remember { mutableStateOf<BackendState?>(null) }
-    var frozenFrame by remember { mutableStateOf<android.graphics.Bitmap?>(null) }
+    var frozenFrame by remember { mutableStateOf<FrozenTerminalFrame?>(null) }
+    // A frame belongs to exactly one target and backend. A tab/pane switch or
+    // a backend replacement must never show the previous pane's screen.
+    LaunchedEffect(state.target, state.backend) { frozenFrame = null }
     // Manual keyboard summon (CJK panel button). Counter, not boolean: two
     // consecutive requests must both fire. Nothing else shows the IME — no
     // tap, no swipe, no focus change (Termux behavior). Page swipes never
@@ -332,7 +335,15 @@ fun TerminalScreen(
                     onBack = onNavigateHome,
                     onBackendState = { backendState = it },
                     linkRowVisible = linkStatus != null,
-                    onFrameCaptured = { frozenFrame = it },
+                    onFrameCaptured = { bitmap ->
+                        val target = state.target
+                        val backend = state.backend
+                        frozenFrame = if (bitmap != null && target != null && backend != null) {
+                            FrozenTerminalFrame(backend, target, bitmap)
+                        } else {
+                            null
+                        }
+                    },
                     keyboardShowRequest = keyboardShowRequest,
                     keyboardShowHandled = keyboardShowHandled,
                     onKeyboardShowHandled = { keyboardShowHandled = it },
@@ -344,9 +355,12 @@ fun TerminalScreen(
             // The frozen full frame is fitted into the area below the 32dp
             // status strip. Both the top and the bottom row stay visible; the
             // live view and its PTY are never resized.
-            frozenFrame?.let { frame ->
+            val visibleFrame = frozenFrame?.takeIf {
+                linkStatus != null && it.backend === state.backend && it.target == state.target
+            }
+            visibleFrame?.let { frozen ->
                 Image(
-                    bitmap = frame.asImageBitmap(),
+                    bitmap = frozen.bitmap.asImageBitmap(),
                     contentDescription = null,
                     contentScale = ContentScale.FillBounds,
                     modifier = Modifier
@@ -450,3 +464,9 @@ fun TerminalScreen(
         )
     }
 }
+
+private data class FrozenTerminalFrame(
+    val backend: ConnectionTerminalBackend,
+    val target: TerminalTarget,
+    val bitmap: android.graphics.Bitmap,
+)

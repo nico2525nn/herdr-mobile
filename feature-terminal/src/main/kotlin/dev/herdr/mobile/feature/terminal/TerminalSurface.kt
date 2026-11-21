@@ -186,16 +186,7 @@ internal fun TerminalSurface(
             return@LaunchedEffect
         }
         delay(80)
-        val view = controller.view
-        if (view.width > 0 && view.height > 0) {
-            val frame = android.graphics.Bitmap.createBitmap(
-                view.width,
-                view.height,
-                android.graphics.Bitmap.Config.ARGB_8888,
-            )
-            view.draw(android.graphics.Canvas(frame))
-            onFrameCaptured(frame)
-        }
+        controller.view.captureFrameWithCursor()?.let(onFrameCaptured)
     }
 
     // Attach only replays text (the daemon's prelude carries no DECSET

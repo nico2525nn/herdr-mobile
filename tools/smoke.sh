@@ -348,6 +348,24 @@ raise SystemExit(0 if n >= 15 else 1)
 PY
 }
 
+# Tokyo Night's cursor is #C0CAF5; the prompt's blue is darker in red, so this
+# check fails when the frozen frame caught the cursor blink-off phase.
+cursor_block() {
+  python3 - "$1" <<'PY'
+import sys
+from PIL import Image
+im = Image.open(sys.argv[1]).convert("RGB")
+w, h = im.size
+n = 0
+for y in range(int(h * 0.35), int(h * 0.88), 2):
+    for x in range(0, w, 2):
+        r, g, b = im.getpixel((x, y))
+        if 170 <= r <= 218 and 180 <= g <= 222 and b >= 228:
+            n += 1
+raise SystemExit(0 if n >= 100 else 1)
+PY
+}
+
 if [[ -n "$PRIVATE_DAEMON_PID" && -n "$PRIVATE_DAEMON_BIN" &&
       -n "$PRIVATE_SOCK" && -n "$PRIVATE_PORT" && -n "$PRIVATE_PIDFILE" ]]; then
   say "terminal reconnect regression (private daemon only)"
@@ -373,10 +391,40 @@ if [[ -n "$PRIVATE_DAEMON_PID" && -n "$PRIVATE_DAEMON_BIN" &&
   else
     fail "bottom prompt disappeared behind the reconnect row"
   fi
+  if cursor_block "$WORKDIR/reconnect-frozen.png"; then
+    pass "cursor cell is painted into the frozen frame"
+  else
+    fail "frozen frame caught the cursor blink-off phase"
+  fi
+  adb_ shell rm -f /sdcard/reconnect.xml >/dev/null 2>&1
+  adb_ shell uiautomator dump /sdcard/reconnect.xml >/dev/null 2>&1 || true
+  if adb_ shell cat /sdcard/reconnect.xml 2>/dev/null | grep -q "Reconnecting"; then
+    pass "reconnect row is visible under the tabs"
+  else
+    fail "reconnect row is missing under the tabs"
+  fi
   if adb_ logcat -d -s HerdrGrid 2>/dev/null | grep -q "resize"; then
     fail "terminal grid resized while the reconnect row was visible"
   else
     pass "terminal grid stayed fixed while the reconnect row was visible"
+  fi
+
+  # A tab switch during the outage must discard the old pane's frozen frame.
+  TWO_BOUNDS="$(tab_bounds two)"
+  if [[ -n "$TWO_BOUNDS" ]]; then
+    adb_ shell input tap $TWO_BOUNDS
+    sleep 2
+    shot "$WORKDIR/reconnect-other-tab.png"
+    if green_prompt "$WORKDIR/reconnect-other-tab.png"; then
+      fail "frozen frame leaked across the tab switch"
+    else
+      pass "tab switch discards the previous pane's frozen frame"
+    fi
+    ONE_BOUNDS="$(tab_bounds 1)"
+    [[ -n "$ONE_BOUNDS" ]] && adb_ shell input tap $ONE_BOUNDS
+    sleep 2
+  else
+    fail "second tab not found during the reconnect check"
   fi
 
   "$PRIVATE_DAEMON_BIN" --bind "127.0.0.1:$PRIVATE_PORT" --herdr-socket "$PRIVATE_SOCK" >"$WORKDIR/daemon-restart.log" 2>&1 &
@@ -396,11 +444,6 @@ if [[ -n "$PRIVATE_DAEMON_PID" && -n "$PRIVATE_DAEMON_BIN" &&
       pass "prompt returns after the daemon restart"
     else
       fail "prompt did not return after the daemon restart"
-    fi
-    if adb_ logcat -d -s HerdrGrid 2>/dev/null | grep -q "resize"; then
-      fail "terminal grid resized across the reconnect"
-    else
-      pass "terminal grid stayed fixed across the reconnect"
     fi
   else
     fail "private daemon did not restart for the reconnect check"

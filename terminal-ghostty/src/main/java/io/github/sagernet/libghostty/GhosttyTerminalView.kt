@@ -935,6 +935,28 @@ public class GhosttyTerminalView @JvmOverloads constructor(
         Choreographer.getInstance().postFrameCallback(frameCallback)
     }
 
+    /**
+     * Snapshot the currently visible frame with the cursor forced on. The
+     * reconnect overlay freezes this bitmap; capturing during the blink-off
+     * phase would otherwise hide the cursor for the whole outage.
+     */
+    public fun captureFrameWithCursor(): android.graphics.Bitmap? {
+        if (width <= 0 || height <= 0) return null
+        val wasBlinkOn = blinkPhaseOn
+        blinkPhaseOn = true
+        return try {
+            val frame = android.graphics.Bitmap.createBitmap(
+                width,
+                height,
+                android.graphics.Bitmap.Config.ARGB_8888,
+            )
+            draw(android.graphics.Canvas(frame))
+            frame
+        } finally {
+            blinkPhaseOn = wasBlinkOn
+        }
+    }
+
     private fun renderFrame() {
         val buffer = snapshotBuffer ?: return
         val canvas = bitmapCanvas ?: return

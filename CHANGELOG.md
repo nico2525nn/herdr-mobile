@@ -13,9 +13,11 @@
   prompt/cursor and the PTY grid stay intact while the row is visible. The
   same light is overlaid on the terminal top so the chrome and terminal
   background never meet at a hard colour edge.
-- A device regression in `tools/smoke.sh` fills the grid, drops and restarts
-  the private daemon, and asserts the terminal prompt, the bottom cursor and
-  a fixed terminal grid across the reconnect row.
+- The frozen frame is keyed to the pane/backend that produced it and discarded
+  on a tab/pane switch or backend replacement. The capture forces the cursor
+  on (blink-off cannot freeze a cursor-less screen), and the device smoke
+  asserts the prompt, cursor cell, reconnect row, tab-switch discard and a
+  fixed terminal grid.
 
 ## 2.4.0 — 2026-11-22
 
