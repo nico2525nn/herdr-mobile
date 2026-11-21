@@ -168,10 +168,17 @@ internal fun decodeNotifiedMap(raw: String?): Map<String, String> {
     return raw.split(';')
         .mapNotNull { part ->
             val eq = part.indexOf('=')
-            if (eq <= 0) null else part.take(eq) to part.substring(eq + 1)
+            if (eq <= 0) return@mapNotNull null
+            runCatching {
+                java.net.URLDecoder.decode(part.take(eq), "UTF-8") to
+                    java.net.URLDecoder.decode(part.substring(eq + 1), "UTF-8")
+            }.getOrNull()
         }
         .toMap()
 }
 
 internal fun encodeNotifiedMap(map: Map<String, String>): String =
-    map.entries.joinToString(";") { "${it.key}=${it.value}" }
+    map.entries.joinToString(";") { (key, value) ->
+        java.net.URLEncoder.encode(key, "UTF-8") + "=" +
+            java.net.URLEncoder.encode(value, "UTF-8")
+    }

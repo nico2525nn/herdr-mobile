@@ -145,6 +145,13 @@ async fn shutdown_signal(state: AppState) {
         _ = term.recv() => info!("received SIGTERM, shutting down"),
         _ = int.recv() => info!("received SIGINT, shutting down"),
     }
+    // Graceful shutdown waits for in-flight REST handlers, and a wedged Core
+    // RPC has its own 15s timeout. The release contract is ~5s: force the
+    // process out after the terminal deadline if a handler refuses to end.
+    tokio::spawn(async {
+        tokio::time::sleep(std::time::Duration::from_secs(6)).await;
+        std::process::exit(0);
+    });
     state.terminals.shutdown().await;
 }
 

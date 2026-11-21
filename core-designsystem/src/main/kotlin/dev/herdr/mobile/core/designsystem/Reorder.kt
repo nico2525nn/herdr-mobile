@@ -100,6 +100,7 @@ fun <T> rememberReorderState(
     val anchorSizePx = remember { mutableFloatStateOf(0f) }
     val anchorViewportPx = remember { mutableFloatStateOf(0f) }
     val movedPastSlop = remember { mutableStateOf(false) }
+    val dragStartIds = remember { mutableStateOf<List<Any>>(emptyList()) }
     LaunchedEffect(draggingKey.value) {
         if (draggingKey.value == null) {
             // Apply a rejection that arrived mid-drag to the final gesture.
@@ -160,6 +161,7 @@ fun <T> rememberReorderState(
                         vertical.value = listState.layoutInfo.orientation == Orientation.Vertical
                         movedPastSlop.value = false
                         draggingKey.value = itemKey
+                        dragStartIds.value = order.value.map(key)
                         dragOffsetPx.floatValue = 0f
                         // Anchor the dragged slot's geometry now: layout offsets
                         // below are live (they shift on every hop + animation),
@@ -296,6 +298,10 @@ fun <T> rememberReorderState(
                             if (pending != null) {
                                 order.value = pending
                                 pendingReset.value = null
+                            } else if (latestItems.value.map(key) != dragStartIds.value) {
+                                // Another client structurally changed the list
+                                // during the drag; the old row index is meaningless.
+                                order.value = latestItems.value
                             } else if (to >= 0) {
                                 currentOnDrop.value(item, to)
                             }

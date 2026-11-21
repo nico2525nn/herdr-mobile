@@ -84,7 +84,9 @@ class HomeViewModel(
      * drops the command instead of acting on a same-id object on another host.
      */
     private fun launchForCurrentTarget(block: suspend (Long) -> Unit) {
-        val generation = client.targetGeneration
+        // Use the generation published with the snapshot the user acted on,
+        // not a fresh read that can pair an old row with a new host.
+        val generation = uiState.value.targetGeneration
         viewModelScope.launch {
             if (client.targetGeneration != generation) return@launch
             block(generation)
@@ -179,7 +181,7 @@ class HomeViewModel(
             error = s.error,
             lastSyncAt = s.lastSyncAt,
             reorderReset = reset,
-            targetGeneration = client.targetGeneration,
+            targetGeneration = s.targetGeneration,
         )
     }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), HomeUiState())
 

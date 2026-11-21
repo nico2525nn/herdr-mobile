@@ -30,6 +30,8 @@ data class HerdrClientState(
      * to 0, so consumers need this to tell a new stream from an old one.
      */
     val connectionEpoch: Long = 0,
+    /** Target generation that produced [snapshot]; publish it together. */
+    val targetGeneration: Long = 0,
 )
 
 /**

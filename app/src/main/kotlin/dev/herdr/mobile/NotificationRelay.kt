@@ -181,7 +181,9 @@ class NotificationRelay(
                                 // Even when a live event is authoritative,
                                 // retract a different process-death status so
                                 // a stale DONE does not survive the seed.
-                                if (old != null && old.status != pane.status) {
+                                if (old != null && old.status != pane.status &&
+                                    (old.status == AgentStatus.DONE || old.status == AgentStatus.BLOCKED)
+                                ) {
                                     HerdrNotifications.dismissPane(context, old.workspaceId, pane.id)
                                 }
                                 if (live.status != pane.status) {

@@ -27,6 +27,7 @@ import androidx.compose.ui.semantics.CustomAccessibilityAction
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.customActions
 import androidx.compose.ui.semantics.onLongClick
+import androidx.compose.ui.semantics.selected
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.semantics.stateDescription
 import androidx.compose.ui.text.style.TextOverflow
@@ -120,7 +121,7 @@ fun StatusChip(
                         indication = androidx.compose.foundation.LocalIndication.current,
                         onLongClick = { onLongClick.invoke(pressPoint) },
                         onClick = onClick,
-                    )
+                    ).semantics { this.selected = selected }
                 } else {
                     Modifier.selectable(
                         selected = selected,

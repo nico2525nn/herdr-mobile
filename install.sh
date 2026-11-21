@@ -124,9 +124,9 @@ if [ "$NO_SERVICE" != "1" ] && command -v systemctl >/dev/null 2>&1; then
             printf '%s\n' 'Wants=network-online.target'
             printf '%s\n' ''
             printf '%s\n' '[Service]'
-            printf 'ExecStart=%s --bind 127.0.0.1:8765\n' "$BIN"
+            printf 'ExecStart="%s" --bind 127.0.0.1:8765\n' "$BIN"
             if [ -n "$TOKEN" ]; then
-                printf 'Environment=HERDR_MOBILE_TOKEN=%s\n' "$TOKEN"
+                printf 'Environment="HERDR_MOBILE_TOKEN=%s"\n' "$TOKEN"
             fi
             printf '%s\n' 'Restart=always'
             printf '%s\n' 'RestartSec=2'

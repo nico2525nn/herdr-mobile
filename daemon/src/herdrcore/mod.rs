@@ -846,8 +846,12 @@ pub(crate) fn tab_id_of(terminal: &Value) -> Option<String> {
     field_string(labels, "herdr.tab")
         .map(str::to_owned)
         .or_else(|| {
+            // Two workspaces may share the same `where` label; without the
+            // workspace component their fallback tab ids collide and a close
+            // in one workspace removed the other workspace's pane.
+            let space = workspace_id_of(terminal)?;
             field_string(labels, "where")
-                .map(|value| format!("where:{value}"))
+                .map(|value| format!("where:{space}:{value}"))
         })
         .or_else(|| field_string(terminal, "address").map(str::to_owned))
 }

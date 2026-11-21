@@ -154,7 +154,7 @@ class TerminalViewModel(
             statusMessage = message,
             stickyModifiers = sticky,
             reorderReset = reset,
-            targetGeneration = client.targetGeneration,
+            targetGeneration = clientState.targetGeneration,
         )
     }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), TerminalUiState())
 

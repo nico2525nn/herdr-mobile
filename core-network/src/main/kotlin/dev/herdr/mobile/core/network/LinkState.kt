@@ -97,7 +97,7 @@ internal class LinkState(private val clock: LinkClock) {
         if (linkGeneration != generation || this.connectionEpoch != connectionEpoch) {
             false
         } else {
-            _state.update(transform)
+            _state.update { transform(it).copy(targetGeneration = this.targetGeneration) }
             true
         }
     }
@@ -130,7 +130,7 @@ internal class LinkState(private val clock: LinkClock) {
             if (linkGeneration != generation) {
                 false
             } else {
-                _state.update(transform)
+                _state.update { transform(it).copy(targetGeneration = this.targetGeneration) }
                 true
             }
         }
@@ -212,6 +212,7 @@ internal class LinkState(private val clock: LinkClock) {
                         stale = it.snapshot != null,
                         error = null,
                         connectionEpoch = connectionEpoch,
+                        targetGeneration = targetGeneration,
                     )
                 }
             }
@@ -236,7 +237,11 @@ internal class LinkState(private val clock: LinkClock) {
                 it.connection == ConnectionState.STALE ||
                 it.connection == ConnectionState.FAILED
             ) {
-                it.copy(connection = ConnectionState.IDLE, stale = it.snapshot != null)
+                it.copy(
+                    connection = ConnectionState.IDLE,
+                    stale = it.snapshot != null,
+                    targetGeneration = targetGeneration,
+                )
             } else {
                 it
             }
@@ -259,6 +264,7 @@ internal class LinkState(private val clock: LinkClock) {
                 endpointDescription = null,
                 lastSyncAt = 0,
                 connectionEpoch = connectionEpoch,
+                targetGeneration = targetGeneration,
             )
         }
     }

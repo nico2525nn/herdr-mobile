@@ -47,6 +47,27 @@
   the notification tap goes through a non-exported proxy instead of the
   exported launcher activity.
 
+### Seventh deep-review pass
+
+- **Target identity:** `HerdrClientState.targetGeneration` is published with
+  the snapshot; Home/Terminal UI uses that value for menu actions instead of a
+  fresh read. Old Terminal routes stay unresolved after a host switch.
+- **Core IDs:** fallback tab IDs include the workspace ID, so equal `where`
+  labels in different spaces no longer close/rename/focus the wrong tab.
+- **Daemon shutdown:** a 6s forced-exit watchdog bounds Axum's wait for wedged
+  REST/Core handlers.
+- **TUI attach:** the history prelude is kept separate from geometry Ready; a
+  geometry Ready no longer clears history/visible diagnostics.
+- **Notifications:** seed only retracts an alerting old status, so a live DONE
+  is not dismissed; persisted keys/values are URL-escaped, preserving `;` in
+  workspace IDs; Core `missed` snapshot failure closes the stream.
+- **Reorder:** a structural list change during a drag invalidates the old drop
+  index and resyncs instead of sending a wrong move.
+- **UI/install:** the long-press chip exposes `selected`; the systemd unit
+  quotes ExecStart/Environment values; Direct bearer resolution uses the same
+  active-profile fallback as the reconnect key.
+- **Cache:** refresh revision advance is inside the payload write lock.
+
 ### Sixth deep-review pass
 
 - **Target-safe rows:** Terminal rail tab/workspace menus and read-ack carry

@@ -278,7 +278,9 @@ class SettingsRepositoryImpl(
                 DirectProvider(
                     baseUrl = settings.directUrl.ifBlank { BuildConfig.DEFAULT_DIRECT_URL },
                     bearerToken = {
-                        val profile = settings.hostProfiles.firstOrNull { it.id == settings.activeProfileId }
+                        val profile = settings.hostProfiles.firstOrNull {
+                            it.id == settings.activeProfileId
+                        } ?: settings.hostProfiles.firstOrNull()
                         profile?.bearerTokenAlias?.let { secrets.get(it) }
                     },
                     backendMode = settings.directBackendMode,

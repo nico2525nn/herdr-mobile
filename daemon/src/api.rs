@@ -990,7 +990,13 @@ async fn serve_core_events(
                                     break;
                                 }
                             }
-                            Err(error) => warn!("cannot resnapshot herdr-core after missed events: {error:#}"),
+                            Err(error) => {
+                                // Staying open would leave the client showing
+                                // a state with a known hole; close so it
+                                // reconnects and bootstraps a fresh snapshot.
+                                warn!("cannot resnapshot herdr-core after missed events: {error:#}; closing stream");
+                                break;
+                            }
                         }
                     }
                     _ => {}
