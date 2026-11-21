@@ -74,6 +74,8 @@ class NotificationRelay(
     private val snapshotCursor = NotificationCursor()
     private var eventHigh = -1L
     private var cursorEpoch = -1L
+    /** Highest seq whose DONE/BLOCKED was already announced per pane. */
+    private val lastAlertSeq = HashMap<String, Long>()
 
     init {
         scope.launch {
@@ -213,6 +215,11 @@ class NotificationRelay(
                             }
                             lastNotified[pane.id] =
                                 NotifiedState(pane.status, pane.workspaceId, snapshot.seq)
+                            if (pane.status == AgentStatus.DONE ||
+                                pane.status == AgentStatus.BLOCKED
+                            ) {
+                                lastAlertSeq[pane.id] = snapshot.seq
+                            }
                             if (old != null && old.status != pane.status) {
                                 // Changed while dead: retract only the old
                                 // status id, never a sibling that may already
@@ -330,12 +337,23 @@ class NotificationRelay(
         ) {
             return@synchronized false
         }
+        if (fromEvent &&
+            (status == AgentStatus.DONE || status == AgentStatus.BLOCKED) &&
+            event.seq <= (lastAlertSeq[paneId] ?: -1L)
+        ) {
+            // This completion was already announced (possibly by snapshot
+            // reconciliation). A late duplicate must not re-post it.
+            return@synchronized false
+        }
         if (prev?.status == status) return@synchronized false
         // Leave-status first: a done/blocked alert for this pane is now stale.
         if (prev != null) {
             HerdrNotifications.dismissPane(context, prev.workspaceId, paneId)
         }
         lastNotified[paneId] = NotifiedState(status, workspaceId, event.seq)
+        if (status == AgentStatus.DONE || status == AgentStatus.BLOCKED) {
+            lastAlertSeq[paneId] = maxOf(lastAlertSeq[paneId] ?: -1L, event.seq)
+        }
         persistLocked()
         maybeNotify(event, workspaceLabel, tabLabel)
         if (fromEvent) {
@@ -390,6 +408,7 @@ class NotificationRelay(
             snapshotCursor.reset()
             eventHigh = -1L
             cursorEpoch = -1L
+            lastAlertSeq.clear()
             // Cancel the old host's shade entries first: without events from
             // that host they can never be retracted later.
             for ((paneId, state) in lastNotified) {
