@@ -8,6 +8,12 @@ coding agents, tmux sessions and tabs — from a phone.
 Herdr on Linux is the single source of truth. This app never reimplements session state:
 it shows state, opens a terminal stream only on demand, and sends input back.
 
+## Screenshots
+
+| Home | Terminal | Settings |
+|:---:|:---:|:---:|
+| <img src="docs/images/home.png" width="280" alt="Workspace overview with tabs and agent status"> | <img src="docs/images/terminal.png" width="280" alt="Terminal attached to a remote Herdr pane"> | <img src="docs/images/settings.png" width="280" alt="Appearance and connection settings"> |
+
 ## Modules
 
 ```text
