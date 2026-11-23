@@ -248,4 +248,45 @@ class GhosttyEngineSmokeTest {
         session.close()
     }
 
+
+    @Test
+    fun routingChangeDropsInFlightFlingInertia() {
+        val instrumentation = InstrumentationRegistry.getInstrumentation()
+        val context = instrumentation.targetContext
+        lateinit var session: GhosttyTerminalSession
+        lateinit var view: GhosttyTerminalView
+        val forwarded = mutableListOf<Int>()
+
+        instrumentation.runOnMainSync {
+            session = GhosttyTerminalSession(
+                context,
+                GhosttyTerminalSession.Options(columns = 20, rows = 6),
+            )
+            view = GhosttyTerminalView(context)
+            view.session = session
+            view.measure(
+                View.MeasureSpec.makeMeasureSpec(400, View.MeasureSpec.EXACTLY),
+                View.MeasureSpec.makeMeasureSpec(240, View.MeasureSpec.EXACTLY),
+            )
+            view.layout(0, 0, 400, 240)
+            view.onRemoteScroll = { rows -> forwarded += rows }
+            view.scrollRouting = GhosttyTerminalView.ScrollRouting.REMOTE_PAGE
+            assertTrue(view.startFlingForTest(6000f))
+        }
+        // Let the unbounded page-route fling accumulate travel before the pane
+        // facts switch the route to host scroll.
+        Thread.sleep(30)
+        instrumentation.runOnMainSync {
+            view.scrollRouting = GhosttyTerminalView.ScrollRouting.REMOTE_HOST
+            view.runFlingFrameForTest()
+        }
+        instrumentation.waitForIdleSync()
+
+        assertTrue(
+            "route change forwarded leftover inertia: $forwarded",
+            forwarded.isEmpty(),
+        )
+        session.close()
+    }
+
 }

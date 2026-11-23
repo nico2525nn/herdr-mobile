@@ -105,11 +105,24 @@ public class GhosttyTerminalView @JvmOverloads constructor(
         set(value) {
             if (field != value) {
                 field = value
-                pageAccumulator = 0
-                wheelRowAccumulator = 0f
-                mouseWheelAccumulator = 0
+                stopActiveScroll()
             }
         }
+
+    /**
+     * A route can change between finger release and the first fling frame
+     * (pane facts arrive after attach). The range chosen at release then no
+     * longer applies, and the remaining inertia would be forwarded through
+     * the new route. Drop it together with any partial accumulator.
+     */
+    private fun stopActiveScroll() {
+        scroller.forceFinished(true)
+        flingLastY = 0
+        scrollAccumulator = 0f
+        pageAccumulator = 0
+        wheelRowAccumulator = 0f
+        mouseWheelAccumulator = 0
+    }
 
     /** The engine owns a scrollbar only when the host does not own the viewport. */
     private val localScrollUi: Boolean
@@ -490,30 +503,39 @@ public class GhosttyTerminalView @JvmOverloads constructor(
                 velocityY: Float,
             ): Boolean {
                 if (scaleDetector.isInProgress) return false
-                val state = session?.withTerminal { GhosttyVt.nativeViewportState(it) } ?: return false
-                flingLastY = 0
-                val altOrMouse =
-                    state and (GhosttyVt.VIEWPORT_ALTERNATE_SCREEN or GhosttyVt.VIEWPORT_MOUSE_TRACKING) != 0
-                if (boundedFling(scrollRouting, altOrMouse)) {
-                    val range = flingRangePx(rows, cellHeight)
-                    scroller.fling(
-                        0,
-                        0,
-                        0,
-                        -(velocityY * FLING_TRACKING_VELOCITY_SCALE).toInt(),
-                        0,
-                        0,
-                        -range,
-                        range,
-                    )
-                } else {
-                    scroller.fling(0, 0, 0, -velocityY.toInt(), 0, 0, Int.MIN_VALUE, Int.MAX_VALUE)
-                }
-                postOnAnimation(flingRunnable)
-                return true
-            }
-        },
+                return startFling(velocityY)
+            }        },
     )
+
+    private fun startFling(velocityY: Float): Boolean {
+        val state = session?.withTerminal { GhosttyVt.nativeViewportState(it) } ?: return false
+        flingLastY = 0
+        val altOrMouse =
+            state and (GhosttyVt.VIEWPORT_ALTERNATE_SCREEN or GhosttyVt.VIEWPORT_MOUSE_TRACKING) != 0
+        if (boundedFling(scrollRouting, altOrMouse)) {
+            val range = flingRangePx(rows, cellHeight)
+            scroller.fling(
+                0,
+                0,
+                0,
+                -(velocityY * FLING_TRACKING_VELOCITY_SCALE).toInt(),
+                0,
+                0,
+                -range,
+                range,
+            )
+        } else {
+            scroller.fling(0, 0, 0, -velocityY.toInt(), 0, 0, Int.MIN_VALUE, Int.MAX_VALUE)
+        }
+        postOnAnimation(flingRunnable)
+        return true
+    }
+
+    internal fun startFlingForTest(velocityY: Float): Boolean = startFling(velocityY)
+
+    internal fun runFlingFrameForTest() {
+        flingRunnable.run()
+    }
 
     private var pinchScale = 1f
     private var pinchLastScale = 1f

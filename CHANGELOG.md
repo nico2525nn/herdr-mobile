@@ -5,6 +5,10 @@
 - Remote host scroll flings are bounded to half a viewport. OMP's 9k-row
   transcript made an unbounded fling send thousands of rows and jump the host
   scrollbar to the very top on the first small swipe.
+- A scroll-routing change (pane facts arriving after attach) now cancels the
+  in-flight fling and its partial accumulators. Leftover inertia can no longer
+  be forwarded through a new REMOTE_HOST route; covered by an instrumented
+  REMOTE_PAGE -> REMOTE_HOST regression.
 
 ## 2.5.0 — 2026-11-22
 
