@@ -492,8 +492,10 @@ public class GhosttyTerminalView @JvmOverloads constructor(
                 if (scaleDetector.isInProgress) return false
                 val state = session?.withTerminal { GhosttyVt.nativeViewportState(it) } ?: return false
                 flingLastY = 0
-                if (state and (GhosttyVt.VIEWPORT_ALTERNATE_SCREEN or GhosttyVt.VIEWPORT_MOUSE_TRACKING) != 0) {
-                    val range = rows / 2 * cellHeight
+                val altOrMouse =
+                    state and (GhosttyVt.VIEWPORT_ALTERNATE_SCREEN or GhosttyVt.VIEWPORT_MOUSE_TRACKING) != 0
+                if (boundedFling(scrollRouting, altOrMouse)) {
+                    val range = flingRangePx(rows, cellHeight)
                     scroller.fling(
                         0,
                         0,
