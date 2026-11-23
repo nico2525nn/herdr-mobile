@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 2.5.1 — 2026-11-23
 
 - Remote host scroll flings are bounded to half a viewport. OMP's 9k-row
   transcript made an unbounded fling send thousands of rows and jump the host
