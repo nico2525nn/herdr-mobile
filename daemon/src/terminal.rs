@@ -67,6 +67,7 @@ enum SessionFrame {
     Ready { cols: u32, rows: u32, resumed: bool },
 }
 
+#[derive(Debug)]
 enum SessionCommand {
     /// Raw client bytes → child stdin.
     Input(Vec<u8>),
@@ -649,6 +650,11 @@ async fn run_session(
             }
         }
     }
+    // The client sends `release` on the same socket AFTER its input frames, so
+    // every prior keystroke is already in this queue. A shutdown can break the
+    // loop while a scroll RPC is in flight; forward the accepted input before
+    // any pending resize, restore, or kill, or the last keystrokes vanish.
+    flush_pending_input(&mut child, &mut input_rx).await;
     if let Some((c, r)) = pending_resize {
         let _ = terminal_io(child.send_resize(c, r)).await;
     }
@@ -1071,6 +1077,41 @@ async fn handle_client_text(
     }
 }
 
+/// Take the accepted user input out of the command queue, preserving order.
+/// Viewport commands (resize/scroll/mouse) are not input and are dropped on
+/// teardown; their only consumer is the session that is already leaving.
+fn take_pending_input(rx: &mut mpsc::Receiver<SessionCommand>) -> Vec<SessionCommand> {
+    let mut input = Vec::new();
+    while let Ok(cmd) = rx.try_recv() {
+        match cmd {
+            SessionCommand::Input(_) | SessionCommand::Text(_) => input.push(cmd),
+            _ => {}
+        }
+    }
+    input
+}
+
+/// Forward input accepted before a release, bounded so a wedged child cannot
+/// pin teardown. The client's release path waits seconds for this; the pipe
+/// write normally completes immediately.
+async fn flush_pending_input(child: &mut TerminalChild, rx: &mut mpsc::Receiver<SessionCommand>) {
+    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(1);
+    for cmd in take_pending_input(rx) {
+        let sent = match cmd {
+            SessionCommand::Input(bytes) => {
+                tokio::time::timeout_at(deadline, child.send_input_bytes(&bytes)).await
+            }
+            SessionCommand::Text(text) => {
+                tokio::time::timeout_at(deadline, child.send_input_text(&text)).await
+            }
+            _ => Ok(Ok(())),
+        };
+        if !matches!(sent, Ok(Ok(()))) {
+            break;
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1112,6 +1153,24 @@ mod tests {
             prelude.history_error.as_deref(),
             Some("recent fetch failed: recent timeout")
         );
+    }
+
+    #[tokio::test]
+    async fn release_flush_keeps_input_order_and_drops_viewport_ops() {
+        let (tx, mut rx) = mpsc::channel(8);
+        tx.send(SessionCommand::Text("A".to_string())).await.unwrap();
+        tx.send(SessionCommand::Resize(80, 24)).await.unwrap();
+        tx.send(SessionCommand::Input(b"B".to_vec())).await.unwrap();
+        let pending = take_pending_input(&mut rx);
+        assert_eq!(pending.len(), 2);
+        match &pending[0] {
+            SessionCommand::Text(text) => assert_eq!(text, "A"),
+            other => panic!("unexpected first command: {other:?}"),
+        }
+        match &pending[1] {
+            SessionCommand::Input(bytes) => assert_eq!(bytes, b"B"),
+            other => panic!("unexpected second command: {other:?}"),
+        }
     }
 
     #[tokio::test]
