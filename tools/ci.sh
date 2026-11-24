@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
 # Isolated CI entry point for the on-device smoke.
 #
-# tools/smoke.sh talks to a daemon and drives the debug app. Run as-is, that
-# touches the developer's live Herdr session (the default daemon at :8765 and
-# the app's saved URL). This wrapper gives the smoke its own world:
+# tools/smoke.sh requires BASE_URL and drives the debug app; it refuses the
+# developer's live session at :8765 unless explicitly overridden. This wrapper
+# gives the smoke its own world:
 #
 #   * a throwaway Herdr session (default name `herdr-ci`), never the default one;
 #   * a daemon on 127.0.0.1:8799 bound to that session's socket;
