@@ -25,6 +25,8 @@ import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withTimeout
 import kotlinx.coroutines.withTimeoutOrNull
 
@@ -318,13 +320,25 @@ class PaneSessionController(
         if (scrollFlushJob?.isActive == true) return
         targetOwnerGeneration ?: return
         scrollFlushJob = scope.launch {
-            delay(SCROLL_COALESCE_MS)
-            val delta = pendingScrollRows
-            pendingScrollRows = 0
-            val current = backendFlow.value ?: return@launch
-            val currentGeneration = targetOwnerGeneration ?: return@launch
-            if (delta == 0 || !isCurrent(current, currentGeneration)) return@launch
-            runCatching { current.scrollRemote(delta, allowPageKey, "rows") }
+            // Send the carryover from a slow RPC before waiting for the next
+            // gesture. Leaving it behind merged the next drag into the old
+            // direction (a +8 carryover turned a -2 return into +6).
+            while (true) {
+                delay(SCROLL_COALESCE_MS)
+                val delta = pendingScrollRows
+                pendingScrollRows = 0
+                if (delta == 0) return@launch
+                val current = backendFlow.value ?: return@launch
+                val currentGeneration = targetOwnerGeneration ?: return@launch
+                if (!isCurrent(current, currentGeneration)) return@launch
+                try {
+                    current.scrollRemote(delta, allowPageKey, "rows")
+                } catch (e: CancellationException) {
+                    throw e
+                } catch (_: Exception) {
+                }
+                if (pendingScrollRows == 0) return@launch
+            }
         }
     }
 
@@ -364,6 +378,7 @@ class PaneSessionController(
     private var scrollFlushJob: Job? = null
     private var flushingInput = false
     private var flushToken = 0L
+    private val flushMutex = Mutex()
     private var pendingHostOffset: Long? = null
     private var hostScrollJob: Job? = null
     private var retryJob: Job? = null
@@ -453,7 +468,8 @@ class PaneSessionController(
         // while the frozen backend is still detached: the attach completion
         // calls this again once the replacement is Attached.
         val backend = backendFlow.value ?: return
-        if (backend.state.value !is BackendState.Attached) return
+        val attached = backend.state.value as? BackendState.Attached ?: return
+        if (!attached.visibleOk) return
         if (pane.status != dev.herdr.mobile.core.model.AgentStatus.DONE) {
             if (readAckPaneId == pane.id) readAckPaneId = null
             return
@@ -471,9 +487,10 @@ class PaneSessionController(
                 readAckPaneId = null
                 return@launch
             }
-            withTimeoutOrNull(5_000) {
+            val visible = withTimeoutOrNull(5_000) {
                 backend.state.first { it is BackendState.Attached }
-            } ?: run {
+            } as? BackendState.Attached
+            if (visible == null || !visible.visibleOk) {
                 readAckPaneId = null
                 return@launch
             }
@@ -700,17 +717,21 @@ class PaneSessionController(
         val token = ++flushToken
         flushingInput = true
         pendingFlushJob = scope.launch {
-            while (true) {
-                val ops = pendingInput.drain()
-                if (ops.isEmpty()) {
-                    if (flushToken == token) flushingInput = false
-                    return@launch
-                }
-                for (op in ops) {
-                    if (flushToken != token) return@launch
+            // One op at a time: an op leaves the queue only AFTER its send
+            // returns. Cancelling the job (background/retarget) therefore
+            // leaves the unsent op and everything behind it for the next
+            // attach instead of losing the whole drained batch.
+            flushMutex.withLock {
+                while (true) {
+                    if (flushToken != token) return@withLock
+                    val op = pendingInput.firstOrNull()
+                    if (op == null) {
+                        if (flushToken == token) flushingInput = false
+                        return@withLock
+                    }
                     if (!isCurrent(backend, generation)) {
                         if (flushToken == token) flushingInput = false
-                        return@launch
+                        return@withLock
                     }
                     try {
                         op(backend)
@@ -721,6 +742,9 @@ class PaneSessionController(
                             onMessage(UiMessage.SendFailed(e.message))
                         }
                     }
+                    // A stale flush must not delete input enqueued for the
+                    // next target after its queue was cleared.
+                    pendingInput.removeFirstIf(op)
                 }
             }
         }

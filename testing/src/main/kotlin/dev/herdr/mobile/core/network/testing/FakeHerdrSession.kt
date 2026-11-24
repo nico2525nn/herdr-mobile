@@ -183,8 +183,14 @@ class FakeTerminalConnection(
     override var isOpen: Boolean = true
         private set
 
-    fun attach(cols: Int = 80, rows: Int = 24) {
-        _state.value = TerminalAttachmentState.Attached(paneId, cols, rows, resumed = false)
+    fun attach(cols: Int = 80, rows: Int = 24, visibleOk: Boolean = true) {
+        _state.value = TerminalAttachmentState.Attached(
+            paneId,
+            cols,
+            rows,
+            resumed = false,
+            visibleOk = visibleOk,
+        )
     }
 
     fun detach(reason: String) {
@@ -199,13 +205,21 @@ class FakeTerminalConnection(
         sentData += data
     }
 
+    /** When set, the next text send parks until this completes. */
+    var textSendGate: kotlinx.coroutines.CompletableDeferred<Unit>? = null
+
     override suspend fun sendText(text: String) {
+        textSendGate?.await()
         sentText += text
     }
 
     override suspend fun resize(cols: Int, rows: Int) = Unit
 
+    /** When set, the next relative-scroll RPC parks until this completes. */
+    var scrollGate: kotlinx.coroutines.CompletableDeferred<Unit>? = null
+
     override suspend fun scrollRemote(lines: Int, allowPageKey: Boolean, unit: String) {
+        scrollGate?.await()
         scrolls += Triple(lines, allowPageKey, unit)
     }
 

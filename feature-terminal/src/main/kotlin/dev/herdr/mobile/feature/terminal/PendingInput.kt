@@ -19,6 +19,25 @@ internal class PendingInput(private val maxSize: Int = MAX_PENDING_INPUT) {
         }
     }
 
+    /** Peek at the oldest op without taking it; removed only after a send. */
+    fun firstOrNull(): (suspend (ConnectionTerminalBackend) -> Unit)? =
+        synchronized(ops) { ops.firstOrNull() }
+
+    /**
+     * Remove [op] only if it is still the head. A target change may have
+     * cleared the queue and enqueued new input while [op] was in flight; the
+     * stale flush must not remove that new input.
+     */
+    fun removeFirstIf(op: suspend (ConnectionTerminalBackend) -> Unit): Boolean =
+        synchronized(ops) {
+            if (ops.firstOrNull() === op) {
+                ops.removeFirst()
+                true
+            } else {
+                false
+            }
+        }
+
     /** Atomically takes everything queued. */
     fun drain(): List<suspend (ConnectionTerminalBackend) -> Unit> = synchronized(ops) {
         val list = ops.toList()

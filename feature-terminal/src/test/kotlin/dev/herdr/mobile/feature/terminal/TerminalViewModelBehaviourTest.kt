@@ -675,6 +675,95 @@ class TerminalViewModelBehaviourTest {
     }
 
     @Test
+    fun `input queued during a reattach survives a background round trip`() =
+        runTest(dispatcher) {
+            val session = FakeHerdrSession(snapshot(oneWorkspace()))
+            val vm = TerminalViewModel(session, null, null, null, settings())
+            observe(vm)
+            advanceUntilIdle()
+            val old = session.connections.single()
+            session.autoAttach = false
+            old.detach("released")
+            advanceTimeBy(700)
+            runCurrent()
+            val replacement = session.connections.last()
+            val gate = kotlinx.coroutines.CompletableDeferred<Unit>()
+            replacement.textSendGate = gate
+
+            vm.sendText("A")
+            vm.sendText("B")
+            runCurrent()
+            replacement.attach()
+            runCurrent()
+            assertTrue("A must be in flight before the app leaves", replacement.sentText.isEmpty())
+
+            vm.releaseForBackground()
+            runCurrent()
+            gate.complete(Unit)
+            advanceUntilIdle()
+
+            session.autoAttach = true
+            vm.resumeAfterBackground()
+            advanceUntilIdle()
+
+            val resumed = session.connections.last()
+            assertTrue("resume must open a replacement stream", resumed !== replacement)
+            assertEquals(
+                "unsent reconnect input must survive the background round trip",
+                listOf("A", "B"),
+                resumed.sentText,
+            )
+        }
+
+    @Test
+    fun `relative scroll sends the carryover before the next gesture`() = runTest(dispatcher) {
+        val session = FakeHerdrSession(snapshot(oneWorkspace()))
+        val vm = TerminalViewModel(session, null, null, null, settings())
+        observe(vm)
+        advanceUntilIdle()
+        val connection = session.connections.last()
+        val gate = kotlinx.coroutines.CompletableDeferred<Unit>()
+        connection.scrollGate = gate
+
+        vm.scrollRemote(3)
+        advanceTimeBy(50)
+        runCurrent()
+        assertTrue("the first RPC must be in flight", connection.scrolls.isEmpty())
+
+        vm.scrollRemote(8)
+        gate.complete(Unit)
+        advanceUntilIdle()
+        vm.scrollRemote(-2)
+        advanceUntilIdle()
+
+        assertEquals(
+            "a +8 carryover must not be merged into the next -2 gesture",
+            listOf(Triple(3, false, "rows"), Triple(8, false, "rows"), Triple(-2, false, "rows")),
+            connection.scrolls,
+        )
+    }
+
+    @Test
+    fun `a done pane without a live screen is not acknowledged`() = runTest(dispatcher) {
+        val done = pane("w1", "w1:t1").copy(status = AgentStatus.DONE)
+        val session = FakeHerdrSession(
+            snapshot(workspace("w1", listOf(tab("w1:t1", "w1", listOf(done))))),
+        )
+        session.autoAttach = false
+        val vm = TerminalViewModel(session, null, null, null, settings())
+        observe(vm)
+        runCurrent()
+        val connection = session.connections.single()
+        connection.attach(visibleOk = false)
+        advanceUntilIdle()
+
+        assertTrue(
+            "a pane whose live screen is unavailable must not be marked read",
+            session.paneFocusCalls.isEmpty(),
+        )
+    }
+
+    @Test
     fun `alternating detach reasons share one reattach budget`() = runTest(dispatcher) {
         val session = FakeHerdrSession(snapshot(oneWorkspace()))
         val vm = TerminalViewModel(session, null, null, null, settings())
