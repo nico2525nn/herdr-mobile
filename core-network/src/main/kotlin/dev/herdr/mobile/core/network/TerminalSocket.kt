@@ -5,6 +5,7 @@ import dev.herdr.mobile.core.model.TerminalAttachmentState
 import dev.herdr.mobile.core.model.TerminalProtocol
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.channels.BufferOverflow
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.flow.Flow
@@ -12,6 +13,7 @@ import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asSharedFlow
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.flow.asStateFlow
@@ -177,6 +179,14 @@ class TerminalSocket(
     private val releaseFrameSent = AtomicBoolean(false)
     private val releaseDrained = CompletableDeferred<Unit>()
     private val sendBroken = AtomicBoolean(false)
+    /**
+     * Do not publish inbound frames before the first collector exists.
+     * SharedFlow replay keeps the LAST N emissions; an initial prelude
+     * followed by a 256-frame output burst evicted the prelude before the
+     * Compose bridge subscribed, and the view started mid-stream.
+     */
+    private val firstSubscriber = CompletableDeferred<Unit>()
+    private var subscriptionWatcher: Job? = null
 
     private val open = AtomicBoolean(false)
     override val isOpen: Boolean get() = open.get()
@@ -206,6 +216,10 @@ class TerminalSocket(
             .build()
 
         socket = http.newWebSocket(request, Listener())
+        subscriptionWatcher = scope.launch {
+            _inbound.subscriptionCount.first { it > 0 }
+            firstSubscriber.complete(Unit)
+        }
         scope.launch { pump() }
     }
 
@@ -312,6 +326,8 @@ class TerminalSocket(
                         if (next !is TerminalInbound.Bytes) break
                     }
                 }
+                firstSubscriber.await()
+                if (released.get()) break
                 for (merged in mergeBurst(turn)) _inbound.emit(merged)
             }
         }
@@ -321,6 +337,11 @@ class TerminalSocket(
         // Stops the forwarder: without this each attach leaks one coroutine +
         // channel + socket refs on the app-lifetime scope, parked on receive
         // forever after release.
+        subscriptionWatcher?.cancel()
+        subscriptionWatcher = null
+        // Release must not leave the forwarder parked waiting for a collector
+        // that will never arrive.
+        firstSubscriber.complete(Unit)
         inboundLane.close()
     }
 
@@ -418,14 +439,15 @@ class TerminalSocket(
             // then close the channel so the pump drains exactly that order.
             // The old path sent release directly and dropped queued keystrokes
             // when the screen was left immediately after typing.
-            val queued = outboundLock.withLock {
-                outbound.trySend(OutboundFrame.Release(record)).isSuccess.also {
-                    outbound.close()
-                }
+            outboundLock.withLock {
+                outbound.trySend(OutboundFrame.Release(record))
+                outbound.close()
             }
-            if (queued) {
-                withTimeoutOrNull(2_000) { releaseDrained.await() }
-            }
+            // Wait for the pump even when the release could not be queued
+            // (a full channel): closing the channel still lets it drain the
+            // accepted input, and only then does the socket close. Closing
+            // immediately was what discarded all 128 queued keystrokes.
+            withTimeoutOrNull(2_000) { releaseDrained.await() }
             // The pump may have ended (or the queue was full). Claim the
             // release exactly once so a healthy pump can never duplicate it.
             if (!releaseFrameSent.get() && releaseClaimed.compareAndSet(false, true)) {

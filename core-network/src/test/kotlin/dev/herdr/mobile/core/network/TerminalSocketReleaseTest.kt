@@ -14,6 +14,7 @@ import org.junit.Test
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicInteger
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.flow.filterIsInstance
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.runningFold
@@ -35,26 +36,40 @@ class TerminalSocketReleaseTest {
         val closes = AtomicInteger(0)
         /** Simulates OkHttp refusing a frame on a closing/full socket. */
         @Volatile var failSends = false
+        /** Blocks every send until [unblockSends], to stall the pump. */
+        @Volatile var blockSends = false
+        val sendEntered = CountDownLatch(1)
+        val unblockSends = CountDownLatch(1)
+        @Volatile var isClosed = false
 
         override fun request(): Request =
             Request.Builder().url("http://127.0.0.1:1/").build()
 
         override fun queueSize(): Long = 0
 
+        private fun waitForGate() {
+            if (!blockSends) return
+            sendEntered.countDown()
+            unblockSends.await(5, TimeUnit.SECONDS)
+        }
+
         override fun send(text: String): Boolean {
-            if (failSends) return false
+            waitForGate()
+            if (failSends || isClosed) return false
             sentText += text
             textSends.incrementAndGet()
             return true
         }
 
         override fun send(bytes: ByteString): Boolean {
-            if (failSends) return false
+            waitForGate()
+            if (failSends || isClosed) return false
             sentBinary += bytes.toByteArray()
             return true
         }
 
         override fun close(code: Int, reason: String?): Boolean {
+            isClosed = true
             closes.incrementAndGet()
             return true
         }
@@ -182,6 +197,90 @@ class TerminalSocketReleaseTest {
             "late frame must not reach the socket: ${fake.sentText}",
             fake.sentText.none { it.contains("\"text\":\"late\"") },
         )
+    }
+
+    @Test
+    fun initialBytesSurviveABurstBeforeTheFirstSubscriber() = kotlinx.coroutines.runBlocking {
+        // SharedFlow replay keeps the LAST 256 emissions. Before the Compose
+        // bridge subscribed, a long output burst evicted the prelude and the
+        // view started mid-stream. The gate holds emissions until a collector
+        // exists, so the first byte run still starts with the prelude.
+        val fake = FakeWebSocket()
+        val client = CapturingClient(fake)
+        val socket = TerminalSocket(
+            http = client,
+            endpoint = DaemonEndpoint.direct("http://127.0.0.1:1", null, "test"),
+            paneId = "w1:pX",
+            cols = 80,
+            rows = 24,
+            takeover = false,
+            scope = kotlinx.coroutines.CoroutineScope(kotlinx.coroutines.Dispatchers.Unconfined),
+        )
+        socket.connect()
+        val listener = requireNotNull(client.capturedListener)
+        val prelude = "PRELUDE".toByteArray()
+        listener.onMessage(fake, ByteString.of(*prelude))
+        kotlinx.coroutines.yield()
+        repeat(300) { i ->
+            listener.onMessage(fake, ByteString.of(('a'.code + i % 26).toByte()))
+            kotlinx.coroutines.yield()
+        }
+
+        val first = kotlinx.coroutines.withTimeout(5_000) {
+            socket.inbound.filterIsInstance<TerminalInbound.Bytes>().first()
+        }
+        assertArrayEquals(
+            "the prelude must not be evicted by the live burst",
+            prelude,
+            first.data.copyOfRange(0, prelude.size),
+        )
+        socket.release()
+    }
+
+    @Test
+    fun fullOutboundQueueIsDrainedBeforeTheSocketCloses() = kotlinx.coroutines.runBlocking {
+        // A full 128-frame queue made trySend(release) fail; the old code then
+        // sent release directly and closed the socket, discarding every
+        // accepted frame. The pump must drain the queue first.
+        val fake = FakeWebSocket().apply { blockSends = true }
+        val socket = TerminalSocket(
+            http = CapturingClient(fake),
+            endpoint = DaemonEndpoint.direct("http://127.0.0.1:1", null, "test"),
+            paneId = "w1:pX",
+            cols = 80,
+            rows = 24,
+            takeover = false,
+            scope = kotlinx.coroutines.CoroutineScope(kotlinx.coroutines.Dispatchers.Default),
+        )
+        socket.connect()
+        val total = 129 // one frame in the pump + 128 in the channel
+        val producer = launch(kotlinx.coroutines.Dispatchers.Default) {
+            repeat(total) { i -> socket.send(byteArrayOf(i.toByte())) }
+        }
+        assertTrue("pump never entered send", fake.sendEntered.await(5, TimeUnit.SECONDS))
+        kotlinx.coroutines.delay(100)
+        val release = launch(kotlinx.coroutines.Dispatchers.Default) {
+            socket.release()
+        }
+        kotlinx.coroutines.delay(100)
+        fake.unblockSends.countDown()
+        kotlinx.coroutines.withTimeout(5_000) {
+            producer.join()
+            release.join()
+        }
+
+        // The pump merges adjacent binary frames, so count delivered BYTES,
+        // not socket frames: all 129 accepted bytes must survive the release.
+        assertEquals(
+            "every accepted byte must reach the socket",
+            (0 until total).map { it.toByte() },
+            fake.sentBinary.flatMap { it.toList() },
+        )
+        assertTrue(
+            "release must still be sent after the drain: ${fake.sentText}",
+            fake.sentText.any { it.contains("\"type\":\"release\"") },
+        )
+        assertEquals("socket closed once", 1, fake.closes.get())
     }
 
     private fun tuiSocket(fake: FakeWebSocket): TerminalSocket = TerminalSocket(
