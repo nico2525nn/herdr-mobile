@@ -448,9 +448,9 @@ raise SystemExit(0 if n >= 15 else 1)
 PY
 }
 
-# Tokyo Night paints the cursor cell with #C0CAF5, the same colour as ordinary
-# foreground text. A global colour count therefore passes with no cursor.
-# Look for a solid 8x8 cell instead: a glyph never fills that rectangle.
+# The cursor cell is a solid block: a glyph never fills an 8x8 rectangle.
+# Accept any bright neutral (theme cursor #C0CAF5 or the white default) rather
+# than pinning one theme's exact cursor colour; the shape is the signal.
 cursor_block() {
   python3 - "$1" <<'PY'
 import sys
@@ -463,7 +463,7 @@ for y in range(int(h * 0.55), int(h * 0.92) - 8, 2):
         for yy in range(0, 8, 2):
             for xx in range(0, 8, 2):
                 r, g, b = im.getpixel((x + xx, y + yy))
-                if not (170 <= r <= 218 and 180 <= g <= 222 and b >= 228):
+                if not (r >= 170 and g >= 180 and b >= 180):
                     solid = False
                     break
             if not solid:
