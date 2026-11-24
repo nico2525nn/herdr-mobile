@@ -67,6 +67,9 @@ enum SessionFrame {
     Ready { cols: u32, rows: u32, resumed: bool },
 }
 
+/// Finish an in-flight stdin record before a release, or discard the pipe.
+const INPUT_WRITE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(1);
+
 #[derive(Debug)]
 enum SessionCommand {
     /// Raw client bytes → child stdin.
@@ -504,6 +507,9 @@ async fn run_session(
     // avoids an RPC per scroll frame without pinning a stale classification.
     let mut shell_probe: Option<(bool, tokio::time::Instant)> = None;
     let mut end_reason = String::from("detached");
+    // A timed-out NDJSON input write may have left a partial line. Never feed
+    // another input record into that pipe; teardown kills the child instead.
+    let mut input_broken = false;
     // Race every potentially long terminal/Herdr wait against shutdown so a
     // multi-step scroll/foreground/write branch cannot consume the whole 5s
     // shutdown budget before it notices.
@@ -528,10 +534,36 @@ async fn run_session(
                 let Some(cmd) = cmd else { end_reason = "released".to_string(); break };
                 match cmd {
                     SessionCommand::Input(bytes) => {
-                        if or_shutdown!(terminal_io(child.send_input_bytes(&bytes))).is_err() { break; }
+                        // Input writes are NOT cancelled by shutdown: a
+                        // half-written NDJSON line followed by the next
+                        // record would corrupt both. Finish within a bound,
+                        // or mark the pipe unusable and discard the child.
+                        match tokio::time::timeout(
+                            INPUT_WRITE_TIMEOUT,
+                            terminal_io(child.send_input_bytes(&bytes)),
+                        ).await {
+                            Ok(Ok(())) => {}
+                            Ok(Err(_)) => break,
+                            Err(_) => {
+                                input_broken = true;
+                                end_reason = "input write timed out".to_string();
+                                break;
+                            }
+                        }
                     }
                     SessionCommand::Text(text) => {
-                        if or_shutdown!(terminal_io(child.send_input_text(&text))).is_err() { break; }
+                        match tokio::time::timeout(
+                            INPUT_WRITE_TIMEOUT,
+                            terminal_io(child.send_input_text(&text)),
+                        ).await {
+                            Ok(Ok(())) => {}
+                            Ok(Err(_)) => break,
+                            Err(_) => {
+                                input_broken = true;
+                                end_reason = "input write timed out".to_string();
+                                break;
+                            }
+                        }
                     }
                     SessionCommand::Resize(c, r) => {
                         // Coalesce resizes to at most one per 120 ms.
@@ -654,7 +686,11 @@ async fn run_session(
     // every prior keystroke is already in this queue. A shutdown can break the
     // loop while a scroll RPC is in flight; forward the accepted input before
     // any pending resize, restore, or kill, or the last keystrokes vanish.
-    flush_pending_input(&mut child, &mut input_rx).await;
+    // If the in-flight write timed out, the pipe has a partial line: sending
+    // the remaining input would concatenate two NDJSON records. Kill it.
+    if !input_broken {
+        flush_pending_input(&mut child, &mut input_rx).await;
+    }
     if let Some((c, r)) = pending_resize {
         let _ = terminal_io(child.send_resize(c, r)).await;
     }
