@@ -2,6 +2,20 @@
 
 ## Unreleased
 
+- The daemon forwards input accepted before a release to the child before any
+  pending resize, viewport restore, or kill. A shutdown racing a scroll RPC no
+  longer leaves the last keystrokes in the command queue.
+- The reconnect input flush releases each queued op only after its send
+  returns; backgrounding during the flush preserves the remaining input for
+  the next attach instead of losing the drained batch.
+- `TerminalSocket.release()` closes the WebSocket in a `finally`. A caller
+  timeout can no longer leave the old socket open while a second release
+  no-ops on the already-set flag.
+- Read-ack requires `visibleOk`: a DONE pane whose live screen failed is no
+  longer marked read while the UI says `Live screen unavailable`.
+- Relative scroll coalescing sends the carryover from a slow RPC before the
+  next gesture. A +8 delta can no longer merge into the following -2 and turn
+  a return gesture into more forward scrolling.
 - Reconnect input is ordered: while the pending queue drains into a replacement
   backend, new keystrokes queue behind it instead of overtaking it. A slow old
   release can no longer deliver `B` before `A`.
