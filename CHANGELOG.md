@@ -2,6 +2,12 @@
 
 ## 2.5.2 — 2026-11-24
 
+- Daemon input writes are bounded and are never cancelled mid-record by a
+  shutdown. A timed-out write discards the child pipe instead of appending the
+  next record to a partial NDJSON line.
+- `TerminalSocket` accepts a frame with a non-suspending `trySend` under the
+  enqueue lock. A cancellation can no longer leave an already-queued frame in
+  the pending reconnect queue and resend it on resume.
 - The daemon forwards input accepted before a release to the child before any
   pending resize, viewport restore, or kill. A shutdown racing a scroll RPC no
   longer leaves the last keystrokes in the command queue.
