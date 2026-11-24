@@ -119,7 +119,9 @@ cd daemon && cargo build --release
 
 Local development is offline-first. CI is online (cold runners have no cache), and
 runs Kotlin/JVM tests, Rust tests, release assembly/lint/JNI/ABI inspection, and
-API 29/33/37 emulator smokes. CI does **not** run instrumented tests or sign APKs.
+API 29/33/37 emulator smokes. The API 37 smoke job also runs the
+`terminal-ghostty` connected suite (the scroll-routing regression); other
+instrumented suites are not run, and APKs are not signed.
 
 ## Code Conventions & Common Patterns
 
@@ -238,9 +240,8 @@ API 29/33/37 emulator smokes. CI does **not** run instrumented tests or sign APK
   vectors when changing hashes/protocols.
 - Coverage is opt-in (`-Pcoverage`/`COVERAGE=1`) with no threshold. Reports land
   under `<module>/build/reports/jacoco/jacocoUnitTestReport/`.
-- Known gaps: no Robolectric usage; `daemon/tests/` is empty; CI does not run
-  instrumented suites; `tools/agent-scroll-matrix.sh` defaults to the live daemon;
-  `app`'s SSH E2E has real-tailnet defaults.
+- Known gaps: no Robolectric usage; `daemon/tests/` is empty; CI runs only the
+  `terminal-ghostty` instrumented suite; `app`'s SSH E2E has real-tailnet defaults.
 - Before calling a task done, run the narrow test, `tools/check.sh`, and the isolated
   smoke for terminal/device-facing changes; then update `CHANGELOG.md`.
 

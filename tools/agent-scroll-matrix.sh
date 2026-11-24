@@ -15,12 +15,24 @@
 #   * the composer/footer region did NOT change (the gesture did not type
 #     escape bytes into the app).
 #
-#   tools/agent-scroll-matrix.sh            # all agents
+#   tools/agent-scroll-matrix.sh            # all agents (private daemon required)
 #   AGENTS="codex pi" tools/agent-scroll-matrix.sh
+#
+# Like smoke.sh, this has no live-session default: set BASE_URL to a private
+# daemon, or ALLOW_LIVE_DAEMON=1 to deliberately create/close workspaces live.
 set -euo pipefail
 
 SERIAL="${SERIAL:-emulator-5554}"
-BASE_URL="${BASE_URL:-http://127.0.0.1:8765}"
+BASE_URL="${BASE_URL:-}"
+if [[ -z "$BASE_URL" ]]; then
+  echo "agent-scroll-matrix.sh: BASE_URL is required (use a private daemon; tools/ci.sh owns one)." >&2
+  exit 2
+fi
+if [[ "${ALLOW_LIVE_DAEMON:-0}" != "1" &&
+      "$BASE_URL" =~ ^https?://(127\.0\.0\.1|localhost|\[::1\]):8765(/|$) ]]; then
+  echo "agent-scroll-matrix.sh: refusing the live daemon at $BASE_URL (set ALLOW_LIVE_DAEMON=1 to override)." >&2
+  exit 2
+fi
 PKG="${PKG:-dev.herdr.mobile.debug}"
 ACTIVITY="$PKG/dev.herdr.mobile.MainActivity"
 AGENTS="${AGENTS:-less codex omp opencode grok pi}"

@@ -3,17 +3,37 @@
 # TerminalView, a real daemon, a real swipe.
 #
 # Every check here is one I previously ran by hand with adb + screenshots.
-# It creates its own workspace and closes it again, so it is safe against a
-# live session — it never touches existing panes.
+# It creates its own workspace, but that workspace is still created inside the
+# daemon it is pointed at. Use tools/ci.sh, which owns a private Herdr session
+# and daemon; there is deliberately no live-session default here.
 #
-#   tools/smoke.sh                       # emulator-5554 + local daemon
-#   SERIAL=emulator-5556 tools/smoke.sh  # another device
+#   tools/ci.sh                                   # isolated daemon + smoke
+#   BASE_URL=http://127.0.0.1:8799 tools/smoke.sh # a private daemon you own
+#   ALLOW_LIVE_DAEMON=1 tools/smoke.sh            # deliberate override (live!)
 #
 # Requires: adb on PATH, python3 with Pillow, curl, a running herdr daemon.
 set -euo pipefail
 
 SERIAL="${SERIAL:-emulator-5554}"
-BASE_URL="${BASE_URL:-http://127.0.0.1:8765}"
+BASE_URL="${BASE_URL:-}"
+if [[ -z "$BASE_URL" ]]; then
+  cat >&2 <<'EOF'
+smoke.sh: BASE_URL is required.
+  The old default (http://127.0.0.1:8765) is the developer's live session.
+  Use tools/ci.sh for an isolated run, or point BASE_URL at a private daemon.
+  Deliberate live override: ALLOW_LIVE_DAEMON=1
+EOF
+  exit 2
+fi
+if [[ "${ALLOW_LIVE_DAEMON:-0}" != "1" &&
+      "$BASE_URL" =~ ^https?://(127\.0\.0\.1|localhost|\[::1\]):8765(/|$) ]]; then
+  cat >&2 <<EOF
+smoke.sh: refusing the live daemon at $BASE_URL.
+  Use tools/ci.sh (private session + daemon), or set ALLOW_LIVE_DAEMON=1
+  if you really mean to create and close a workspace in the live session.
+EOF
+  exit 2
+fi
 APK="${APK:-app/build/outputs/apk/debug/app-debug.apk}"
 PKG="${PKG:-dev.herdr.mobile.debug}"
 ACTIVITY="$PKG/dev.herdr.mobile.MainActivity"
@@ -37,6 +57,9 @@ PRIVATE_PIDFILE="${PRIVATE_PIDFILE:-}"
 # screen, a cursor blink is <1k. Sparse text changes far fewer pixels, so the
 # fixture is dense on purpose.
 SCROLL_THRESHOLD="${SCROLL_THRESHOLD:-60000}"
+# The host-scroll fixture uses short `seq` lines; a 10-row move repaints far
+# fewer pixels than a full `less` page. 5k is still well above a cursor blink.
+HOST_SCROLL_THRESHOLD="${HOST_SCROLL_THRESHOLD:-5000}"
 
 say()   { printf '  %s\n' "$*"; }
 pass()  { printf 'PASS  %s\n' "$*"; }
@@ -118,7 +141,7 @@ x=sys.stdin.read()
 import os,re as _re
 label=os.environ["SMOKE_LABEL"]
 m=re.search(r"text=\"" + _re.escape(label) + r"\"[^>]*bounds=\"\[(\d+),(\d+)\]\[(\d+),(\d+)\]\"", x)
-print("" if not m else f"{(int(m.group(1))+int(m.group(3)))//2} {(int(m.group(2))+int(m.group(4)))//2}")')
+print("" if not m else f"{(int(m.group(1))+int(m.group(3)))//2} {(int(m.group(2))+int(m.group(4)))//2}")' || true)
 [[ -n "$BOUNDS" ]] || { fail "workspace card not found on Home"; exit 1; }
 adb_ shell input tap $BOUNDS
 sleep 9
@@ -181,6 +204,21 @@ m=re.search(r"content-desc=\"" + re.escape(sys.argv[1]) + r"\"[^>]*bounds=\"\[(\
 print("" if not m else f"{(int(m.group(1))+int(m.group(3)))//2} {(int(m.group(2))+int(m.group(4)))//2}")' "$1"
 }
 
+pane_scroll() {
+  # offset / max / viewport rows for one pane, from the authoritative snapshot.
+  api "$BASE_URL/v1/snapshot" | PANE="$1" python3 -c '
+import json,os,sys
+pane=os.environ["PANE"]
+for w in json.load(sys.stdin).get("workspaces", []):
+    for t in w.get("tabs", []):
+        for p in t.get("panes", []):
+            if p.get("id") == pane:
+                s = p.get("scroll") or {}
+                print(s.get("offsetFromBottom", 0), s.get("maxOffsetFromBottom", 0), s.get("viewportRows", 0))
+                raise SystemExit(0)
+raise SystemExit(1)'
+}
+
 keyboard_tap() {
   local bounds
   bounds="$(desc_bounds "Terminal keyboard")"
@@ -193,10 +231,72 @@ keyboard_tap() {
 
 TWO_BOUNDS="$(tab_bounds two)"
 if [[ -n "$TWO_BOUNDS" && -n "$TAB2" ]]; then
+  # Tab two is a plain shell. Give it enough output for real host scrollback
+  # (the CLI row count, not a pixel guess) and open it.
+  TAB2_PANE=$(api "$BASE_URL/v1/snapshot" | TAB2="$TAB2" python3 -c '
+import json,os,sys
+tab=os.environ["TAB2"]
+for w in json.load(sys.stdin).get("workspaces", []):
+    for t in w.get("tabs", []):
+        if t.get("id") == tab:
+            for p in t.get("panes", []):
+                print(p.get("id", ""))
+                raise SystemExit(0)
+raise SystemExit(1)' 2>/dev/null || true)
+  if [[ -n "$TAB2_PANE" ]]; then
+    api -X POST "$BASE_URL/v1/pane/$TAB2_PANE/input" -H 'Content-Type: application/json' \
+        -d '{"text":"seq 1 320\n"}' >/dev/null
+    HOST_MAX=0
+    for _ in $(seq 1 40); do
+      read -r HOST_OFF HOST_MAX HOST_VIEW <<< "$(pane_scroll "$TAB2_PANE" || true)"
+      (( HOST_MAX > 0 )) && break
+      sleep 0.5
+    done
+    if (( HOST_MAX <= 0 )); then
+      fail "tab two never produced host scrollback (max=$HOST_MAX)"
+    fi
+  else
+    fail "second tab pane id not found"
+  fi
+
   shot "$WORKDIR/tab-one.png"
   adb_ shell input tap $TWO_BOUNDS
   sleep 3
   shot "$WORKDIR/tab-two.png"
+
+  if [[ -n "${TAB2_PANE:-}" ]] && (( HOST_MAX > 0 )); then
+    read -r HOST_BEFORE _ HOST_VIEW <<< "$(pane_scroll "$TAB2_PANE")"
+    # Measured direction: finger DOWN moves toward history (offset grows),
+    # finger UP returns toward live. Assert row counts, not just pixels.
+    adb_ shell input touchscreen swipe 540 1000 540 1400 700
+    sleep 3
+    shot "$WORKDIR/host-scroll-older.png"
+    read -r HOST_AFTER HOST_MAX_AFTER HOST_VIEW_AFTER <<< "$(pane_scroll "$TAB2_PANE")"
+    HOST_MOVED=$(( HOST_AFTER - HOST_BEFORE ))
+    HOST_PIXELS=$(changed "$WORKDIR/tab-two.png" "$WORKDIR/host-scroll-older.png")
+    VIEW=${HOST_VIEW_AFTER:-$HOST_VIEW}
+    if (( HOST_MOVED > 0 && HOST_MOVED <= 2 * (VIEW > 0 ? VIEW : 1) && HOST_AFTER <= HOST_MAX_AFTER )); then
+      pass "host scroll moved ${HOST_MOVED} rows toward history (bounded, ${HOST_PIXELS} px)"
+    else
+      fail "host scroll delta ${HOST_MOVED} rows (before=${HOST_BEFORE}, after=${HOST_AFTER}, max=${HOST_MAX_AFTER}, view=${VIEW})"
+    fi
+    if (( HOST_PIXELS > HOST_SCROLL_THRESHOLD )); then
+      pass "host scroll repainted the transcript (${HOST_PIXELS} px)"
+    else
+      fail "host scroll moved rows but the screen barely changed (${HOST_PIXELS} px)"
+    fi
+
+    adb_ shell input touchscreen swipe 540 1400 540 1000 700
+    sleep 3
+    shot "$WORKDIR/host-scroll-live.png"
+    read -r HOST_BACK _ _ <<< "$(pane_scroll "$TAB2_PANE")"
+    if (( HOST_BACK < HOST_AFTER )); then
+      pass "host scroll returned toward live (${HOST_AFTER} -> ${HOST_BACK})"
+    else
+      fail "host scroll did not return toward live (${HOST_AFTER} -> ${HOST_BACK})"
+    fi
+  fi
+
   ONE_BOUNDS="$(tab_bounds 1)"
   [[ -n "$ONE_BOUNDS" ]] && adb_ shell input tap $ONE_BOUNDS
   sleep 3

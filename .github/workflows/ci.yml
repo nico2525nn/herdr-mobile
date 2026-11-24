@@ -314,7 +314,14 @@ jobs:
           # again by `adb emu kill` at the end of the run).
           emulator-options: -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim
           emulator-boot-timeout: 900
-          script: bash tools/ci.sh
+          # The smoke covers the live device path. The terminal-ghostty suite
+          # additionally runs the routing-change regression (an in-flight fling
+          # must die when the pane report switches REMOTE_PAGE -> REMOTE_HOST),
+          # which pixel-based smoke assertions cannot see.
+          script: |
+            bash tools/ci.sh
+            ./gradlew :terminal-ghostty:connectedDebugAndroidTest \
+              --console=plain --no-parallel --max-workers=1
 
       - name: Upload smoke artifacts
         if: failure()
