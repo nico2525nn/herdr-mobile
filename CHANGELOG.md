@@ -1,5 +1,27 @@
 # Changelog
 
+## Unreleased
+
+- Terminal input accepted just before the screen closes is drained ahead of the
+  detach record instead of being dropped, and a refused `ws.send` now surfaces
+  as `send_failed` rather than a silent loss.
+- While Herdr's event stream is down, `/v1/snapshot` returns 503 instead of a
+  200 built from a cache with holes; the daemon marks the cache down before it
+  asks clients to refetch, so a client can no longer clear `stale` from old
+  data. Covered by daemon + refetch-failure tests.
+- The attach prelude is one `pane.read recent` capture (history ending at the
+  visible screen) fed verbatim. The old split visible/history reads and
+  content-based overlap trim are gone, so the transcript cannot be spliced
+  from two instants. Herdr 0.9.5 does not expose DECSET modes (1049/1000/1002/
+  1006) in reads or control frames; scroll routing still comes from pane facts.
+- The device smoke now asserts the host scrollbar direction and distance
+  (finger down -> history, bounded by two viewports, then back to live), and
+  the API 37 CI job runs the terminal-ghostty connected suite, including the
+  REMOTE_PAGE -> REMOTE_HOST fling-cancel regression.
+- `tools/smoke.sh` and `tools/agent-scroll-matrix.sh` no longer default to the
+  live daemon: `BASE_URL` is required, and `:8765` needs
+  `ALLOW_LIVE_DAEMON=1`.
+
 ## 2.5.1 — 2026-11-23
 
 - Remote host scroll flings are bounded to half a viewport. OMP's 9k-row
