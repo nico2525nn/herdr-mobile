@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 2.5.2 — 2026-11-24
 
 - The daemon forwards input accepted before a release to the child before any
   pending resize, viewport restore, or kill. A shutdown racing a scroll RPC no
