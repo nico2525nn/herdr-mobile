@@ -691,8 +691,10 @@ async fn run_session(
     if !input_broken {
         flush_pending_input(&mut child, &mut input_rx).await;
     }
-    if let Some((c, r)) = pending_resize {
-        let _ = terminal_io(child.send_resize(c, r)).await;
+    if !input_broken {
+        if let Some((c, r)) = pending_resize {
+            let _ = terminal_io(child.send_resize(c, r)).await;
+        }
     }
     // Teardown starts here on EVERY exit path (shutdown, child death, send
     // failure). Flip closing first so a racing attach() never reuses us while
@@ -707,15 +709,52 @@ async fn run_session(
     while let Some(req) = restore_rx.recv().await {
         restore = Some(req);
     }
-    if let Some(req) = restore {
-        if child.is_alive() && terminal_io(child.send_resize(req.cols, req.rows)).await.is_err() {
-            warn!("cannot restore viewport for {pane_id} to {}x{}", req.cols, req.rows);
-        } else {
-            // Give Herdr a beat to apply the geometry before release closes the controller.
-            tokio::time::sleep(std::time::Duration::from_millis(250)).await;
+    if input_broken {
+        // The old pipe may end in a partial NDJSON record. Never append a
+        // resize or release to it: kill the controller, then perform the
+        // grid restore through a fresh, valid control connection.
+        child.kill_now().await;
+        if let Some(req) = restore {
+            // Same short-lived controller contract as /v1/pane/{id}/resize:
+            // attach at the target grid, wait for the first frame, release.
+            match TerminalChild::spawn(&herdr, &pane_id, false, req.cols, req.rows).await {
+                Ok(mut fresh) => {
+                    let landed = tokio::time::timeout(
+                        std::time::Duration::from_secs(5),
+                        fresh.next_record(),
+                    )
+                    .await;
+                    let _ = fresh.send_release().await;
+                    fresh.kill().await;
+                    match landed {
+                        Ok(Ok(Some(crate::herdr::terminal::ChildRecord::Frame(_)))) => {}
+                        Ok(Ok(Some(crate::herdr::terminal::ChildRecord::Closed(reason)))) => {
+                            warn!("viewport restore attach closed for {pane_id}: {reason}");
+                        }
+                        Ok(Ok(None)) => warn!("viewport restore attach ended without a frame for {pane_id}"),
+                        Ok(Err(e)) => warn!("viewport restore attach failed for {pane_id}: {e:#}"),
+                        Err(_) => warn!("viewport restore for {pane_id} timed out"),
+                    }
+                }
+                Err(e) => warn!(
+                    "cannot restore viewport for {pane_id} to {}x{} through a fresh controller: {e:#}",
+                    req.cols, req.rows
+                ),
+            }
         }
+    } else {
+        if let Some(req) = restore {
+            if child.is_alive()
+                && terminal_io(child.send_resize(req.cols, req.rows)).await.is_err()
+            {
+                warn!("cannot restore viewport for {pane_id} to {}x{}", req.cols, req.rows);
+            } else {
+                // Give Herdr a beat to apply the geometry before release closes the controller.
+                tokio::time::sleep(std::time::Duration::from_millis(250)).await;
+            }
+        }
+        child.kill().await;
     }
-    child.kill().await;
     *session.last_close_reason.lock().expect("close reason poisoned") = Some(end_reason.clone());
     let _ = session.closed_tx.send(end_reason.clone());
     registry.remove(&pane_id, &session).await;

@@ -173,6 +173,13 @@ impl TerminalChild {
         }
     }
 
+    /// Kill a child whose stdin is known to contain a partial NDJSON record.
+    /// Do not write `terminal.release` into that pipe.
+    pub async fn kill_now(&mut self) {
+        let _ = self.child.kill().await;
+        let _ = self.child.wait().await;
+    }
+
     pub async fn kill(&mut self) {
         // A child that stopped reading stdin must not hold teardown forever.
         let _ = tokio::time::timeout(
