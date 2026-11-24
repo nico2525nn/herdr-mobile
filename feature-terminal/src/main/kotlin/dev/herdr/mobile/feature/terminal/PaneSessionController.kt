@@ -200,11 +200,13 @@ class PaneSessionController(
     /**
      * A transport blip kills the attach stream, not the pane: once the link is
      * back and the terminal still reports a detach, re-attach. Bounded retries
-     * per (pane, reason) so a pane that genuinely cannot attach does not spin.
+     * per pane so a pane that genuinely cannot attach does not spin. The
+     * reason is deliberately NOT part of the key: a flapping stream alternates
+     * lagged_resync/closed and used to earn a fresh budget on every change.
      */
     private suspend fun watchReconnect() {
         var attempts = 0
-        var lastKey: Pair<String, String>? = null
+        var lastPaneId: String? = null
         var attachedAt = 0L
         session.state.map { it.connection }
             .distinctUntilChanged()
@@ -235,7 +237,7 @@ class PaneSessionController(
                 // with a placeholder. Read the live link instead.
                 if (session.state.value.connection != ConnectionState.CONNECTED) {
                     attempts = 0
-                    lastKey = null
+                    lastPaneId = null
                     attachedAt = 0
                     return@collect
                 }
@@ -245,12 +247,14 @@ class PaneSessionController(
                 if (attachedAt != 0L && now - attachedAt >= STABLE_ATTACH_MS) {
                     // A real, long-lived attach earns a fresh retry budget.
                     attempts = 0
-                    lastKey = null
+                    lastPaneId = null
                 }
                 attachedAt = 0
-                val key = (targetFlow.value?.paneId ?: "?") to detached.reason
-                if (key != lastKey) {
-                    lastKey = key
+                val paneId = targetFlow.value?.paneId ?: "?"
+                if (paneId != lastPaneId) {
+                    // A different pane is a different attach budget; a different
+                    // reason for the same pane is the same failing stream.
+                    lastPaneId = paneId
                     attempts = 0
                 }
                 // A missing pane is permanent: reconnecting cannot create it.
@@ -335,18 +339,31 @@ class PaneSessionController(
         if (hostScrollJob?.isActive == true) return
         val generation = targetOwnerGeneration ?: return
         hostScrollJob = scope.launch {
-            delay(SCROLL_COALESCE_MS)
-            val offset = pendingHostOffset ?: return@launch
-            pendingHostOffset = null
-            val current = backendFlow.value ?: return@launch
-            val currentGeneration = targetOwnerGeneration ?: return@launch
-            if (!isCurrent(current, currentGeneration)) return@launch
-            runCatching { current.scrollHostTo(offset) }
+            // Keep sending until the latest requested offset has actually
+            // left. A drag can queue 9000 while the 3000 RPC is still in
+            // flight; the old single-shot job then dropped 9000.
+            while (true) {
+                delay(SCROLL_COALESCE_MS)
+                val offset = pendingHostOffset ?: return@launch
+                pendingHostOffset = null
+                val current = backendFlow.value ?: return@launch
+                val currentGeneration = targetOwnerGeneration ?: return@launch
+                if (!isCurrent(current, currentGeneration)) return@launch
+                try {
+                    current.scrollHostTo(offset)
+                } catch (e: CancellationException) {
+                    throw e
+                } catch (_: Exception) {
+                }
+                if (pendingHostOffset == null) return@launch
+            }
         }
     }
 
     private var pendingScrollRows = 0
     private var scrollFlushJob: Job? = null
+    private var flushingInput = false
+    private var flushToken = 0L
     private var pendingHostOffset: Long? = null
     private var hostScrollJob: Job? = null
     private var retryJob: Job? = null
@@ -541,11 +558,18 @@ class PaneSessionController(
         if (!currentCoroutineContext().isActive || targetFlow.value != target ||
             session.targetGeneration != generation
         ) {
+            flushToken++
+            flushingInput = false
+            pendingFlushJob?.cancel()
             if (backendFlow.value === backend) backendFlow.value = null
             releaseInBackground(backend)
             if (samePane && previous != null) releaseInBackground(previous)
             return
         }
+        // No suspension between publishing and opening the gate: a UI
+        // dispatch cannot slip between them on the main dispatcher. The gate
+        // must be up before the (suspending) old-backend release below.
+        startPendingFlush(backend, generation)
         if (samePane && previous != null && previous !== backend) {
             // The new bridge is attached; release the old controller only now.
             try {
@@ -553,7 +577,6 @@ class PaneSessionController(
             } catch (_: Exception) {
             }
         }
-        flushPending(backend)
         session.state.value.snapshot?.pane(target.paneId)?.let { pane ->
             maybeAckDone(pane, target, generation)
         }
@@ -622,6 +645,13 @@ class PaneSessionController(
     fun sendRaw(op: suspend (ConnectionTerminalBackend) -> Unit) = dispatch(op)
 
     private fun dispatch(op: suspend (ConnectionTerminalBackend) -> Unit) {
+        if (flushingInput) {
+            // A replacement backend is being published and its pending input
+            // is draining. Direct dispatch would overtake keystrokes typed
+            // while the old stream was down, so queue behind them.
+            pendingInput.enqueue(op)
+            return
+        }
         val backend = backendFlow.value
         val generation = targetOwnerGeneration
         if (backend == null || generation == null || !isCurrent(backend, generation)) {
@@ -645,9 +675,13 @@ class PaneSessionController(
             if (generation != session.targetGeneration) return
             scope.launch {
                 if (!isCurrent(backend, generation)) return@launch
-                runCatching { op(backend) }.onFailure {
+                try {
+                    op(backend)
+                } catch (e: CancellationException) {
+                    throw e
+                } catch (e: Exception) {
                     if (isCurrent(backend, generation)) {
-                        onMessage(UiMessage.SendFailed(it.message))
+                        onMessage(UiMessage.SendFailed(e.message))
                     }
                 }
             }
@@ -656,17 +690,36 @@ class PaneSessionController(
         pendingInput.enqueue(op)
     }
 
-    private fun flushPending(backend: ConnectionTerminalBackend) {
-        val generation = targetOwnerGeneration ?: return
-        if (!isCurrent(backend, generation)) return
-        val ops = pendingInput.drain()
-        if (ops.isEmpty()) return
+    /**
+     * Drain input accepted while the previous stream was down into the new
+     * backend, and keep the gate closed until the queue is empty. Input that
+     * arrives after Attached is queued too, never sent ahead of that backlog.
+     */
+    private fun startPendingFlush(backend: ConnectionTerminalBackend, generation: Long) {
+        pendingFlushJob?.cancel()
+        val token = ++flushToken
+        flushingInput = true
         pendingFlushJob = scope.launch {
-            for (op in ops) {
-                if (!isCurrent(backend, generation)) return@launch
-                runCatching { op(backend) }.onFailure {
-                    if (isCurrent(backend, generation)) {
-                        onMessage(UiMessage.SendFailed(it.message))
+            while (true) {
+                val ops = pendingInput.drain()
+                if (ops.isEmpty()) {
+                    if (flushToken == token) flushingInput = false
+                    return@launch
+                }
+                for (op in ops) {
+                    if (flushToken != token) return@launch
+                    if (!isCurrent(backend, generation)) {
+                        if (flushToken == token) flushingInput = false
+                        return@launch
+                    }
+                    try {
+                        op(backend)
+                    } catch (e: CancellationException) {
+                        throw e
+                    } catch (e: Exception) {
+                        if (isCurrent(backend, generation)) {
+                            onMessage(UiMessage.SendFailed(e.message))
+                        }
                     }
                 }
             }
@@ -703,6 +756,8 @@ class PaneSessionController(
         lastReadAckAttemptAt = 0
         pendingFlushJob?.cancel()
         pendingFlushJob = null
+        flushToken++
+        flushingInput = false
         retryJob?.cancel()
         retryJob = null
         scrollFlushJob?.cancel()

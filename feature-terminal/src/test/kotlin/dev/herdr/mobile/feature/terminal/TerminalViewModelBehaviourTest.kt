@@ -616,6 +616,90 @@ class TerminalViewModelBehaviourTest {
 
 
     @Test
+    fun `input typed during a reattach is sent before input typed after Attached`() =
+        runTest(dispatcher) {
+            val session = FakeHerdrSession(snapshot(oneWorkspace()))
+            val vm = TerminalViewModel(session, null, null, null, settings())
+            observe(vm)
+            advanceUntilIdle()
+            val old = session.connections.single()
+            session.autoAttach = false
+            old.detach("released")
+            advanceTimeBy(700)
+            runCurrent()
+            val replacement = session.connections.last()
+            assertTrue("a replacement must be Attaching", replacement !== old)
+
+            vm.sendText("A")
+            runCurrent()
+            assertTrue("queued input must wait for the attach", replacement.sentText.isEmpty())
+
+            // Widen the old release so a direct dispatch after Attached would
+            // overtake the queued keystroke on the old implementation.
+            old.releaseDelayMs = 100
+            replacement.attach()
+            vm.sendText("B")
+            advanceUntilIdle()
+
+            assertEquals(
+                "reconnect input must preserve the order the user typed it",
+                listOf("A", "B"),
+                replacement.sentText,
+            )
+        }
+
+    @Test
+    fun `host scrollbar sends the final offset after an in-flight RPC`() = runTest(dispatcher) {
+        val session = FakeHerdrSession(snapshot(oneWorkspace()))
+        val vm = TerminalViewModel(session, null, null, null, settings())
+        observe(vm)
+        advanceUntilIdle()
+        val connection = session.connections.last()
+        val gate = kotlinx.coroutines.CompletableDeferred<Unit>()
+        connection.hostScrollGate = gate
+
+        vm.scrollHostTo(3000)
+        advanceTimeBy(50)
+        runCurrent()
+        assertTrue("the first RPC must be in flight", connection.hostScrolls.isEmpty())
+
+        vm.scrollHostTo(9000)
+        gate.complete(Unit)
+        advanceUntilIdle()
+
+        assertEquals(
+            "the last dragged offset must still reach the daemon",
+            listOf(3000L, 9000L),
+            connection.hostScrolls,
+        )
+    }
+
+    @Test
+    fun `alternating detach reasons share one reattach budget`() = runTest(dispatcher) {
+        val session = FakeHerdrSession(snapshot(oneWorkspace()))
+        val vm = TerminalViewModel(session, null, null, null, settings())
+        observe(vm)
+        advanceUntilIdle()
+
+        val reasons = listOf("lagged_resync", "closed")
+        repeat(9) { i ->
+            session.connections.lastOrNull()?.detach(reasons[i % reasons.size])
+            advanceTimeBy(6_000)
+            runCurrent()
+        }
+        advanceUntilIdle()
+
+        assertTrue(
+            "a changing reason must not refill the retry budget, opened=${session.openedPanes.size}",
+            session.openedPanes.size <= 5,
+        )
+        assertTrue(
+            "the budget must end in the explicit attach failure",
+            vm.uiState.value.statusMessage is dev.herdr.mobile.core.designsystem.UiMessage.AttachFailed,
+        )
+    }
+
+    @Test
     fun `lagged resync still spends the bounded reattach budget`() = runTest(dispatcher) {
         val session = FakeHerdrSession(snapshot(oneWorkspace()))
         val vm = TerminalViewModel(session, null, null, null, settings())

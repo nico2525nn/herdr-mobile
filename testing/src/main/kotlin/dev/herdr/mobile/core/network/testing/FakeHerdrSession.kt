@@ -209,7 +209,11 @@ class FakeTerminalConnection(
         scrolls += Triple(lines, allowPageKey, unit)
     }
 
+    /** When set, the next host-scroll RPC parks until this completes. */
+    var hostScrollGate: kotlinx.coroutines.CompletableDeferred<Unit>? = null
+
     override suspend fun scrollHostTo(offsetFromBottom: Long) {
+        hostScrollGate?.await()
         hostScrolls += offsetFromBottom
     }
 
