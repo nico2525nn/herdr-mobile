@@ -1,0 +1,55 @@
+Herdr Mobile — third-party software notices
+
+This APK includes the following statically linked or bundled third-party
+software. The full license texts are in the files named below, relative to
+this directory.
+
+1. libghostty-vt 1.0.2
+   Copyright (c) 2024 Mitchell Hashimoto, Ghostty contributors
+   License: MIT
+   Source: https://github.com/ghostty-org/ghostty (tag vt-1.0.2)
+   Text: libghostty-vt/LICENSE.txt
+   Dependency manifest: libghostty-vt/third-party.json
+
+2. SagerNet libghostty-android (Android view/session wrapper)
+   Copyright (c) 2026 nekohasekai
+   License: MIT
+   Source: https://github.com/SagerNet/libghostty-android
+   Text: sagernet/LICENSE.txt
+
+3. highway 1.2.0
+   License: Apache-2.0 OR BSD-3-Clause
+   Source: https://github.com/google/highway
+   Texts: highway/LICENSE-APACHE.txt, highway/LICENSE-BSD3.txt
+
+4. simdutf 9.0.0
+   License: Apache-2.0 OR MIT
+   Source: https://github.com/simdutf/simdutf
+   Texts: simdutf/LICENSE-APACHE.txt, simdutf/LICENSE-MIT.txt
+
+5. translate_c 2.0.0
+   License: MIT
+   Source artifact: https://deps.files.ghostty.org/translate_c-02ff0c523fb92a38939b04d0145c4a9602a74d56.tar.gz
+   Text: translate-c/LICENSE.txt
+
+6. uucode 0.2.0
+   License: MIT AND Unicode-3.0
+   Source artifact: https://deps.files.ghostty.org/uucode-1fb73433bba5d93366c57f23ff2e9d7939746500.tar.gz
+   Texts: uucode/LICENSE.md, uucode/licenses/LICENSE_unicode.txt,
+          uucode/licenses/LICENSE_Bjoern_Hoehrmann.txt
+   The uucode width data is derived from the projects whose license texts are
+   in uucode/wcwidth/.
+
+7. wuffs 0.4.0-alpha.10
+   License: Apache-2.0 OR MIT
+   Source: https://github.com/google/wuffs
+   Texts: wuffs/LICENSE.txt, wuffs/LICENSE-APACHE.txt, wuffs/LICENSE-MIT.txt
+
+8. Zig 0.17.1 toolchain runtime
+   Copyright (c) Zig contributors
+   License: MIT
+   Source: https://github.com/ziglang/zig
+   Text: zig/LICENSE.txt
+
+Build-only projects listed in libghostty-vt/third-party.json (for example aro)
+are not distributed in this APK and are omitted from these notices.

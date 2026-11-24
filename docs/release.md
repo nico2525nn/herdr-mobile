@@ -42,6 +42,15 @@ One signed APK per ABI. Never build or attach a universal APK.
      grep 'lib/arm64-v8a/libghostty_android.so'
    ```
    Repeat for `armeabi-v7a`. The certificate must match the previous release.
+
+   Both APKs must also carry the bundled third-party notices:
+   ```bash
+   tools/check-licenses.sh build/release/herdr-mobile-X.Y.Z-arm64-v8a.apk
+   tools/check-licenses.sh build/release/herdr-mobile-X.Y.Z-armeabi-v7a.apk
+   ```
+   The source set lives in `terminal-ghostty/src/main/assets/licenses`;
+   libghostty-vt, SagerNet and every statically linked dependency listed by
+   upstream must be present.
 6. **Daemon and installer.** Build the tarball and a checksum that uses the
    asset basename (so `sha256sum -c` works from the download directory):
    ```bash

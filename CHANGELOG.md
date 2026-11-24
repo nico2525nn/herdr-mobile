@@ -7,6 +7,9 @@
   the upstream MIT license. The C ABI is unchanged; fixes cover mouse last-cell
   motion repeats, IL/DL soft-wrap and semantic-mark handling, Kitty Unicode
   placeholders, and snapshot pending wrap.
+- Bundle the libghostty-vt, SagerNet and statically linked dependency license
+  notices under `assets/licenses`, and verify them in both release APKs with
+  `tools/check-licenses.sh`.
 
 ## 2.5.2 — 2026-11-24
 
