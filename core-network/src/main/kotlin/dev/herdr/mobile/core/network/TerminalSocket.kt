@@ -433,35 +433,41 @@ class TerminalSocket(
             dev.herdr.mobile.core.model.TerminalRelease.serializer(),
             dev.herdr.mobile.core.model.TerminalRelease(),
         )
-        val ws = socket
-        if (ws != null) {
-            // Append the detach record BEHIND every frame already accepted,
-            // then close the channel so the pump drains exactly that order.
-            // The old path sent release directly and dropped queued keystrokes
-            // when the screen was left immediately after typing.
-            outboundLock.withLock {
-                outbound.trySend(OutboundFrame.Release(record))
+        try {
+            val ws = socket
+            if (ws != null) {
+                // Append the detach record BEHIND every frame already accepted,
+                // then close the channel so the pump drains exactly that order.
+                // The old path sent release directly and dropped queued keystrokes
+                // when the screen was left immediately after typing.
+                outboundLock.withLock {
+                    outbound.trySend(OutboundFrame.Release(record))
+                    outbound.close()
+                }
+                // Wait for the pump even when the release could not be queued
+                // (a full channel): closing the channel still lets it drain the
+                // accepted input, and only then does the socket close. Closing
+                // immediately was what discarded all 128 queued keystrokes.
+                withTimeoutOrNull(2_000) { releaseDrained.await() }
+                // The pump may have ended (or the queue was full). Claim the
+                // release exactly once so a healthy pump can never duplicate it.
+                if (!releaseFrameSent.get() && releaseClaimed.compareAndSet(false, true)) {
+                    runCatching { ws.send(record) }
+                }
+            } else {
                 outbound.close()
             }
-            // Wait for the pump even when the release could not be queued
-            // (a full channel): closing the channel still lets it drain the
-            // accepted input, and only then does the socket close. Closing
-            // immediately was what discarded all 128 queued keystrokes.
-            withTimeoutOrNull(2_000) { releaseDrained.await() }
-            // The pump may have ended (or the queue was full). Claim the
-            // release exactly once so a healthy pump can never duplicate it.
-            if (!releaseFrameSent.get() && releaseClaimed.compareAndSet(false, true)) {
-                runCatching { ws.send(record) }
+        } finally {
+            // A caller timeout can cancel the drain wait. The WebSocket must
+            // still close: the old code left it open, and every later
+            // release() no-op'd because `released` was already set.
+            closeInboundLane()
+            try {
+                socket?.close(1000, "release")
+            } catch (_: Exception) {
             }
-        } else {
-            outbound.close()
+            socket = null
         }
-        closeInboundLane()
-        try {
-            socket?.close(1000, "release")
-        } catch (_: Exception) {
-        }
-        socket = null
     }
 
     private inner class Listener : WebSocketListener() {

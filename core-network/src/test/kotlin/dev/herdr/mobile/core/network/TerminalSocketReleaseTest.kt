@@ -283,6 +283,41 @@ class TerminalSocketReleaseTest {
         assertEquals("socket closed once", 1, fake.closes.get())
     }
 
+    @Test
+    fun cancelledReleaseStillClosesTheSocket() = kotlinx.coroutines.runBlocking {
+        // A caller timeout can cancel release() while the pump is stalled.
+        // The old code skipped the close and `released` made every retry a
+        // no-op, leaking the WebSocket forever.
+        val fake = FakeWebSocket().apply { blockSends = true }
+        val socket = TerminalSocket(
+            http = CapturingClient(fake),
+            endpoint = DaemonEndpoint.direct("http://127.0.0.1:1", null, "test"),
+            paneId = "w1:pX",
+            cols = 80,
+            rows = 24,
+            takeover = false,
+            scope = kotlinx.coroutines.CoroutineScope(kotlinx.coroutines.Dispatchers.Default),
+        )
+        socket.connect()
+        val producer = launch(kotlinx.coroutines.Dispatchers.Default) {
+            repeat(129) { i -> socket.send(byteArrayOf(i.toByte())) }
+        }
+        assertTrue("pump never entered send", fake.sendEntered.await(5, TimeUnit.SECONDS))
+
+        val timedOut = runCatching {
+            kotlinx.coroutines.withTimeout(100) { socket.release() }
+        }
+        assertTrue("the test timeout must cancel release", timedOut.isFailure)
+        assertEquals("the finally must close the old socket", 1, fake.closes.get())
+
+        // A second release after the timeout must be a safe no-op, not leak.
+        socket.release()
+        assertEquals("release must not double-close", 1, fake.closes.get())
+
+        fake.unblockSends.countDown()
+        producer.cancel()
+    }
+
     private fun tuiSocket(fake: FakeWebSocket): TerminalSocket = TerminalSocket(
         http = CapturingClient(fake),
         endpoint = DaemonEndpoint.direct("http://127.0.0.1:1", null, "test"),
