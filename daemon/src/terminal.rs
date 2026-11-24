@@ -745,13 +745,11 @@ async fn run_bridge_inner(
 ) -> Result<()> {
     // Receivers arrive pre-subscribed from bridge(): any await between attach
     // and subscribe lets attach_failed slip through with zero receivers.
-    // Pre-populate the view before the first frame: up to 1000 lines of real
-    // Herdr history, then the visible screen. The client parses the history
-    // block into scrollback (it never reflows it) and paints visible live.
-    // Overlap (history tail == visible head) is trimmed by line content so no
-    // row appears twice; when trimming fails conservatively the client shows
-    // a few duplicated rows rather than losing history.
-    let prelude = build_history_prelude(&registry.herdr, &pane_id, rows).await;
+    // Pre-populate the view before the first frame with ONE coherent
+    // pane.read recent capture: up to 1000 lines of real Herdr transcript
+    // ending at the visible screen. The client feeds it verbatim, so history
+    // and screen can never come from two different instants.
+    let prelude = build_attach_prelude(&registry.herdr, &pane_id, rows).await;
 
     let (mut sink, mut stream) = socket.split();
 
@@ -892,26 +890,12 @@ fn base64_decode(text: &str) -> anyhow::Result<Vec<u8>> {
         .map_err(|e| anyhow::anyhow!("bad base64: {e}"))
 }
 
-/// History prelude for scroll-banking emulators (Termux core): the client has
-/// no capture mode — transcript rows accumulate ONLY by scrolling off the top.
-/// Layout: `CUP-bottom <history lines> CLEAR <visible>`.
-///
-/// History + trailing blanks + CLEAR + visible. Scroll banks the TOP row,
-/// so banking H history rows needs H+R fed lines (H history + R blanks push
-/// exactly the history off the top on an R-row grid). Leading fill does NOT
-/// work (it banks its own blanks); CUP-to-bottom does NOT work (same reason).
-/// `rows` is the attach geometry, which the client sets to its real grid —
-/// a mismatch shifts the banked window by the difference (bounded overlap
-/// with visible, never corrupt). CLEAR then wipes the screen (transcript
-/// survives) and the visible block paints the live grid exactly.
-/// History lines carry their own SGR runs so colors survive without
-/// reflowing. Overlap (history tail == visible head) is trimmed by line
-/// content so no row appears twice.
+/// Reset used only by the visible-only fallback. The normal prelude is a
+/// single `pane.read recent` capture and is fed verbatim.
 const PRELUDE_CLEAR: &str = "\x1b[2J\x1b[H";
 
-/// Outcome of the split prelude fetch. `history_*` describe the recent
-/// block; `visible_ok` the live screen. Each fetched independently: a recent
-/// failure must not cancel the visible screen (audit P1).
+/// Outcome of the attach capture. `history_*` describe the transcript tail;
+/// `visible_ok` says the prelude actually carries the live screen.
 struct PreludeOutcome {
     bytes: Vec<u8>,
     history_rows: usize,
@@ -920,154 +904,83 @@ struct PreludeOutcome {
     visible_ok: bool,
 }
 
-async fn build_history_prelude(
+/// One pane.read(recent) is the whole prelude.
+///
+/// Herdr's `recent` source is a single coherent capture of scrollback PLUS the
+/// visible screen (it ends at, and usually overlaps, the visible screen; less
+/// and other alternate-screen apps return their screen as the tail). Feeding it
+/// as one stream cannot splice two different points in time, needs no
+/// content-based overlap guess, and keeps the real transcript in the engine's
+/// local scrollback for panes without host scroll.
+async fn build_attach_prelude(
     herdr: &crate::herdr::HerdrClient,
     pane_id: &str,
     rows: u32,
 ) -> PreludeOutcome {
-    let recent = match herdr.pane_read_recent(pane_id, 1000).await {
-        Ok(text) => Some(text),
+    match herdr.pane_read_recent(pane_id, 1000).await {
+        Ok(recent) if !recent.is_empty() => return prelude_from_recent(&recent, rows),
+        Ok(_) => {}
         Err(e) => {
-            // Visible is fetched independently below; history degrades to empty
-            // instead of killing the whole prelude (and the error is reported
-            // in Ready, not just debug-logged).
-            tracing::warn!("history prelude recent failed for {pane_id} ({e:#}); continuing visible-only");
-            None
+            let error = format!("{e:#}");
+            tracing::warn!("attach transcript read failed for {pane_id} ({error}); trying visible");
+            return prelude_from_visible(herdr, pane_id, Some(error)).await;
         }
-    };
-    let visible = match herdr.pane_read_visible(pane_id).await {
-        Ok(text) => Some(text),
+    }
+
+    // A genuinely blank screen (or a very young pane) can return an empty
+    // transcript. Keep the visible-only fallback instead of attaching blank.
+    prelude_from_visible(herdr, pane_id, None).await
+}
+
+async fn prelude_from_visible(
+    herdr: &crate::herdr::HerdrClient,
+    pane_id: &str,
+    recent_error: Option<String>,
+) -> PreludeOutcome {
+    match herdr.pane_read_visible(pane_id).await {
+        Ok(visible) => visible_prelude(&visible, recent_error),
         Err(e) => {
-            tracing::warn!("history prelude visible failed for {pane_id} ({e:#})");
-            None
-        }
-    };
-    match (recent, visible) {
-        (Some(recent), Some(visible)) => {
-            let (text, history_rows) =
-                build_history_prelude_from_texts(&recent, &visible, rows);
+            tracing::warn!("attach visible read failed for {pane_id} ({e:#})");
+            let error = match recent_error {
+                Some(recent) => format!("recent fetch failed: {recent}; visible fetch failed: {e:#}"),
+                None => format!("visible fetch failed: {e:#}"),
+            };
             PreludeOutcome {
-                bytes: text.into_bytes(),
-                history_rows,
-                history_truncated: recent.lines().count() >= 1000,
-                history_error: None,
-                visible_ok: true,
-            }
-        }
-        (None, Some(visible)) => PreludeOutcome {
-            bytes: format!("{PRELUDE_CLEAR}{visible}").into_bytes(),
-            history_rows: 0,
-            history_truncated: false,
-            history_error: Some("recent fetch failed".to_string()),
-            visible_ok: true,
-        },
-        (Some(recent), None) => {
-            // Degenerate but orderly: history with no live screen. The client
-            // shows history until live frames repaint (better than a stall).
-            let (text, history_rows) =
-                build_history_prelude_from_texts(&recent, "", rows);
-            PreludeOutcome {
-                bytes: text.into_bytes(),
-                history_rows,
-                history_truncated: recent.lines().count() >= 1000,
-                history_error: None,
+                bytes: vec![],
+                history_rows: 0,
+                history_truncated: false,
+                history_error: Some(error),
                 visible_ok: false,
             }
-        },
-        (None, None) => PreludeOutcome {
-            bytes: vec![],
-            history_rows: 0,
-            history_truncated: false,
-            history_error: Some("recent and visible fetch failed".to_string()),
-            visible_ok: false,
-        },
+        }
     }
 }
 
-/// Pure part of [build_history_prelude]: trims the history/visible overlap by
-/// stripped line content, keeping the LAST occurrence boundary (visible wins).
-/// Blank-line runs are unreliable anchors (prompts/padding repeat), so the
-/// overlap must contain at least one non-blank line; otherwise no trim.
-fn build_history_prelude_from_texts(recent: &str, visible: &str, rows: u32) -> (String, usize) {
-    let hist_lines: Vec<&str> = recent.split('\n').collect();
-    let vis_lines: Vec<&str> = visible.split('\n').collect();
-    let overlap = overlap_len(&hist_lines, &vis_lines);
-    let history_only = hist_lines[..hist_lines.len() - overlap].join("\n");
-    let history_rows = history_only.matches('\n').count() + !history_only.is_empty() as usize;
-    // Trailing blanks: exactly `rows - 1`, pushing precisely the history
-    // block off the top (H history newlines + R - 1 blanks on an R grid =
-    // H scrolls = H banked; a full R would bank one trailing blank too).
-    let push = "\n".repeat(rows.clamp(5, 100).saturating_sub(1) as usize);
-    let text = if history_only.is_empty() {
-        format!("{PRELUDE_CLEAR}{visible}")
-    } else {
-        format!("{history_only}\n{push}{PRELUDE_CLEAR}{visible}")
-    };
-    (text, history_rows)
+/// Fallback for a blank/failed transcript: paint only the live screen. This is
+/// still one capture, never a splice of two reads.
+fn visible_prelude(visible: &str, recent_error: Option<String>) -> PreludeOutcome {
+    PreludeOutcome {
+        bytes: format!("{PRELUDE_CLEAR}{visible}").into_bytes(),
+        history_rows: 0,
+        history_truncated: false,
+        history_error: recent_error.map(|e| format!("recent fetch failed: {e}")),
+        visible_ok: true,
+    }
 }
 
-/// Length of the longest suffix of `hist` (stripped) that prefixes `vis`.
-/// Requires >= 1 non-blank line in the overlap; blank-only overlaps return 0.
-fn overlap_len(hist: &[&str], vis: &[&str]) -> usize {
-    let max = hist.len().min(vis.len());
-    let mut best = 0;
-    for k in 1..=max {
-        let mut ok = true;
-        let mut nonblank = false;
-        for i in 0..k {
-            let a = strip_ansi_osc(hist[hist.len() - k + i]);
-            let b = strip_ansi_osc(vis[i]);
-            if a != b {
-                ok = false;
-                break;
-            }
-            if !a.trim().is_empty() {
-                nonblank = true;
-            }
-        }
-        if ok && nonblank {
-            best = k;
-        }
+/// Pure part of the single-capture prelude: the transcript bytes are sent
+/// verbatim. `rows` only estimates how many rows will scroll off the client's
+/// viewport for diagnostics.
+fn prelude_from_recent(recent: &str, rows: u32) -> PreludeOutcome {
+    let lines = recent.lines().count();
+    PreludeOutcome {
+        bytes: recent.as_bytes().to_vec(),
+        history_rows: lines.saturating_sub(rows.max(1) as usize),
+        // Herdr caps `recent` at ~1000 lines; a full read may have been clipped.
+        history_truncated: lines >= 1000,
+        history_error: None,
+        visible_ok: true,
     }
-    best
-}
-
-/// Strips SGR/CSI sequences and OSC hyperlinks for overlap comparison. The
-/// client parses the ORIGINAL bytes (colors intact); this is compare-only.
-fn strip_ansi_osc(s: &str) -> String {
-    let mut out = String::with_capacity(s.len());
-    let mut chars = s.chars().peekable();
-    while let Some(c) = chars.next() {
-        if c == '\x1b' {
-            match chars.peek() {
-                Some('[') => {
-                    chars.next();
-                    for c2 in chars.by_ref() {
-                        if c2.is_ascii_alphabetic() {
-                            break;
-                        }
-                    }
-                }
-                Some(']') => {
-                    chars.next();
-                    let mut prev_esc = false;
-                    for c2 in chars.by_ref() {
-                        if c2 == '\x07' {
-                            break;
-                        }
-                        if prev_esc && c2 == '\\' {
-                            break;
-                        }
-                        prev_esc = c2 == '\x1b';
-                    }
-                }
-                _ => {}
-            }
-        } else if c != '\r' {
-            out.push(c);
-        }
-    }
-    out
 }
 
 /// Returns false when the bridge should stop (client sent `release`).
@@ -1164,61 +1077,41 @@ mod tests {
     use futures_util::FutureExt;
 
     #[test]
-    fn overlap_trims_visible_head() {
-        let recent = "h1\nh2\nv1\nv2";
-        let visible = "v1\nv2\n$ ";
-        assert_eq!(overlap_len(&split(recent), &split(visible)), 2);
-        let (prelude, history_rows) = build_history_prelude_from_texts(recent, visible, 30);
-        // h1 h2 banked as history; v1 v2 appear once (visible part after CLEAR).
-        assert_eq!(history_rows, 2);
-        let after = prelude.split(PRELUDE_CLEAR).nth(1).unwrap();
-        assert!(after.contains("v1\nv2"));
-        let before = prelude.split(PRELUDE_CLEAR).next().unwrap();
-        assert!(before.contains("h1\nh2\n"));
-        assert!(!before.contains("v1"));
-        // History first, then exactly `rows` trailing blanks, then CLEAR.
-        assert!(prelude.starts_with("h1\nh2\n"));
-        let clear_at = prelude.find(PRELUDE_CLEAR).unwrap();
-        let before_clear = &prelude[..clear_at];
-        // (No negative assert: history's own trailing newline merges with
-        // the push run, so 30-in-a-row is expected here.)
-        assert!(before_clear.ends_with(&"\n".repeat(29)));
+    fn recent_capture_is_sent_verbatim() {
+        // One capture: ANSI and CRLF stay byte-identical; no CLEAR and no
+        // separate visible block that could come from another instant.
+        let recent = "\x1b[32mh1\x1b[0m\r\nh2\nv1\nv2\n$ ";
+        let prelude = prelude_from_recent(recent, 3);
+        assert_eq!(prelude.bytes, recent.as_bytes());
+        assert!(!prelude.bytes.starts_with(PRELUDE_CLEAR.as_bytes()));
+        assert_eq!(prelude.history_rows, 2); // 5 lines - 3 viewport rows
+        assert!(!prelude.history_truncated);
+        assert!(prelude.visible_ok);
+        assert_eq!(prelude.history_error, None);
     }
 
     #[test]
-    fn empty_history_skips_fill() {
-        // Fully overlapped (no history-only rows): plain CLEAR + visible, no
-        // 30 blank lines of pointless scroll.
-        let (prelude, history_rows) = build_history_prelude_from_texts("v1\nv2", "v1\nv2\n$ ", 30);
-        assert_eq!(history_rows, 0);
-        assert!(prelude.starts_with(PRELUDE_CLEAR));
+    fn recent_capture_reports_the_read_cap() {
+        let recent = (1..=1000)
+            .map(|n| format!("line-{n}"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let prelude = prelude_from_recent(&recent, 40);
+        assert!(prelude.history_truncated);
+        assert_eq!(prelude.history_rows, 960);
     }
 
     #[test]
-    fn overlap_ignores_ansi_and_cr() {
-        let recent = "a\n\x1b[32mgreen\x1b[0m\r\ntail";
-        let visible = "green\r\ntail";
-        assert_eq!(overlap_len(&split(recent), &split(visible)), 2);
-    }
-
-    #[test]
-    fn overlap_requires_nonblank_anchor() {
-        // Blank-only overlap (prompt padding) must not trim: it would eat
-        // legitimate blank history rows on every attach.
-        let recent = "h1\n\n\n";
-        let visible = "\n\n$ ";
-        assert_eq!(overlap_len(&split(recent), &split(visible)), 0);
-    }
-
-    #[test]
-    fn overlap_empty_recent_keeps_visible() {
-        let (prelude, history_rows) = build_history_prelude_from_texts("", "v1\n$ ", 30);
-        assert_eq!(history_rows, 0);
-        assert!(prelude.ends_with("v1\n$ "));
-    }
-
-    fn split(s: &str) -> Vec<&str> {
-        s.split('\n').collect()
+    fn visible_fallback_is_one_capture_after_a_clear() {
+        let prelude = visible_prelude("v1\n$ ", Some("recent timeout".to_string()));
+        assert!(prelude.bytes.starts_with(PRELUDE_CLEAR.as_bytes()));
+        assert!(prelude.bytes.ends_with(b"v1\n$ "));
+        assert_eq!(prelude.history_rows, 0);
+        assert!(prelude.visible_ok);
+        assert_eq!(
+            prelude.history_error.as_deref(),
+            Some("recent fetch failed: recent timeout")
+        );
     }
 
     #[tokio::test]

@@ -204,9 +204,10 @@ internal fun TerminalSurface(
         )
     }
 
-    // Attach only replays text (the daemon's prelude carries no DECSET
-    // history), so gesture routing cannot wait for the engine to discover the
-    // app's modes: it comes from the pane facts the snapshot already reports.
+    // Attach replays one contiguous transcript; Herdr's reads and control
+    // frames do not re-send DECSET modes (1049/1000/1002/1006), so gesture
+    // routing cannot wait for the engine to discover the app's modes. It comes
+    // from the pane facts the snapshot already reports.
     val routing = remember(
         settings.scrollMode,
         state.pane?.scroll,

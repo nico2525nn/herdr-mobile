@@ -18,18 +18,22 @@ library `SagerNet/libghostty-android`, ported to the 1.0 C API
 
 ## Attach model (important)
 
-The daemon's attach prelude is **text**, not the original byte stream: it
-replays history and the visible screen, but not the app's DECSET history. A
-fresh engine therefore starts on the primary screen with no mouse mode even when
-the pane is a running TUI. Two consequences:
+The daemon's attach prelude is **one text capture**, not the original byte
+stream: a single `pane.read recent` (up to ~1000 rows) that already ends at the
+visible screen. History and screen are never fetched separately and stitched by
+line content. The prelude does not replay the app's DECSET history: measured on
+Herdr 0.9.5, neither `pane.read` nor the first `terminal session control` frame
+emits 1049 (alt screen), 1000/1002/1006 (mouse) or 2004 (bracketed paste). A
+fresh engine therefore starts on the primary screen with no mouse mode even
+when the pane is a running TUI. Consequences:
 
 - Gesture routing comes from the **snapshot** (`Pane.scroll`, `hostScrollable`,
   `agent`), not from the engine, until the app repaints. See
   `scrollRoutingFor` in `feature-terminal`.
-- The prelude is not visible-only: the daemon fetches `pane.read recent` (up to
-  ~1000 rows, overlap-trimmed against the visible screen) and feeds it as text,
-  so the local VT has a shallow scrollback from the first frame. Deeper history
-  is the host's (`pane.scroll`).
+- The single capture is fed verbatim, so the local VT has a shallow scrollback
+  from the first frame and the transcript can never be spliced at two different
+  instants. Deeper history is the host's (`pane.scroll`). A blank or failed
+  transcript falls back to `pane.read visible` alone (prefixed with a clear).
 - Rendering is correct immediately (prelude text paints the screen); modes
   converge as soon as the app writes again (any key press or output).
 

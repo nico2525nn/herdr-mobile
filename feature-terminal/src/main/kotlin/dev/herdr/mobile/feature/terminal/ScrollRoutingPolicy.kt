@@ -8,11 +8,11 @@ import io.github.sagernet.libghostty.GhosttyTerminalView.ScrollRouting
 /**
  * Which scroll strategy a pane needs.
  *
- * Attach replays text, not the app's DECSET history, so the engine cannot know
- * on its own whether the server owns the history. The snapshot does: a pane
- * with host scrollback scrolls rows on the server; a full-screen pane (scroll
- * reported, no scrollback) pages on the app; anything unreported falls back to
- * the engine's own viewport (the prelude banks client-side history).
+ * Attach replays one transcript but not the app's DECSET modes, so the engine
+ * cannot know on its own whether the server owns the history. The snapshot
+ * does: a pane with host scrollback scrolls rows on the server; a full-screen
+ * pane (scroll reported, no scrollback) pages on the app; anything unreported
+ * falls back to the engine's own viewport (the prelude is the local history).
  */
 internal fun scrollRoutingFor(mode: ScrollMode, pane: Pane?): ScrollRouting = when (mode) {
     // The host's absolute row scroll is always more faithful than typing
