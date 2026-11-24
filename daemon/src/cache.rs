@@ -1064,8 +1064,12 @@ pub async fn run_resync_loop(cache: Arc<SessionCache>, bus: Arc<EventBus>) {
         // Herdr down + backing off on every pane/tab open/close forces a second
         // client refetch, flaps /v1/health, and delays the fresh-pane subscribe.
         if break_reason != BreakReason::StructuralResubscribe {
-            bus.broadcast_snapshot_required(&cache);
+            // Mark the cache down BEFORE asking clients to refetch. The other
+            // order let a client win the race and receive the old cache as a
+            // 200 snapshot, then clear its own stale flag and claim CONNECTED
+            // from data the daemon already knew was suspect.
             cache.mark_herdr_down("event stream disconnected".to_string());
+            bus.broadcast_snapshot_required(&cache);
             tokio::time::sleep(backoff).await;
             backoff = (backoff * 2).min(MAX_BACKOFF);
         } else {

@@ -210,6 +210,36 @@ class LinkLifecycleTest {
     }
 
     @Test
+    fun aFailedRefetchKeepsTheOldSnapshotButMarksItStale() = runBlocking {
+        // Daemon-side counterpart: /v1/snapshot returns 503 while Herdr is
+        // down. The client must keep the last frame and say it is stale,
+        // never report CONNECTED from the cached response.
+        val clock = ManualClock()
+        val transport = FakeDaemonTransport()
+        val state = LinkState(clock)
+        val sync = SnapshotSync(state, transport, clock)
+        val generation = state.linkGeneration
+        transport.snapshotFailure =
+            DaemonException("daemon_unavailable", "herdr is unreachable; the cached snapshot is stale")
+
+        assertTrue(state.installEndpoint(generation, transport.endpoint))
+        assertTrue(
+            state.update(generation) {
+                it.copy(
+                    connection = ConnectionState.CONNECTED,
+                    snapshot = SessionSnapshot(revision = 1, seq = 10),
+                )
+            },
+        )
+
+        val failure = runCatching { sync.refetch("snapshot.required", generation) }
+        assertTrue("refetch must fail: ${failure.exceptionOrNull()}", failure.isFailure)
+        assertEquals(10L, state.state.value.snapshot?.seq)
+        assertEquals(ConnectionState.RECONNECTING, state.state.value.connection)
+        assertTrue("cached frame must be marked stale", state.state.value.stale)
+    }
+
+    @Test
     fun aSequenceGapMarksTheCacheStaleBeforeRefetching() = runBlocking {
         val clock = ManualClock()
         val transport = FakeDaemonTransport()

@@ -97,6 +97,9 @@ internal class FakeDaemonTransport : DaemonTransport {
     /** Runs inside [snapshot]; lets a test hold a fetch in flight. */
     var onSnapshot: suspend () -> Unit = {}
 
+    /** Throw to make the next snapshot refetch fail (e.g. a stale-cache 503). */
+    var snapshotFailure: Throwable? = null
+
     /** Event stream per successful bootstrap. Default: stream closes immediately. */
     var events: () -> Flow<EventSocket.Signal> =
         { flowOf(EventSocket.Signal.Closed(1000, "closed")) }
@@ -118,6 +121,7 @@ internal class FakeDaemonTransport : DaemonTransport {
 
     override suspend fun snapshot(endpoint: DaemonEndpoint): SessionSnapshot {
         snapshots.incrementAndGet()
+        snapshotFailure?.let { throw it }
         onSnapshot()
         return snapshot
     }

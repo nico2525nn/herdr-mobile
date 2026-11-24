@@ -100,7 +100,7 @@ Direct tailnet (bind the tailnet address explicitly):
 | Method | Path | Notes |
 |---|---|---|
 | `GET` | `/v1/health` | `ok` only when Herdr is reachable and primed |
-| `GET` | `/v1/snapshot` | Full camelCase session snapshot |
+| `GET` | `/v1/snapshot` | Full camelCase session snapshot; 503 while Herdr is down (cached data is not authoritative) |
 | `GET` | `/v1/workspaces` | Workspaces with tabs |
 | `GET` | `/v1/panes` | Flat pane list |
 | `WS` | `/v1/events` | `stream.ready` then `seq`-ordered semantic events |
@@ -136,7 +136,9 @@ The `/v1/snapshot` pane object exposes Herdr's scroll state when reported:
 Semantic event types: `stream.ready`, `snapshot.required`, `workspace.created|closed|
 renamed|status_changed`, `tab.created|closed|renamed|status_changed`,
 `pane.created|closed|status_changed|scroll_changed`. `seq` is global and strictly increasing; a gap means
-the client must refetch `/v1/snapshot`.
+the client must refetch `/v1/snapshot`. A refetch during a Herdr outage returns
+503 `daemon_unavailable`, so the client keeps its last frame marked stale rather
+than treating the pre-outage cache as fresh.
 
 ## Herdr subscription notes
 

@@ -202,6 +202,13 @@ async fn snapshot(State(state): State<AppState>, headers: HeaderMap) -> Response
             Err(error) => core_error(error),
         };
     }
+    // /v1/snapshot is the authoritative read. While Herdr's event stream is
+    // down the cache may have holes, and a 200 here would let a client clear
+    // its stale flag on data the daemon cannot vouch for. Keep the cached
+    // frame on screen; report the refetch as unavailable instead.
+    if !state.cache.health_parts().0 {
+        return stale_snapshot_error();
+    }
     match state.cache.snapshot() {
         Some(snapshot) => (StatusCode::OK, Json(snapshot)).into_response(),
         None => api_error(
@@ -210,6 +217,15 @@ async fn snapshot(State(state): State<AppState>, headers: HeaderMap) -> Response
             "no snapshot yet; herdr is unreachable",
         ),
     }
+}
+
+/// The typed response for a refetch attempted while the cache is stale.
+fn stale_snapshot_error() -> Response {
+    api_error(
+        StatusCode::SERVICE_UNAVAILABLE,
+        "daemon_unavailable",
+        "herdr is unreachable; the cached snapshot is stale",
+    )
 }
 
 async fn workspaces(State(state): State<AppState>, headers: HeaderMap) -> Response {
@@ -1125,6 +1141,28 @@ mod core_unavailable_tests {
         // transport failure into HTTP 409 and the client retried it wrongly.
         let response = core_error(anyhow::anyhow!("failed to deliver input"));
         assert_eq!(response.status(), StatusCode::BAD_GATEWAY);
+    }
+
+    #[tokio::test]
+    async fn stale_snapshot_refetch_is_unavailable_not_200() {
+        // The daemon must not vouch for a cache with holes. A client refetching
+        // after snapshot.required has to keep its stale flag until Herdr is
+        // back; the old 200 let it claim CONNECTED from old data.
+        let response = stale_snapshot_error();
+        assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        let value: Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(
+            value.pointer("/error/code").and_then(Value::as_str),
+            Some("daemon_unavailable")
+        );
+        assert!(
+            value
+                .pointer("/error/message")
+                .and_then(Value::as_str)
+                .unwrap()
+                .contains("stale")
+        );
     }
 
     #[tokio::test]
