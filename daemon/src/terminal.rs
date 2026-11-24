@@ -689,7 +689,9 @@ async fn run_session(
     // If the in-flight write timed out, the pipe has a partial line: sending
     // the remaining input would concatenate two NDJSON records. Kill it.
     if !input_broken {
-        flush_pending_input(&mut child, &mut input_rx).await;
+        // A timeout here leaves the same partial NDJSON record as the
+        // in-flight write path; report it so teardown discards the pipe.
+        input_broken = !flush_pending_input(&mut child, &mut input_rx).await;
     }
     if !input_broken {
         if let Some((c, r)) = pending_resize {
@@ -1169,7 +1171,7 @@ fn take_pending_input(rx: &mut mpsc::Receiver<SessionCommand>) -> Vec<SessionCom
 /// Forward input accepted before a release, bounded so a wedged child cannot
 /// pin teardown. The client's release path waits seconds for this; the pipe
 /// write normally completes immediately.
-async fn flush_pending_input(child: &mut TerminalChild, rx: &mut mpsc::Receiver<SessionCommand>) {
+async fn flush_pending_input(child: &mut TerminalChild, rx: &mut mpsc::Receiver<SessionCommand>) -> bool {
     let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(1);
     for cmd in take_pending_input(rx) {
         let sent = match cmd {
@@ -1182,9 +1184,12 @@ async fn flush_pending_input(child: &mut TerminalChild, rx: &mut mpsc::Receiver<
             _ => Ok(Ok(())),
         };
         if !matches!(sent, Ok(Ok(()))) {
-            break;
+            // The pipe may end in a partial line. The caller must kill it and
+            // restore the grid through a fresh controller.
+            return false;
         }
     }
+    true
 }
 
 #[cfg(test)]
