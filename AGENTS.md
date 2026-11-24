@@ -72,7 +72,7 @@ Compose UI (Home / Terminal / Settings)
 | `feature-settings/` | Grouped settings, connection profiles, TOFU host-key approval |
 | `connection-ssh/` | JSch tunnel, host-key verification, port forwarding |
 | `connection-direct/` | Direct loopback/LAN/tailnet endpoint with cleartext-token guard |
-| `terminal-ghostty/` | Vendored libghostty-vt 1.0.1 JNI, Android view/session, key/scroll handling |
+| `terminal-ghostty/` | Vendored libghostty-vt 1.0.2 JNI, Android view/session, key/scroll handling |
 | `notifications/` | Channels, semantic filters, stable IDs, deep-link intents |
 | `testing/` | Shared test-only fakes; never imported by production code |
 | `baselineprofile/` | Macrobenchmark generator for the committed startup profile |

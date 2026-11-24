@@ -4,7 +4,7 @@ plugins {
 }
 
 // Vendored MIT terminal engine (SagerNet/libghostty-android) on top of
-// libghostty-vt 1.0.0: the VT parser, render state, key encoder, selection
+// libghostty-vt 1.0.2: the VT parser, render state, key encoder, selection
 // and a Canvas terminal view. See LICENSE-sagernet and README-LIBGHOSTTY.md.
 android {
     namespace = "io.github.sagernet.libghostty"

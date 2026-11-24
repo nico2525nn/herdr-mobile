@@ -4,7 +4,7 @@ project(ghostty_android CXX)
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
-# Vendored libghostty-vt 1.0.0 static library per ABI (MIT, built with Zig 0.17
+# Vendored libghostty-vt 1.0.2 static library per ABI (MIT, built with Zig 0.17
 # for the Android targets; see vendor/ and README-LIBGHOSTTY.md).
 add_library(ghostty-vt STATIC IMPORTED)
 set_target_properties(ghostty-vt PROPERTIES

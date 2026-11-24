@@ -1,6 +1,6 @@
-# Terminal engine (libghostty-vt 1.0.1)
+# Terminal engine (libghostty-vt 1.0.2)
 
-The terminal is **libghostty-vt 1.0.1**, the same VT engine Herdr runs on the
+The terminal is **libghostty-vt 1.0.2**, the same VT engine Herdr runs on the
 server. The Android view, session, theme and selection code is the vendored MIT
 library `SagerNet/libghostty-android`, ported to the 1.0 C API
 (`terminal-ghostty/`).
@@ -86,10 +86,15 @@ does not get cursor keys from a scroll gesture. Core backend attaches request
 ## Vendor + upgrade notes
 
 - `terminal-ghostty/vendor/include` + `vendor/<abi>/libghostty-vt.a` are built
-  from the **release tarball** `libghostty-vt-1.0.1.tar.gz` with Zig 0.17:
-  `zig build -Doptimize=ReleaseFast -Dtarget=<abi>-linux-android`.
-  Android requires 16 KB page alignment; CMake passes
-  `-Wl,-z,max-page-size=16384`.
+  from the **release tarball** `libghostty-vt-1.0.2.tar.gz` with Zig 0.17:
+  `zig build -Doptimize=ReleaseFast -Dtarget=<abi>-linux-android -Dcpu=baseline`
+  (the four targets are `aarch64-linux-android`, `arm-linux-androideabi`,
+  `x86-linux-android`, `x86_64-linux-android`). Android requires 16 KB page
+  alignment; CMake passes `-Wl,-z,max-page-size=16384`.
+- 1.0.2 is an ABI-compatible patch. Header changes cover the mouse encoder's
+  last-cell tracking and grapheme width; the library fixes IL/DL soft wraps,
+  semantic prompt marks with margins, Kitty Unicode placeholders, and snapshot
+  pending wrap. Rebuilt all four ABIs with Zig 0.17.1.
 - 1.0 drift that had to be fixed (a future bump will hit the same shape):
   `*_setopt*` → `*_set*`; selection formatting moved to `GhosttyFormatter`;
   `GhosttyStyle.size/bold/...` → `flags` + colors; `GraphemesBuf` takes a sized

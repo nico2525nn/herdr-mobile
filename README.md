@@ -24,7 +24,7 @@ core-designsystem/   M3 theme, HerdrColors status tokens, StatusDot/Chip, Settin
 feature-home/        semantic overview: workspace cards, peer tab chips
 feature-terminal/    rails + terminal surface + extra-keys/CJK bottom panel
 feature-settings/    M3 grouped-list settings (appearance/connection/terminal/notifications)
-terminal-ghostty/    libghostty-vt 1.0.1 JNI, Android view/session, key + scroll handling
+terminal-ghostty/    libghostty-vt 1.0.2 JNI, Android view/session, key + scroll handling
 connection-ssh/      JSch tunnel provider (key auth, host-key verification, port forward)
 connection-direct/   tailnet/LAN direct provider
 notifications/       channels + semantic filters + deep-link intents

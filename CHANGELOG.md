@@ -1,5 +1,13 @@
 # Changelog
 
+## Unreleased
+
+- Updated the vendored terminal engine to **libghostty-vt 1.0.2**. Rebuilt all
+  four Android ABIs from the signed release tarball with Zig 0.17.1 and bundled
+  the upstream MIT license. The C ABI is unchanged; fixes cover mouse last-cell
+  motion repeats, IL/DL soft-wrap and semantic-mark handling, Kitty Unicode
+  placeholders, and snapshot pending wrap.
+
 ## 2.5.2 — 2026-11-24
 
 - Daemon input writes are bounded and are never cancelled mid-record by a
