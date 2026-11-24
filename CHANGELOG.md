@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 2.5.3 — 2026-11-25
 
 - Updated the vendored terminal engine to **libghostty-vt 1.0.2**. Rebuilt all
   four Android ABIs from the signed release tarball with Zig 0.17.1 and bundled
