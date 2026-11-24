@@ -2,9 +2,18 @@
 
 ## Unreleased
 
-- Terminal input accepted just before the screen closes is drained ahead of the
-  detach record instead of being dropped, and a refused `ws.send` now surfaces
-  as `send_failed` rather than a silent loss.
+- Reconnect input is ordered: while the pending queue drains into a replacement
+  backend, new keystrokes queue behind it instead of overtaking it. A slow old
+  release can no longer deliver `B` before `A`.
+- `TerminalSocket.release()` appends the detach record behind accepted input
+  and waits for the pump to drain a full outbound queue before closing. A
+  refused `ws.send` surfaces as `send_failed` instead of a silent loss.
+- The first inbound collector is gated: the initial prelude can no longer be
+  evicted by a 256+ frame burst before Compose subscribes to the byte lane.
+- The reattach retry budget is keyed by pane, not by the transient close reason.
+  A flapping `lagged_resync`/`closed` stream can no longer refill the budget.
+- The host scrollbar coalescer keeps sending until the latest requested offset
+  has left, so the final drag position is not dropped behind an in-flight RPC.
 - While Herdr's event stream is down, `/v1/snapshot` returns 503 instead of a
   200 built from a cache with holes; the daemon marks the cache down before it
   asks clients to refetch, so a client can no longer clear `stale` from old
