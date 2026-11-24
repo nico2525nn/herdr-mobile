@@ -1,6 +1,7 @@
 package dev.herdr.mobile.core.network
 
 import dev.herdr.mobile.core.model.BackendMode
+import dev.herdr.mobile.core.model.TerminalAttachmentState
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import okhttp3.WebSocket
@@ -32,6 +33,8 @@ class TerminalSocketReleaseTest {
         val sentText = java.util.concurrent.CopyOnWriteArrayList<String>()
         val sentBinary = java.util.concurrent.CopyOnWriteArrayList<ByteArray>()
         val closes = AtomicInteger(0)
+        /** Simulates OkHttp refusing a frame on a closing/full socket. */
+        @Volatile var failSends = false
 
         override fun request(): Request =
             Request.Builder().url("http://127.0.0.1:1/").build()
@@ -39,12 +42,14 @@ class TerminalSocketReleaseTest {
         override fun queueSize(): Long = 0
 
         override fun send(text: String): Boolean {
+            if (failSends) return false
             sentText += text
             textSends.incrementAndGet()
             return true
         }
 
         override fun send(bytes: ByteString): Boolean {
+            if (failSends) return false
             sentBinary += bytes.toByteArray()
             return true
         }
@@ -106,6 +111,88 @@ class TerminalSocketReleaseTest {
         assertEquals("exactly one release frame", 1, fake.textSends.get())
         assertEquals("exactly one close frame", 1, fake.closes.get())
     }
+
+    @Test
+    fun queuedInputIsFlushedBeforeTheReleaseFrame() = kotlinx.coroutines.runBlocking {
+        // Regression: release() used to send the detach record directly and
+        // close the pump channel, silently dropping a keystroke accepted just
+        // before the screen went away.
+        val fake = FakeWebSocket()
+        val socket = tuiSocket(fake)
+        socket.connect()
+        socket.sendText("hello")
+        socket.release()
+
+        val inputAt = fake.sentText.indexOfFirst { it.contains("\"text\":\"hello\"") }
+        val releaseAt = fake.sentText.indexOfFirst { it.contains("\"type\":\"release\"") }
+        assertTrue("input frame missing: ${fake.sentText}", inputAt >= 0)
+        assertTrue("release frame missing: ${fake.sentText}", releaseAt >= 0)
+        assertTrue("release overtook queued input: ${fake.sentText}", inputAt < releaseAt)
+        assertEquals(
+            "exactly one release frame",
+            1,
+            fake.sentText.count { it.contains("\"type\":\"release\"") },
+        )
+        assertEquals("socket closed once", 1, fake.closes.get())
+    }
+
+    @Test
+    fun refusedSendSurfacesClosedAndDetaches() = kotlinx.coroutines.runBlocking {
+        // A false from ws.send() means the frame never left: do not pretend
+        // the input was delivered, and let the reattach path resync.
+        val fake = FakeWebSocket()
+        val client = CapturingClient(fake)
+        val socket = TerminalSocket(
+            http = client,
+            endpoint = DaemonEndpoint.direct("http://127.0.0.1:1", null, "test"),
+            paneId = "w1:pX",
+            cols = 80,
+            rows = 24,
+            takeover = false,
+            scope = kotlinx.coroutines.CoroutineScope(kotlinx.coroutines.Dispatchers.Unconfined),
+        )
+        socket.connect()
+        requireNotNull(client.capturedListener).onMessage(
+            fake,
+            """{"type":"ready","paneId":"w1:pX","cols":80,"rows":24,"resumed":false}""",
+        )
+        assertTrue(socket.state.value is TerminalAttachmentState.Attached)
+
+        fake.failSends = true
+        socket.sendText("lost")
+        val closed = kotlinx.coroutines.withTimeout(5_000) {
+            socket.inbound.filterIsInstance<TerminalInbound.Closed>().first()
+        }
+        assertEquals("send_failed", closed.reason)
+        assertTrue(socket.state.value is TerminalAttachmentState.Detached)
+        assertTrue("socket must look closed", !socket.isOpen)
+        assertTrue("socket must be closed", fake.closes.get() >= 1)
+    }
+
+    @Test
+    fun sendAfterReleaseFailsInsteadOfSilentlyQueueing() = kotlinx.coroutines.runBlocking {
+        val fake = FakeWebSocket()
+        val socket = tuiSocket(fake)
+        socket.connect()
+        socket.release()
+
+        val error = runCatching { socket.sendText("late") }.exceptionOrNull()
+        assertTrue("late send must fail, got $error", error is IllegalStateException)
+        assertTrue(
+            "late frame must not reach the socket: ${fake.sentText}",
+            fake.sentText.none { it.contains("\"text\":\"late\"") },
+        )
+    }
+
+    private fun tuiSocket(fake: FakeWebSocket): TerminalSocket = TerminalSocket(
+        http = CapturingClient(fake),
+        endpoint = DaemonEndpoint.direct("http://127.0.0.1:1", null, "test"),
+        paneId = "w1:pX",
+        cols = 80,
+        rows = 24,
+        takeover = false,
+        scope = kotlinx.coroutines.CoroutineScope(kotlinx.coroutines.Dispatchers.Unconfined),
+    )
 
     @Test
     fun hostScrollDragSendsAnAbsoluteControlFrame() {

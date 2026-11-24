@@ -3,6 +3,7 @@ package dev.herdr.mobile.core.network
 import dev.herdr.mobile.core.model.BackendMode
 import dev.herdr.mobile.core.model.TerminalAttachmentState
 import dev.herdr.mobile.core.model.TerminalProtocol
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.channels.BufferOverflow
 import kotlinx.coroutines.channels.Channel
@@ -11,9 +12,11 @@ import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asSharedFlow
+import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withTimeoutOrNull
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import okhttp3.Response
@@ -28,6 +31,13 @@ internal sealed interface OutboundFrame {
     /** Typed text: encoded once per burst, not once per character. */
     data class TextInput(val text: String) : OutboundFrame
     data class Text(val text: String) : OutboundFrame
+
+    /**
+     * The detach record. Distinct from [Text] so the pump can prove it reached
+     * OkHttp before the socket closes: input queued before the release must not
+     * be dropped just because the screen went away.
+     */
+    data class Release(val text: String) : OutboundFrame
 }
 
 /**
@@ -59,7 +69,7 @@ internal fun mergeOutbound(values: List<OutboundFrame>): List<OutboundFrame> {
                 if (bytes != null) flush()
                 text = text?.append(value.text) ?: StringBuilder(value.text)
             }
-            is OutboundFrame.Text -> {
+            is OutboundFrame.Text, is OutboundFrame.Release -> {
                 flush()
                 out += value
             }
@@ -161,6 +171,12 @@ class TerminalSocket(
     override val inbound: Flow<TerminalInbound> = _inbound.asSharedFlow()
 
     private val outbound = Channel<OutboundFrame>(capacity = 128)
+    /** Orders enqueues against release so no frame can land after the detach record. */
+    private val outboundLock = Mutex()
+    private val releaseClaimed = AtomicBoolean(false)
+    private val releaseFrameSent = AtomicBoolean(false)
+    private val releaseDrained = CompletableDeferred<Unit>()
+    private val sendBroken = AtomicBoolean(false)
 
     private val open = AtomicBoolean(false)
     override val isOpen: Boolean get() = open.get()
@@ -194,24 +210,66 @@ class TerminalSocket(
     }
 
     private suspend fun pump() {
-        while (true) {
-            val first = outbound.receiveCatching().getOrNull() ?: break
-            // Drain what is already queued, then send one frame per kind: key
-            // rolls and IME bursts become a single socket frame. No timer, so
-            // latency is unchanged; control records still flush and keep order.
-            val turn = ArrayList<OutboundFrame>(8)
-            turn += first
+        try {
             while (true) {
-                turn += outbound.tryReceive().getOrNull() ?: break
-            }
-            val ws = socket ?: break
-            for (frame in mergeOutbound(turn)) {
-                when (frame) {
-                    is OutboundFrame.Binary -> ws.send(ByteString.of(*frame.data))
-                    is OutboundFrame.TextInput -> ws.send(encodeInputText(frame.text))
-                    is OutboundFrame.Text -> ws.send(frame.text)
+                val first = outbound.receiveCatching().getOrNull() ?: break
+                // Drain what is already queued, then send one frame per kind: key
+                // rolls and IME bursts become a single socket frame. No timer, so
+                // latency is unchanged; control records still flush and keep order.
+                val turn = ArrayList<OutboundFrame>(8)
+                turn += first
+                while (true) {
+                    turn += outbound.tryReceive().getOrNull() ?: break
+                }
+                val ws = socket ?: break
+                var failed = false
+                for (frame in mergeOutbound(turn)) {
+                    val sent = when (frame) {
+                        is OutboundFrame.Binary -> ws.send(ByteString.of(*frame.data))
+                        is OutboundFrame.TextInput -> ws.send(encodeInputText(frame.text))
+                        is OutboundFrame.Text -> ws.send(frame.text)
+                        is OutboundFrame.Release ->
+                            if (releaseClaimed.compareAndSet(false, true)) {
+                                ws.send(frame.text).also { releaseFrameSent.set(it) }
+                            } else {
+                                // A stalled pump timed out and sent the detach
+                                // record directly; do not duplicate it.
+                                true
+                            }
+                    }
+                    if (!sent) {
+                        failed = true
+                        break
+                    }
+                }
+                if (failed) {
+                    failOutbound()
+                    break
                 }
             }
+        } finally {
+            // Unblocks release() even when the pump ended before the detach
+            // record (closed socket, send failure, or no connect at all).
+            releaseDrained.complete(Unit)
+        }
+    }
+
+    /**
+     * OkHttp refused a frame: the socket is closing or its queue is full. The
+     * emulator is now missing bytes, so surface the failure and let the normal
+     * reattach path replay the visible screen instead of pretending the input
+     * was delivered.
+     */
+    private fun failOutbound() {
+        if (released.get() || !sendBroken.compareAndSet(false, true)) return
+        open.set(false)
+        val reason = "send_failed"
+        _state.value = TerminalAttachmentState.Detached(reason)
+        emit(TerminalInbound.Closed(reason))
+        outbound.close()
+        try {
+            socket?.close(1011, reason)
+        } catch (_: Exception) {
         }
     }
 
@@ -277,12 +335,23 @@ class TerminalSocket(
         }
     }
 
+    private suspend fun enqueue(frame: OutboundFrame) {
+        outboundLock.withLock {
+            // release() holds the same lock when it appends the detach record,
+            // so a frame accepted here is always ahead of the release.
+            if (released.get() || sendBroken.get()) {
+                throw IllegalStateException("terminal stream is closed")
+            }
+            outbound.send(frame)
+        }
+    }
+
     override suspend fun send(data: ByteArray) {
-        outbound.send(OutboundFrame.Binary(data))
+        enqueue(OutboundFrame.Binary(data))
     }
 
     override suspend fun sendText(text: String) {
-        outbound.send(OutboundFrame.TextInput(text))
+        enqueue(OutboundFrame.TextInput(text))
     }
 
     override suspend fun resize(cols: Int, rows: Int) {
@@ -290,7 +359,7 @@ class TerminalSocket(
             TerminalProtocol.Resize.serializer(),
             TerminalProtocol.Resize(cols, rows),
         )
-        outbound.send(OutboundFrame.Text(record))
+        enqueue(OutboundFrame.Text(record))
     }
 
     override suspend fun scrollRemote(lines: Int, allowPageKey: Boolean, unit: String) {
@@ -309,7 +378,7 @@ class TerminalSocket(
                 unit = unit,
             ),
         )
-        outbound.send(OutboundFrame.Text(record))
+        enqueue(OutboundFrame.Text(record))
     }
 
     override suspend fun scrollHostTo(offsetFromBottom: Long) {
@@ -318,7 +387,7 @@ class TerminalSocket(
             TerminalProtocol.HostScroll.serializer(),
             TerminalProtocol.HostScroll(offsetFromBottom),
         )
-        outbound.send(OutboundFrame.Text(record))
+        enqueue(OutboundFrame.Text(record))
     }
 
     override suspend fun mouse(action: String, button: String, column: Int, row: Int) {
@@ -326,7 +395,7 @@ class TerminalSocket(
             TerminalProtocol.Mouse.serializer(),
             TerminalProtocol.Mouse(action, button, column, row),
         )
-        outbound.send(OutboundFrame.Text(record))
+        enqueue(OutboundFrame.Text(record))
     }
 
     private val released = AtomicBoolean(false)
@@ -343,30 +412,27 @@ class TerminalSocket(
             dev.herdr.mobile.core.model.TerminalRelease.serializer(),
             dev.herdr.mobile.core.model.TerminalRelease(),
         )
-        try {
-            // Send the release frame DIRECTLY on the socket, not through the pump
-            // channel: the pump may not have drained yet when we close, and a
-            // queued-but-unsent release leaks the direct-attach resize lock.
-            val ws = socket
-            if (ws != null) {
-                // ws.send returns false when the socket is already closing: fall
-                // back to the pump channel so the frame still goes out if the
-                // socket recovers, instead of silently dropping the release.
-                if (!ws.send(record)) {
-                    runCatching { outbound.send(OutboundFrame.Text(record)) }
+        val ws = socket
+        if (ws != null) {
+            // Append the detach record BEHIND every frame already accepted,
+            // then close the channel so the pump drains exactly that order.
+            // The old path sent release directly and dropped queued keystrokes
+            // when the screen was left immediately after typing.
+            val queued = outboundLock.withLock {
+                outbound.trySend(OutboundFrame.Release(record)).isSuccess.also {
+                    outbound.close()
                 }
-                // OkHttp queues the close behind already-queued frames, so
-                // the direct release send is ordered without a fixed 150ms
-                // sleep. That sleep was on every same-pane reattach.`
-            } else {
-                outbound.send(OutboundFrame.Text(record))
             }
-        } catch (_: Exception) {
-            // Channel already closed; the socket teardown below finishes the job.
-        }
-        try {
+            if (queued) {
+                withTimeoutOrNull(2_000) { releaseDrained.await() }
+            }
+            // The pump may have ended (or the queue was full). Claim the
+            // release exactly once so a healthy pump can never duplicate it.
+            if (!releaseFrameSent.get() && releaseClaimed.compareAndSet(false, true)) {
+                runCatching { ws.send(record) }
+            }
+        } else {
             outbound.close()
-        } catch (_: Exception) {
         }
         closeInboundLane()
         try {
