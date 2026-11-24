@@ -300,7 +300,11 @@ class TerminalSocketReleaseTest {
         )
         socket.connect()
         val producer = launch(kotlinx.coroutines.Dispatchers.Default) {
-            repeat(129) { i -> socket.send(byteArrayOf(i.toByte())) }
+            repeat(129) { i ->
+                // The point is the release teardown; sends after the close
+                // are expected to fail and must not fail the test child.
+                runCatching { socket.send(byteArrayOf(i.toByte())) }
+            }
         }
         assertTrue("pump never entered send", fake.sendEntered.await(5, TimeUnit.SECONDS))
 

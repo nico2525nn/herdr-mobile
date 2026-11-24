@@ -6,6 +6,9 @@ import dev.herdr.mobile.core.model.TerminalProtocol
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.channels.BufferOverflow
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.flow.Flow
@@ -363,7 +366,19 @@ class TerminalSocket(
             if (released.get() || sendBroken.get()) {
                 throw IllegalStateException("terminal stream is closed")
             }
-            outbound.send(frame)
+            while (true) {
+                val result = outbound.trySend(frame)
+                if (result.isSuccess) return@withLock
+                if (result.isClosed) {
+                    throw IllegalStateException("terminal stream is closed")
+                }
+                // Do NOT suspend inside send(): a cancellation delivered
+                // after the channel accepted the frame would make the caller
+                // keep a pending input that was already queued (duplicate on
+                // resume). trySend either accepts synchronously or not at all.
+                currentCoroutineContext().ensureActive()
+                delay(1)
+            }
         }
     }
 
